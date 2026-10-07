@@ -8,6 +8,8 @@
 //!   optional KOS check.
 //! * [`gf128`]: GF(2^128) multiplication.
 //! * [`arith`]: Z_2^ℓ helpers and the OT-based arithmetic MUX.
+//! * [`bool2pc`]: F_AND / F_OR from CrypTFlow2 bit triples and the COT-based
+//!   block MUX, on XOR-shared bits.
 //! * [`coin`]: commitments and coin tossing.
 //! * [`mac`]: authenticated secret sharing (BDOZ/SPDZ) with batch MAC checks.
 //! * [`gc`]: semi-honest half-gates garbled circuits over shared inputs.
@@ -17,6 +19,7 @@
 pub mod arith;
 pub mod bench;
 pub mod block;
+pub mod bool2pc;
 pub mod coin;
 pub mod gc;
 pub mod gf128;
