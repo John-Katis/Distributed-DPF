@@ -20,7 +20,7 @@ Duoram generates DPFs **before α and β are known** and adjusts them online.
    negation turns the XOR-shared tree into additive shares.
 3. **XOR → additive flags** (App. D, `convert_shares`):
    - `pm_b = (−1)^b Σ t_b` gives `pm = ±1`.
-   - The second 64-bit lane of the same leaves serves as the extra DPF
+   - The second lane of the same leaves (63 bits) serves as the extra DPF
      (`Γ'_b`).
    - One Du–Atallah product gives `Γ'·pm`, and one flight opens
      `c = pm + ρ` and `F̄ = Γ'·pm + ρ`.
@@ -46,6 +46,13 @@ testing ONLY":
   `bit_1`, and with it P1's target bit. The same triple is also reused for
   every level, and one blind is reused for all bits of `xor_to_additive`.
   Here every product uses a fresh triple with T.
+- **CW without the flag bit:** the seed CW is opened with lsb 0. Bit 0 of a
+  node is its flag, so the lsb of the off-path sum equals the off-path flag
+  CW. The full block thus reveals r_i whenever the two flag CWs differ (about
+  half the levels), and with `S = α − r` public, bits of α.
+- **Leaf lanes skip the flag bit:** lane 0 (the DPF word) is bits 1..=64 of
+  the leaf and lane 1 bits 65..=127. A lane 0 that contains bit 0 makes
+  `lsb(F) = lsb(β)` public.
 - **Flag conversion mod 2^64:** the reference packs flags into `int8_t` and
   patches overflows (`== ±128 → 0`). Here the conversion runs mod 2^64.
 - **PRG key:** the reference passes an uninitialised `AES_KEY` to the PRG.

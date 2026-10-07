@@ -104,3 +104,20 @@ fn three_party_gen_matches_cleartext_function() {
         }
     }
 }
+
+#[test]
+fn public_words_do_not_leak() {
+    let mut rng = ChaCha20Rng::seed_from_u64(29);
+    let trials = 64;
+    let mut lsb_hits = 0;
+    for _ in 0..trials {
+        let n = 1 << 8;
+        let beta: u64 = rng.gen();
+        let keys = gen_reference(n, 64, rng.gen_range(0..n), beta, rng.gen());
+        // The CW's lsb would equal the off-path flag CW and reveal r_i.
+        assert!(keys[0].cws.iter().all(|cw| !cw.s.lsb()), "CW has a nonzero lsb");
+        // F = β − Γ must not reveal lsb(β).
+        lsb_hits += ((keys[0].f ^ beta) & 1 == 0) as u32;
+    }
+    assert!((12..=52).contains(&lsb_hits), "lsb(β) predictable: {lsb_hits}/{trials}");
+}

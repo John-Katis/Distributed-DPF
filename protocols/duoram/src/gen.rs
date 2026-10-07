@@ -8,7 +8,7 @@
 //!    root with flag b.
 //! 2. Per level (Duoram App. C, i.e. Doerner–shelat): expand every node, XOR
 //!    all left children to `L_b` and all right ones to `R_b`, and open
-//!    `CW = r_i ? L : R` with compute_CW together with
+//!    `CW = r_i ? L : R` (with lsb 0) with compute_CW together with
 //!    `cwt_L = lsb(L) ⊕ r_i ⊕ 1` and `cwt_R = lsb(R) ⊕ r_i`.
 //! 3. Deferred final CW: `Γ_b = (−1)^b Σ lane0(leaves)`, so
 //!    `Γ_0 + Γ_1 = v_0[r] + v_1[r]` (reference: `Gamma[0]`).
@@ -107,7 +107,9 @@ pub fn preprocess(ch: &mut Channel, helper: &mut Helper, n_size: u64, rng: &mut 
         }
         let c = (r_bits >> (n - 1 - i)) & 1 == 1;
         let one = b == 1;
-        let (s, t) = compute_cw(ch, cr, l, r, c, [l.lsb() ^ c ^ one, r.lsb() ^ c]);
+        // The CW is opened without its lsb, the flag bit: lsb(CW) would equal
+        // the off-path flag CW and so reveal r_i whenever the two differ.
+        let (s, t) = compute_cw(ch, cr, l.with_lsb(false), r.with_lsb(false), c, [l.lsb() ^ c ^ one, r.lsb() ^ c]);
         let cw = CorrectionWord { s, t };
         nodes = kids.iter().enumerate().map(|(k, &x)| correct(x, nodes[k / 2].lsb(), &cw, k & 1 == 1)).collect();
         cws.push(cw);
@@ -257,7 +259,7 @@ pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, 
             }
         }
         let c = (r >> (n - 1 - i)) & 1 == 1;
-        let cw = CorrectionWord { s: if c { l } else { rr }, t: [l.lsb() ^ c ^ true, rr.lsb() ^ c] };
+        let cw = CorrectionWord { s: if c { l } else { rr }.with_lsb(false), t: [l.lsb() ^ c ^ true, rr.lsb() ^ c] };
         for p in 0..2 {
             nodes[p] = kids[p].iter().enumerate().map(|(k, &x)| correct(x, nodes[p][k / 2].lsb(), &cw, k & 1 == 1)).collect();
         }

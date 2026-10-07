@@ -32,6 +32,7 @@ const PRG_KEY: [u8; 16] = *b"duoram/dpf-prg!!";
 /// Correction word of one level: the seed word and the two flag bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CorrectionWord {
+    /// Seed word, lsb 0 (bit 0 of a node is its flag).
     pub s: Block,
     pub t: [bool; 2],
 }
@@ -75,13 +76,16 @@ pub fn correct(child: Block, t_parent: bool, cw: &CorrectionWord, side: bool) ->
     Block((s.0 & !1) | t as u128)
 }
 
-/// The two 64-bit lanes of a leaf: lane 0 for the DPF word, lane 1 for the
-/// share conversion (the reference's `output[i][0]` and `output[i][1]`). Bit
-/// 0, the flag, is cleared first.
+/// The two lanes of a leaf: lane 0 for the DPF word, lane 1 for the share
+/// conversion (the reference's `output[i][0]` and `output[i][1]`). Bit 0 is
+/// the flag and must stay out of both: a lane 0 whose lsb is fixed (or is the
+/// flag) makes `lsb(F) = lsb(β)` public. So lane 0 is bits 1..=64 (a full
+/// 64-bit word, since β can be 64 bits) and lane 1 is bits 65..=127 (63
+/// bits). Lane 1 only feeds `Γ'`, and `c − F̄ = pm·(1 − Γ')` with a 63-bit
+/// `Γ'` hides pm up to statistical distance 2^-62.
 #[inline]
 pub fn lanes(leaf: Block) -> (u64, u64) {
-    let s = leaf.0 & !1;
-    (s as u64, (s >> 64) as u64)
+    ((leaf.0 >> 1) as u64, (leaf.0 >> 65) as u64)
 }
 
 #[cfg(test)]
