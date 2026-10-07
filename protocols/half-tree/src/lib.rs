@@ -67,8 +67,15 @@ pub struct MalTwoPartyRun {
 }
 
 /// Shares α and β (`bm` GF(2^128) elements) and runs [`malicious::run_mal`] for
-/// both parties. `faults[b]` makes party b deviate.
-pub fn run_mal_gen(n_size: u64, alpha: u64, beta: &[Block], seed: u64, faults: [Option<malicious::Fault>; 2]) -> MalTwoPartyRun {
+/// both parties. `faults[b]` makes party b deviate; `ferret` picks F_COT.
+pub fn run_mal_gen(
+    n_size: u64,
+    alpha: u64,
+    beta: &[Block],
+    seed: u64,
+    faults: [Option<malicious::Fault>; 2],
+    ferret: Option<dpf_common::ot::FerretConfig>,
+) -> MalTwoPartyRun {
     assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
@@ -76,12 +83,12 @@ pub fn run_mal_gen(n_size: u64, alpha: u64, beta: &[Block], seed: u64, faults: [
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();
-            let o = malicious::run_mal(c, n_size, a[0], &b[0], seeds[0], faults[0]);
+            let o = malicious::run_mal(c, n_size, a[0], &b[0], seeds[0], faults[0], ferret);
             (o, t.elapsed())
         },
         |c| {
             let t = Instant::now();
-            let o = malicious::run_mal(c, n_size, a[1], &b[1], seeds[1], faults[1]);
+            let o = malicious::run_mal(c, n_size, a[1], &b[1], seeds[1], faults[1], ferret);
             (o, t.elapsed())
         },
     );

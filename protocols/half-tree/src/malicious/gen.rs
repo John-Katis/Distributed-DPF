@@ -30,6 +30,7 @@ use dpf_common::gf128;
 use dpf_common::hash::{CcrHash, CtrPrg};
 use dpf_common::mac::binary::{AuthBit, AuthGf, MacParty};
 use dpf_common::net::{Channel, CommStats};
+use dpf_common::ot::FerretConfig;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
@@ -60,9 +61,21 @@ impl MalSession {
     /// MAC keys with `lsb(Δ_b) = b`, KOS-checked COTs, the lsb proof, and one
     /// coin toss for the hash key and the W-stream.
     pub fn setup(ch: &mut Channel, seed: [u8; 32]) -> Result<Self, Abort> {
+        Self::setup_with(ch, seed, None)
+    }
+
+    /// As [`setup`](Self::setup); with `Some(cfg)`, F_COT is then served by
+    /// Ferret (as in the paper's implementation), bootstrapped from the
+    /// KOS-checked IKNP COTs.
+    pub fn setup_with(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Result<Self, Abort> {
         let t = Instant::now();
         let before = ch.stats();
         let mut mac = MacParty::setup(ch, seed)?;
+        if let Some(cfg) = ferret {
+            let mut rng = mac.rng().clone();
+            mac.cot.enable_ferret(ch, cfg, &mut rng)?;
+            *mac.rng() = rng;
+        }
         let coins = mac.coins(ch, 2)?;
         ch.sync();
         Ok(MalSession {
@@ -177,6 +190,7 @@ pub struct MalRun {
 }
 
 /// Setup, input authentication, generation and the MAC check for one party.
+/// `ferret` selects F_COT: `None` = KOS-checked IKNP, `Some(cfg)` = Ferret.
 pub fn run_mal(
     ch: &mut Channel,
     n_size: u64,
@@ -184,8 +198,9 @@ pub fn run_mal(
     beta_share: &[Block],
     seed: [u8; 32],
     fault: Option<Fault>,
+    ferret: Option<FerretConfig>,
 ) -> Result<MalRun, Abort> {
-    let mut s = MalSession::setup(ch, seed)?;
+    let mut s = MalSession::setup_with(ch, seed, ferret)?;
     let t = Instant::now();
     let before = ch.stats();
     let cots_before = s.mac.cot.produced;

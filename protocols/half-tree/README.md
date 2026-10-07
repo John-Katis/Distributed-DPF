@@ -39,9 +39,13 @@ Two choices differ from the paper's presentation:
   the check abort. The adversary learns at most whether it aborted, which is
   one bit.
 * `lsb(Δ_b) = b` is enforced by revealing `lsb(K_j)` for 64 sacrificed COTs.
-* F_aBit / F_COT: the paper uses Ferret in EMP. Here it is IKNP-style COT with
-  the KOS15 consistency check, bootstrapped from the maliciously secure
-  Masny–Rindal endemic base OT (`dpf_common::ot::endemic`).
+* F_aBit / F_COT, both bootstrapped from the maliciously secure Masny–Rindal
+  endemic base OT (`dpf_common::ot::endemic`):
+  * default: IKNP-style COT with the KOS15 consistency check;
+  * `MalSession::setup_with(…, Some(FerretConfig::B13))`: Ferret
+    (`dpf_common::ot::ferret`), as in the paper's implementation. Setup bootstraps Ferret
+    from KOS COTs and buffers ~10M COTs per direction (≈2 s, ≈1.2 GB for both
+    parties in one process); afterwards each COT costs 1 bit instead of 16 bytes.
 
 `run_mal` / `run_mal_gen` run setup, input authentication, generation and the
 MAC check. `Fault` injects a deviation for tests.
@@ -51,6 +55,7 @@ MAC check. `Fault` injects a deviation for tests.
 ```
 cargo run --release -p half-tree --example bench-half-tree -- all --variant ht  --in-bits 20 --out-bits 127
 cargo run --release -p half-tree --example bench-half-tree -- all --variant mal --in-bits 20 --out-bits 128
+cargo run --release -p half-tree --example bench-half-tree -- all --variant mal-ferret --in-bits 20 --out-bits 128
 ```
 
 Options and columns follow `dpf_common::bench`. For `mal`, `gen` covers input

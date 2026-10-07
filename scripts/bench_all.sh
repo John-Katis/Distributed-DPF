@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Runs the four DPF benchmarks (Floram, HT, HT-mal, Floram-arith) over the same
+# Runs the DPF benchmarks (Floram, HT, HT-mal with IKNP/KOS and with Ferret,
+# Floram-arith) over the same
 # sweep and writes one CSV per protocol into results/.
 #
 #   scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [mode]
@@ -28,4 +29,5 @@ BIN=target/release/examples
 echo "floram"       && "$BIN/bench"              "$MODE" --sweep --out-list 127,128,256,512 "${ARGS[@]}"                 | tee results/floram.csv
 echo "ht"           && "$BIN/bench-half-tree"    "$MODE" --sweep --out-list 127,128,256,512 --variant ht "${ARGS[@]}"    | tee results/ht.csv
 echo "ht-mal"       && "$BIN/bench-half-tree"    "$MODE" --sweep --out-list 128,256,512 --variant mal "${ARGS[@]}"       | tee results/ht-mal.csv
+echo "ht-mal-ferret" && "$BIN/bench-half-tree"   "$MODE" --sweep --out-list 128,256,512 --variant mal-ferret "${ARGS[@]}" | tee results/ht-mal-ferret.csv
 echo "floram-arith" && "$BIN/bench-floram-arith" "$MODE" --sweep --out-list 16,32,64 "${ARGS[@]}"                        | tee results/floram-arith.csv

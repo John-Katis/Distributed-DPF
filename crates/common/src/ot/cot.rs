@@ -25,6 +25,7 @@
 //! directions with shared flights.
 
 use super::iknp::{pack_words, transpose, words_to_bytes};
+use super::ferret::{FerretConfig, FerretPair};
 use super::{endemic, np};
 use crate::block::Block;
 use crate::coin::{coin_block, Abort};
@@ -152,6 +153,9 @@ pub struct CotPair {
     pub receiver: CotReceiver,
     /// COTs produced so far (as receiver plus as sender), for cost reporting.
     pub produced: usize,
+    /// Ferret extension, once [`enable_ferret`](Self::enable_ferret) ran. Then
+    /// `extend` draws from Ferret instead of IKNP.
+    pub ferret: Option<FerretPair>,
 }
 
 impl CotPair {
@@ -168,11 +172,24 @@ impl CotPair {
             let r = CotReceiver::setup(ch, rng, base)?;
             (CotSender::setup(ch, rng, delta, base)?, r)
         };
-        Ok(CotPair { party, malicious, sender, receiver, produced: 0 })
+        Ok(CotPair { party, malicious, sender, receiver, produced: 0, ferret: None })
     }
 
     pub fn delta(&self) -> Block {
         self.sender.delta()
+    }
+
+    /// Switches this pair to Ferret: takes `cfg.base_cots` random COTs per
+    /// direction from the (KOS-checked, if malicious) IKNP extension, runs the
+    /// `pre` iteration and one `main` iteration per direction. Afterwards each
+    /// `extend` costs one bit per COT plus an occasional refill iteration.
+    pub fn enable_ferret<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, cfg: FerretConfig, rng: &mut R) -> Result<(), Abort> {
+        let m = cfg.base_cots(self.malicious);
+        let bits: Vec<bool> = (0..m).map(|_| rng.gen()).collect();
+        let (k, macs) = self.extend(ch, &bits, m, rng)?;
+        let delta = self.delta();
+        self.ferret = Some(FerretPair::bootstrap(ch, cfg, delta, &k, &bits, &macs, self.malicious, rng)?);
+        Ok(())
     }
 
     pub fn is_malicious(&self) -> bool {
@@ -192,6 +209,9 @@ impl CotPair {
         rng: &mut R,
     ) -> Result<(Vec<Block>, Vec<Block>), Abort> {
         self.produced += mine.len() + theirs;
+        if let Some(f) = self.ferret.as_mut() {
+            return f.extend(ch, mine, theirs, rng);
+        }
         if !self.malicious {
             let m = self.receiver.send_extend(ch, mine);
             let k = self.sender.recv_extend(ch, theirs);

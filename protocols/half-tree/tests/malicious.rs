@@ -3,6 +3,7 @@
 
 use dpf_common::coin::Abort;
 use dpf_common::mac::binary::{dealer, AuthGf};
+use dpf_common::ot::FerretConfig;
 use half_tree::malicious::{gen_reference, Fault, MalFull, MalKey};
 use half_tree::{run_mal_gen, Block};
 use rand::{Rng, SeedableRng};
@@ -40,7 +41,7 @@ fn honest_runs_give_valid_authenticated_unit_vectors() {
             for alpha in [0, n - 1, rng.gen_range(0..n)] {
                 let beta: Vec<Block> = (0..bm).map(|_| Block::random(&mut rng)).collect();
                 seed += 1;
-                let run = run_mal_gen(n, alpha, &beta, seed, [None, None]);
+                let run = run_mal_gen(n, alpha, &beta, seed, [None, None], None);
                 let [r0, r1] = run.outs.map(|r| r.expect("honest run aborted"));
                 let deltas = [r0.delta, r1.delta];
                 let fulls = [r0.out.full, r1.out.full];
@@ -76,7 +77,7 @@ fn tampered_correction_words_abort() {
             let err = Block(1u128 << rng.gen_range(0..128));
             let mut faults = [None, None];
             faults[cheater] = Some(Fault { level, err });
-            let run = run_mal_gen(n, rng.gen_range(0..n), &[Block(42)], 100 + i as u64, faults);
+            let run = run_mal_gen(n, rng.gen_range(0..n), &[Block(42)], 100 + i as u64, faults, None);
             for (b, r) in run.outs.iter().enumerate() {
                 assert_eq!(r.as_ref().err(), Some(&Abort("MAC check failed")), "level {level} cheater {cheater}: party {b} did not abort");
             }
@@ -86,8 +87,26 @@ fn tampered_correction_words_abort() {
 
 #[test]
 fn output_shares_hide_beta() {
-    let run = run_mal_gen(64, 9, &[Block(77)], 1, [None, None]);
+    let run = run_mal_gen(64, 9, &[Block(77)], 1, [None, None], None);
     let r0 = run.outs[0].as_ref().unwrap();
     let v: &AuthGf = &r0.out.full.v[0][9];
     assert_ne!(v.x, Block(77));
+}
+
+#[test]
+fn ferret_backed_runs_are_valid_and_catch_tampering() {
+    let mut rng = ChaCha20Rng::seed_from_u64(8);
+    for n in [16u64, 1000] {
+        let alpha = rng.gen_range(0..n);
+        let beta = vec![Block::random(&mut rng)];
+        let run = run_mal_gen(n, alpha, &beta, 77 + n, [None, None], Some(FerretConfig::TOY));
+        let [r0, r1] = run.outs.map(|r| r.expect("honest Ferret run aborted"));
+        let fulls = [r0.out.full, r1.out.full];
+        check_full(&fulls, [r0.delta, r1.delta], n, alpha, &beta);
+    }
+    let fault = Some(Fault { level: 2, err: Block(1 << 40) });
+    let run = run_mal_gen(64, 3, &[Block(9)], 5, [fault, None], Some(FerretConfig::TOY));
+    for r in &run.outs {
+        assert_eq!(r.as_ref().err(), Some(&Abort("MAC check failed")));
+    }
 }

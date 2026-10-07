@@ -1,13 +1,15 @@
 //! Oblivious transfer: Naor–Pinkas base OTs (semi-honest), Masny–Rindal
 //! endemic base OTs (malicious, ROM), semi-honest IKNP as in Obliv-C, and
 //! 128-bit correlated OT (optionally KOS-checked) for the Half-Tree protocols
-//! and the MAC library.
+//! and the MAC library, and Ferret (LPN-based silent COT extension) on top.
 
 pub mod cot;
 pub mod endemic;
+pub mod ferret;
 pub mod iknp;
 pub mod np;
 
+pub use ferret::{FerretConfig, LpnParams};
 pub use cot::{BaseOt, CotPair, CotReceiver, CotSender, COT_KEY_BITS, KOS_EXTRA};
 pub use iknp::{IknpReceiver, IknpSender, OT_KEY_BITS};
 

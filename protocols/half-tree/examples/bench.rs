@@ -1,7 +1,7 @@
 //! Benchmarks for the Half-Tree distributed DPFs.
 //!
 //! ```text
-//! cargo run --release -p half-tree --example bench-half-tree -- <gen|eval|full|all> --variant <ht|mal> [options]
+//! cargo run --release -p half-tree --example bench-half-tree -- <gen|eval|full|all> --variant <ht|mal|mal-ferret> [options]
 //! ```
 //!
 //! * `ht`: semi-honest Half-Tree (GYW+23). `out_bits ≤ 127` uses the PRG-free
@@ -9,6 +9,10 @@
 //! * `mal`: actively secure DPF with one-bit leakage (ZGY+24). The payload is
 //!   `ceil(out_bits/128)` GF(2^128) elements, and every output also carries a MAC.
 //!   `gen` covers input authentication, generation and the final MAC check.
+//!   F_COT is KOS-checked IKNP.
+//! * `mal-ferret`: the same DPF with F_COT from Ferret (`FerretConfig::B13`), as
+//!   in the paper's implementation. Setup bootstraps Ferret and fills one
+//!   ~10M-COT batch per direction; generation then pays one bit per COT.
 //!
 //! Options and CSV columns are those of `dpf_common::bench`. Setup (base OTs,
 //! COT/MAC-key initialisation, coin tosses) is reported apart from generation;
@@ -16,6 +20,7 @@
 
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
 use dpf_common::block::{blocks_for_bits, depth_for};
+use dpf_common::ot::FerretConfig;
 use dpf_common::testing::random_beta;
 use half_tree::{malicious, run_gen, run_mal_gen, semi_honest, Block};
 use rand::{Rng, SeedableRng};
@@ -55,13 +60,13 @@ fn gen_ht(o: &Opts, rng: &mut ChaCha20Rng) {
     );
 }
 
-fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
+fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng, ferret: Option<FerretConfig>) {
     let bm = blocks_for_bits(o.out_bits);
     let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
         let beta: Vec<Block> = (0..bm).map(|_| Block::random(rng)).collect();
-        let run = run_mal_gen(o.size, rng.gen_range(0..o.size), &beta, rng.gen(), [None, None]);
+        let run = run_mal_gen(o.size, rng.gen_range(0..o.size), &beta, rng.gen(), [None, None], ferret);
         let [r0, r1] = run.outs.map(|r| r.expect("honest run aborted"));
         setup.push(r0.setup_time.max(r1.setup_time));
         g0.push(r0.gen_time);
@@ -90,7 +95,7 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
 }
 
 fn main() {
-    let opts = Opts::parse(&["ht", "mal"], 128, &[32, 127, 128, 256, 512]);
+    let opts = Opts::parse(&["ht", "mal", "mal-ferret"], 128, &[32, 127, 128, 256, 512]);
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
         let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
@@ -115,9 +120,9 @@ fn main() {
                     });
                 }
             }
-            _ => {
+            v => {
                 if o.runs("gen") {
-                    gen_mal(o, &mut rng);
+                    gen_mal(o, &mut rng, (v == "mal-ferret").then_some(FerretConfig::B13));
                 }
                 let bm = blocks_for_bits(o.out_bits);
                 let beta: Vec<Block> = (0..bm).map(|_| Block::random(&mut rng)).collect();
