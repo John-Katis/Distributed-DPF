@@ -1,0 +1,15 @@
+[package]
+name = "duoram"
+description = "The DPF part of Duoram (Vadapalli–Henry–Goldberg, USENIX Sec'23): Floram-style DPF at a random target with Du–Atallah correction words (3P helper or 2P OT), deferred final CW, XOR-to-additive conversion, online shift to (α, β)."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+aes.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[[example]]
+name = "bench-duoram"
+path = "examples/bench.rs"
