@@ -12,7 +12,8 @@ COTs keyed by `Δ_b`. No 2PC runs per level, and each level costs one block per
 party.
 
 * Setup: `Session::setup` picks `Δ_b` with `lsb(Δ_b) = b`, runs base OTs for a
-  `CotPair`, and tosses one coin for the hash key `S` and the W-stream.
+  `CotPair`, and tosses one coin for the hash key `S` and the seed of the
+  per-run root re-randomiser W (the F_Rand compression of §5.2).
 * `Session::gen`: n + 3 flights. These are the COT columns, n−1 levels,
   `(μ, d)`, `(HCW, LCW)` and `CW_{n+1}`.
 * `HtKey::eval_point`, `HtKey::eval_full` (about 1.5N hash calls).
@@ -38,7 +39,9 @@ Two choices differ from the paper's presentation:
   opening of the session. A party that tampers with any correction word makes
   the check abort. The adversary learns at most whether it aborted, which is
   one bit.
-* `lsb(Δ_b) = b` is enforced by revealing `lsb(K_j)` for 64 sacrificed COTs.
+* W comes from one F_coin call per generation (Fig. 5 step 1).
+* `lsb(Δ_b) = b` is enforced by revealing `lsb(K_j)` for λ = 128 sacrificed
+  COTs (CWYY23, as ZGY+24 §3.3 prescribes).
 * F_aBit / F_COT, both bootstrapped from the maliciously secure Masny–Rindal
   endemic base OT (`dpf_common::ot::endemic`):
   * default: IKNP-style COT with the KOS15 consistency check;
