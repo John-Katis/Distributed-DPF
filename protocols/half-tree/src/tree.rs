@@ -10,8 +10,10 @@
 //!   `H(X ⊕ σ) ⊕ t·(HCW ∥ LCW_σ)`, two hashes per parent.
 //!
 //! A leaf `X = s ∥ t` yields the payload `Convert(s)`. Only nodes with a leaf
-//! below `N` are expanded (as in Floram), which is sound because every node the
-//! parties skip is off-path and so has identical shares on both sides.
+//! below `N` are kept (as in Floram), which is sound because every node the
+//! parties skip is off-path and so has identical shares on both sides. The
+//! last level's sums still include every child of a kept parent, so that HCW
+//! stays pseudorandom when α's sibling is a skipped node.
 
 use dpf_common::block::{depth_for, Block};
 use dpf_common::hash::{convert_hash, CcrHash};
@@ -186,7 +188,9 @@ impl HtLocal {
     }
 
     /// Before the last level: computes the raw children `H(X ⊕ σ)` and returns
-    /// `(⊕_j H(X^j), ⊕_j H(X^j ⊕ 1))` over the children that exist.
+    /// `(⊕_j H(X^j), ⊕_j H(X^j ⊕ 1))` over all parents, then keeps only the
+    /// children with a leaf below N. Summing a dropped right child too keeps
+    /// HCW pseudorandom when it is α's off-path sibling (else HCW = 0).
     pub fn last_sums(&mut self) -> (Block, Block) {
         assert_eq!(self.level + 1, self.depth);
         assert_eq!(self.corr_levels + 1, self.depth);
@@ -199,11 +203,11 @@ impl HtLocal {
         self.scratch.clear();
         for j in 0..p {
             self.scratch.push(q0[j]);
-            if 2 * j + 1 < next {
-                self.scratch.push(q1[j]);
-            }
+            self.scratch.push(q1[j]);
         }
-        sum_interleaved(&self.scratch)
+        let sums = sum_interleaved(&self.scratch);
+        self.scratch.truncate(next);
+        sums
     }
 
     /// Applies `(HCW, LCW_0, LCW_1)` to the last level. `hcw`'s lsb is ignored.

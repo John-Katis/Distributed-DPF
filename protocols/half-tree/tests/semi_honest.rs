@@ -102,3 +102,16 @@ fn flights_are_n_plus_3() {
     assert_eq!(o0.gen_stats.flights, 10 + 2);
     assert_eq!(o1.gen_stats.flights, 10 + 3);
 }
+
+#[test]
+fn hcw_pseudorandom_when_sibling_is_skipped() {
+    // N = 5, α = 4: α's last-level sibling (leaf 5) has no leaf below N, but it
+    // still enters the sums, so HCW is not publicly zero.
+    let mut rng = ChaCha20Rng::seed_from_u64(17);
+    for _ in 0..32 {
+        let beta = random_beta(&mut rng, 64);
+        let (keys, fulls) = gen_reference(5, 64, 4, &beta, rng.gen());
+        assert_ne!(keys[0].hcw, Block::ZERO, "HCW is publicly zero");
+        check_against_cleartext(&keys, &fulls, 5, 4, &beta);
+    }
+}
