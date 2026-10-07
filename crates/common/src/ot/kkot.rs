@@ -16,7 +16,7 @@
 // `aes` 0.8 re-exports generic-array 0.14, whose newest patch release marks it deprecated.
 #![allow(deprecated)]
 
-use super::iknp::{pack_words, transpose, words_to_bytes};
+use super::iknp::{bytes_to_cols, pack_words, transpose, words_to_bytes};
 use super::np;
 use crate::block::Block;
 use crate::hash::CtrPrg;
@@ -82,18 +82,17 @@ impl KkotSender {
         check_params(n, l);
         let m = msgs.len();
         let words = m.div_ceil(128);
-        let u = ch.recv();
-        assert_eq!(u.len(), KK_CODE_BITS * words * 16, "unexpected KKOT column length");
+        let u = bytes_to_cols(&ch.recv(), KK_CODE_BITS, m);
         let cols: Vec<Vec<u128>> = self
             .prgs
             .iter_mut()
+            .zip(&u)
             .enumerate()
-            .map(|(i, prg)| {
+            .map(|(i, (prg, ui))| {
                 let mut q = prg.next_words(words);
                 if (self.s[i / 128] >> (i % 128)) & 1 == 1 {
-                    for (w, qw) in q.iter_mut().enumerate() {
-                        let off = (i * words + w) * 16;
-                        *qw ^= u128::from_le_bytes(u[off..off + 16].try_into().unwrap());
+                    for (qw, uw) in q.iter_mut().zip(ui) {
+                        *qw ^= uw;
                     }
                 }
                 q
@@ -144,7 +143,7 @@ impl KkotReceiver {
             us.push(t.iter().zip(&g1).zip(&dw).map(|((a, b), c)| a ^ b ^ c).collect::<Vec<_>>());
             ts.push(t);
         }
-        ch.send(words_to_bytes(&us));
+        ch.send(words_to_bytes(&us, m));
         let rows = rows256(&ts, m);
         let y = ch.recv();
         assert_eq!(y.len(), m * n, "unexpected KKOT message length");

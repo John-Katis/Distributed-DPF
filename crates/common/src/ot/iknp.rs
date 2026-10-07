@@ -36,8 +36,29 @@ pub(crate) fn transpose(cols: &[Vec<u128>], m: usize) -> Vec<u128> {
     rows
 }
 
-pub(crate) fn words_to_bytes(cols: &[Vec<u128>]) -> Vec<u8> {
-    cols.iter().flat_map(|c| c.iter().flat_map(|w| w.to_le_bytes())).collect()
+/// Serialises columns of `m` bits each, sending only the ⌈m/8⌉ bytes that
+/// carry those bits (the rest of the last word is never used).
+pub(crate) fn words_to_bytes(cols: &[Vec<u128>], m: usize) -> Vec<u8> {
+    let nb = m.div_ceil(8);
+    cols.iter().flat_map(|c| c.iter().flat_map(|w| w.to_le_bytes()).take(nb)).collect()
+}
+
+/// Inverse of [`words_to_bytes`]: `ncols` columns of `m` bits, zero-padded to
+/// whole 128-bit words.
+pub(crate) fn bytes_to_cols(u: &[u8], ncols: usize, m: usize) -> Vec<Vec<u128>> {
+    let nb = m.div_ceil(8);
+    let words = m.div_ceil(128);
+    assert_eq!(u.len(), ncols * nb, "unexpected OT-extension column length");
+    if nb == 0 {
+        return vec![Vec::new(); ncols];
+    }
+    u.chunks_exact(nb)
+        .map(|c| {
+            let mut buf = vec![0u8; words * 16];
+            buf[..nb].copy_from_slice(&c[..nb]);
+            buf.chunks_exact(16).map(|w| u128::from_le_bytes(w.try_into().unwrap())).collect()
+        })
+        .collect()
 }
 
 pub struct IknpSender {
@@ -63,19 +84,18 @@ impl IknpSender {
     pub fn send(&mut self, ch: &mut Channel, msgs: &[(Block, Block)]) {
         let m = msgs.len();
         let words = m.div_ceil(128);
-        let u = ch.recv();
-        assert_eq!(u.len(), OT_KEY_BITS * words * 16);
+        let u = bytes_to_cols(&ch.recv(), OT_KEY_BITS, m);
 
         let cols: Vec<Vec<u128>> = self
             .prgs
             .iter_mut()
+            .zip(&u)
             .enumerate()
-            .map(|(i, prg)| {
+            .map(|(i, (prg, ui))| {
                 let mut q = prg.next_words(words);
                 if (self.s >> i) & 1 == 1 {
-                    for (w, qw) in q.iter_mut().enumerate() {
-                        let off = (i * words + w) * 16;
-                        *qw ^= u128::from_le_bytes(u[off..off + 16].try_into().unwrap());
+                    for (qw, uw) in q.iter_mut().zip(ui) {
+                        *qw ^= uw;
                     }
                 }
                 q
@@ -123,7 +143,7 @@ impl IknpReceiver {
             us.push(t.iter().zip(&g1).zip(&r).map(|((a, b), c)| a ^ b ^ c).collect::<Vec<_>>());
             ts.push(t);
         }
-        ch.send(words_to_bytes(&us));
+        ch.send(words_to_bytes(&us, m));
         let rows = transpose(&ts, m);
 
         let y = ch.recv_blocks(2 * m);

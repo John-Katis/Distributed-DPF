@@ -24,7 +24,7 @@
 //! own Δ) in one instance and the receiver in the other, and `extend` runs both
 //! directions with shared flights.
 
-use super::iknp::{pack_words, transpose, words_to_bytes};
+use super::iknp::{bytes_to_cols, pack_words, transpose, words_to_bytes};
 use super::ferret::{FerretConfig, FerretPair};
 use super::{endemic, np};
 use crate::block::Block;
@@ -39,13 +39,6 @@ pub const COT_KEY_BITS: usize = 128;
 
 /// Padding COTs sacrificed by the KOS check: κ + s = 128 + 40.
 pub const KOS_EXTRA: usize = 128 + 40;
-
-fn bytes_to_cols(u: &[u8], words: usize) -> Vec<Vec<u128>> {
-    assert_eq!(u.len(), COT_KEY_BITS * words * 16);
-    u.chunks_exact(words * 16)
-        .map(|c| c.chunks_exact(16).map(|w| u128::from_le_bytes(w.try_into().unwrap())).collect())
-        .collect()
-}
 
 /// Which base OT bootstraps the extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,7 +84,7 @@ impl CotSender {
     /// Receives the receiver's correction columns for `m` COTs and returns `K`.
     pub fn recv_extend(&mut self, ch: &mut Channel, m: usize) -> Vec<Block> {
         let words = m.div_ceil(128);
-        let u = bytes_to_cols(&ch.recv(), words);
+        let u = bytes_to_cols(&ch.recv(), COT_KEY_BITS, m);
         let cols: Vec<Vec<u128>> = self
             .prgs
             .iter_mut()
@@ -135,7 +128,7 @@ impl CotReceiver {
             us.push(t.iter().zip(&g1).zip(&r).map(|((a, b), c)| a ^ b ^ c).collect::<Vec<_>>());
             ts.push(t);
         }
-        ch.send(words_to_bytes(&us));
+        ch.send(words_to_bytes(&us, m));
         transpose(&ts, m).into_iter().map(Block).collect()
     }
 }
@@ -307,7 +300,7 @@ mod tests {
                     us.push(t.iter().zip(&g1).zip(&rw).map(|((a, b), c)| a ^ b ^ c ^ flip).collect::<Vec<_>>());
                     ts.push(t);
                 }
-                c.send(words_to_bytes(&us));
+                c.send(words_to_bytes(&us, padded.len()));
                 let m: Vec<Block> = transpose(&ts, padded.len()).into_iter().map(Block).collect();
                 let _ = p.sender.recv_extend(c, 10 + KOS_EXTRA);
                 let seed = coin_block(c, &mut r).unwrap();
