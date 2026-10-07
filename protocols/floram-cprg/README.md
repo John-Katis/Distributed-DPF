@@ -29,11 +29,24 @@ Shared code it uses from `dpf-common` (`crates/common`):
 | `net.rs`   | in-process two-party network (two threads, `mpsc`), counting bytes and flights |
 
 As in Floram, party 0 (Floram's party 1) is the garbler and OT sender, and it
-chooses the public PRG keys. Payloads are XOR-shared blocks. For payloads wider
-than 128 bits, each leaf is extended by chaining `keyL` (`blockmultiple`). The
-domain size N need not be a power of two.
+chooses the public PRG keys. Payloads are XOR-shared blocks. The domain size N
+need not be a power of two.
 
-Differences from Floram:
+Differences from Floram, each fixing a leak of Fig. 7 as printed (a node's lsb
+is its t-bit):
+- **σ_j is revealed without its lsb**, and a corrected node's lsb is set to its
+  t-bit. With the full block, `lsb(σ_j) = τ_{j,ᾱ_j}`, so α_j is public whenever
+  `τ_{j,0} ≠ τ_{j,1}` (about half the levels). This costs one AND gate less.
+- **The accumulators include every child of an expanded parent**, even a right
+  child with no leaf below N (which is then dropped). Otherwise σ_j is publicly
+  0 when α's off-path sibling has no leaf below N (e.g. N = 5, α = 4).
+- **The payload never contains a leaf's lsb.** For out-bits ≤ 127 the payload
+  is the leaf shifted down by one bit (Half-Tree's PRG-free Convert). Wider
+  payloads chain `keyL` from the leaf: block k is `left^{k+1}(leaf)`, one AES
+  call per block (Floram's `blockmultiple` uses the leaf itself as block 0).
+  Otherwise `lsb(γ) = lsb(β) ⊕ 1 ⊕ τ_{m,0} ⊕ τ_{m,1}` is public.
+
+Other differences:
 - γ = acc⁰ ⊕ acc¹ ⊕ β is opened directly from XOR shares. Floram's circuit for
   it contains only XOR gates, so the result is the same.
 - Base OTs are random OTs, which saves Naor–Pinkas's last flight.
@@ -63,7 +76,8 @@ cargo test -p floram-cprg --release
 out-bits ∈ {32, 128, 256, 384}, α ∈ {0, N−1, random}, and every α for N = 11.
 The paths checked are point eval, full eval, and the output computed during
 gen. The 2PC keys are also checked to be bit-identical to the plaintext
-reference driver run on the same seeds.
+reference driver run on the same seeds. `public_key_parts_do_not_leak` checks
+the three leaks above stay closed.
 
 ## Benchmarks
 

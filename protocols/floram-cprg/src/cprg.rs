@@ -10,6 +10,17 @@
 //!
 //! Ported from `src/oram_fssl/fss_cprg.{c,oc}` of the Floram code:
 //! [`CprgLocal`] is `fss_cprg_offline` and [`gen`] is `fss_cprg_traverselevels`.
+//!
+//! Three deviations from Fig. 7 as printed, each closing a leak:
+//!
+//! * A node's lsb is its t-bit, so σ_j is revealed without its lsb (and a
+//!   corrected node's lsb is set to t). Opening the full block gives
+//!   `lsb(σ_j) = τ_{j,ᾱ_j}`, which reveals α_j whenever `τ_{j,0} ≠ τ_{j,1}`.
+//! * The accumulators sum both children of every expanded parent, even a
+//!   right child with no leaf below N. Otherwise, if α's off-path sibling is
+//!   such a child, σ_j is publicly 0.
+//! * The payload never contains a leaf's lsb ([`leaf_columns`]). Otherwise
+//!   `lsb(γ) = lsb(β) ⊕ 1 ⊕ τ_{m,0} ⊕ τ_{m,1}` is public.
 
 use crate::key::{CorrectionWord, DpfKey};
 use dpf_common::block::{bits_msb_first, blocks_for_bits, depth_for, xor_blocks, Block};
@@ -51,6 +62,7 @@ pub struct CprgLocal {
     prg: Prg,
     n_size: u64,
     depth: usize,
+    out_bits: usize,
     bm: usize,
     /// Level of the nodes currently held in `nodes`.
     level: usize,
@@ -60,7 +72,7 @@ pub struct CprgLocal {
     parent_t: Vec<bool>,
     /// Scratch buffer for the next level, swapped with `nodes`.
     scratch: Vec<Block>,
-    /// Leaves extended to `bm` columns. Filled by `finalize`.
+    /// Payload columns of the leaves. Filled by `finalize`.
     leaf_cols: Vec<Vec<Block>>,
     leaf_t: Vec<bool>,
 }
@@ -70,31 +82,71 @@ fn accumulate(children: &[Block]) -> (Block, Block) {
     let mut acc_r = Block::ZERO;
     for pair in children.chunks(2) {
         acc_l ^= pair[0];
-        if let Some(r) = pair.get(1) {
-            acc_r ^= *r;
-        }
+        acc_r ^= pair[1];
     }
     (acc_l, acc_r)
+}
+
+/// Expands every parent into both children (`out.len() = 2·parents`), returns
+/// the accumulators over all of them, then drops the children that have no
+/// leaf below N (`keep`). Summing the dropped ones too keeps σ pseudorandom
+/// when α's off-path sibling is one of them.
+fn expand_level(prg: &Prg, parents: &[Block], out: &mut Vec<Block>, keep: usize) -> (Block, Block) {
+    out.clear();
+    out.resize(2 * parents.len(), Block::ZERO);
+    prg.expand_many(parents, out);
+    let acc = accumulate(out);
+    out.truncate(keep);
+    acc
+}
+
+/// Payload columns of the leaves (`Convert`). A leaf's lsb is its t-bit and
+/// must not reach the payload. Up to 127 bits, column 0 is the leaf shifted
+/// down (Half-Tree's PRG-free Convert); wider payloads chain `keyL` from the
+/// leaf, column k = `left^{k+1}(leaf)`.
+pub fn leaf_columns(prg: &Prg, leaves: &[Block], out_bits: usize) -> Vec<Vec<Block>> {
+    if out_bits <= 127 {
+        return vec![leaves.iter().map(|x| Block(x.0 >> 1)).collect()];
+    }
+    let mut cols: Vec<Vec<Block>> = Vec::with_capacity(blocks_for_bits(out_bits));
+    for k in 0..blocks_for_bits(out_bits) {
+        let mut next = vec![Block::ZERO; leaves.len()];
+        prg.left_many(if k == 0 { leaves } else { &cols[k - 1] }, &mut next);
+        cols.push(next);
+    }
+    cols
+}
+
+/// [`leaf_columns`] for one leaf.
+pub fn leaf_words(prg: &Prg, leaf: Block, out_bits: usize, out: &mut [Block]) {
+    if out_bits <= 127 {
+        out[0] = Block(leaf.0 >> 1);
+        return;
+    }
+    let mut s = leaf;
+    for o in out.iter_mut() {
+        s = prg.left(s);
+        *o = s;
+    }
 }
 
 impl CprgLocal {
     /// `fss_cprg_offline_start`: expands the root and returns the level-1
     /// accumulators. The root's lsb is the party's initial t-bit.
-    pub fn start(prg: Prg, n_size: u64, bm: usize, root: Block) -> (Self, (Block, Block)) {
+    pub fn start(prg: Prg, n_size: u64, out_bits: usize, root: Block) -> (Self, (Block, Block)) {
         let depth = depth_for(n_size);
-        let mut nodes = Vec::with_capacity(n_size as usize);
-        nodes.resize(level_count(n_size, depth, 1), Block::ZERO);
-        prg.expand_many(&[root], &mut nodes);
-        let acc = accumulate(&nodes);
+        let mut nodes = Vec::with_capacity(n_size as usize + 1);
+        let acc = expand_level(&prg, &[root], &mut nodes, level_count(n_size, depth, 1));
         let local = CprgLocal {
             prg,
             n_size,
             depth,
-            bm,
+            out_bits,
+            bm: blocks_for_bits(out_bits),
             level: 1,
             nodes,
             parent_t: vec![root.lsb()],
-            scratch: Vec::with_capacity(n_size as usize),
+            scratch: Vec::with_capacity(n_size as usize + 1),
             leaf_cols: Vec::new(),
             leaf_t: Vec::new(),
         };
@@ -106,7 +158,7 @@ impl CprgLocal {
     ///
     /// ```text
     /// t_child = lsb(child) ⊕ (t_parent ∧ τ_side)
-    /// s_child = child ⊕ t_parent·Z
+    /// s_child = (child ⊕ t_parent·Z) with lsb t_child
     /// ```
     ///
     /// Below the last level it then expands the corrected nodes and returns the
@@ -116,8 +168,9 @@ impl CprgLocal {
         for (c, node) in self.nodes.iter_mut().enumerate() {
             let tp = self.parent_t[c / 2];
             let tau = if c & 1 == 0 { tau_l } else { tau_r };
-            t.push(node.lsb() ^ (tp & tau));
-            *node ^= z.and_bit(tp);
+            let tc = node.lsb() ^ (tp & tau);
+            t.push(tc);
+            *node = (*node ^ z.and_bit(tp)).with_lsb(tc);
         }
         self.parent_t = t;
 
@@ -125,33 +178,23 @@ impl CprgLocal {
             return None;
         }
         self.level += 1;
-        self.scratch.clear();
-        self.scratch.resize(level_count(self.n_size, self.depth, self.level), Block::ZERO);
-        self.prg.expand_many(&self.nodes, &mut self.scratch);
+        let keep = level_count(self.n_size, self.depth, self.level);
+        let acc = expand_level(&self.prg, &self.nodes, &mut self.scratch, keep);
         std::mem::swap(&mut self.nodes, &mut self.scratch);
-        Some(accumulate(&self.nodes))
+        Some(acc)
     }
 
-    /// `fss_cprg_offline_finalize`, after the last `step`. Extends each corrected
-    /// leaf to `bm` blocks by chaining `keyL`, and returns the XOR of every column.
+    /// `fss_cprg_offline_finalize`, after the last `step`. Converts the
+    /// corrected leaves into payload columns ([`leaf_columns`]) and returns the
+    /// XOR of every column.
     pub fn finalize(&mut self) -> Vec<Block> {
         assert_eq!(self.level, self.depth);
         assert_eq!(self.nodes.len(), self.n_size as usize);
-        let mut cols = vec![std::mem::take(&mut self.nodes)];
-        for k in 1..self.bm {
-            let mut next = vec![Block::ZERO; self.n_size as usize];
-            self.prg.left_many(&cols[k - 1], &mut next);
-            cols.push(next);
-        }
+        let cols = leaf_columns(&self.prg, &self.nodes, self.out_bits);
         let acc = cols.iter().map(|c| c.iter().fold(Block::ZERO, |a, b| a ^ *b)).collect();
         self.leaf_cols = cols;
         self.leaf_t = std::mem::take(&mut self.parent_t);
         acc
-    }
-
-    /// After `finalize`: the corrected leaf seeds and their t-bits.
-    pub fn leaves(&self) -> (&[Block], &[bool]) {
-        (&self.leaf_cols[0], &self.leaf_t)
     }
 
     /// Output shares `y(x) = leaf(x) ⊕ t(x)·γ`, as in Floram's
@@ -218,8 +261,9 @@ pub fn level_circuit<P: GcParty>(
     // ocFromSharedCharN(diff_L), then ocFromSharedCharN(diff_R).
     let dl = p.input_shared(ch, &acc.0.to_bits());
     let dr = p.input_shared(ch, &acc.1.to_bits());
-    // obliv if (levelindex == 0) Z = diff_R; else Z = diff_L;
-    let z = p.mux(ch, alpha_j, &dl, &dr);
+    // obliv if (levelindex == 0) Z = diff_R; else Z = diff_L; without bit 0,
+    // which would equal the off-path advice bit and so reveal α_j.
+    let z = p.mux(ch, alpha_j, &dl[1..], &dr[1..]);
     // advicebits[0] = diff_L[0] ^ rightblock ^ 1; advicebits[1] = diff_R[0] ^ rightblock;
     let tau_l = p.not(p.xor(dl[0], alpha_j));
     let tau_r = p.xor(dr[0], alpha_j);
@@ -227,7 +271,8 @@ pub fn level_circuit<P: GcParty>(
     out.push(tau_l);
     out.push(tau_r);
     let bits = p.reveal_both(ch, &out);
-    CorrectionWord { z: Block::from_bits(&bits[..128]), tau_l: bits[128], tau_r: bits[129] }
+    let z = Block(Block::from_bits(&bits[..127]).0 << 1);
+    CorrectionWord { z, tau_l: bits[127], tau_r: bits[128] }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -236,7 +281,7 @@ fn gen_with<P: GcParty>(
     ch: &mut Channel,
     prg: Prg,
     n_size: u64,
-    bm: usize,
+    out_bits: usize,
     root: Block,
     alpha_share: u64,
     beta_share: &[Block],
@@ -244,7 +289,7 @@ fn gen_with<P: GcParty>(
     let depth = depth_for(n_size);
     let alpha = p.input_shared(ch, &bits_msb_first(alpha_share, depth));
 
-    let (mut local, mut acc) = CprgLocal::start(prg.clone(), n_size, bm, root);
+    let (mut local, mut acc) = CprgLocal::start(prg.clone(), n_size, out_bits, root);
     let mut cws = Vec::with_capacity(depth);
     for &alpha_j in &alpha {
         let cw = level_circuit(p, ch, alpha_j, acc);
@@ -259,11 +304,11 @@ fn gen_with<P: GcParty>(
     // XOR gates, so opening the XOR shares directly gives the same result.
     let mine = xor_blocks(&leaf_acc, beta_share);
     ch.send_blocks(&mine);
-    let theirs = ch.recv_blocks(bm);
+    let theirs = ch.recv_blocks(mine.len());
     let gamma = xor_blocks(&mine, &theirs);
 
     let full = local.output(&gamma);
-    let key = DpfKey { party: ch.party(), n_size, bm, prg, root, cws, gamma };
+    let key = DpfKey { party: ch.party(), n_size, out_bits, bm: gamma.len(), prg, root, cws, gamma };
     (key, full)
 }
 
@@ -316,12 +361,12 @@ pub fn gen(
     let (key, full, setup_stats, and_gates) = if party == 0 {
         let mut g = Garbler::setup(ch, &mut rng_proto);
         let s = mark(ch);
-        let (k, f) = gen_with(&mut g, ch, prg, n_size, bm, root, alpha_share, beta_share);
+        let (k, f) = gen_with(&mut g, ch, prg, n_size, out_bits, root, alpha_share, beta_share);
         (k, f, s, g.and_count())
     } else {
         let mut e = Evaluator::setup(ch, &mut rng_proto);
         let s = mark(ch);
-        let (k, f) = gen_with(&mut e, ch, prg, n_size, bm, root, alpha_share, beta_share);
+        let (k, f) = gen_with(&mut e, ch, prg, n_size, out_bits, root, alpha_share, beta_share);
         (k, f, s, e.and_count())
     };
     let gen_time = t_gen.elapsed();
@@ -350,14 +395,14 @@ pub fn gen_reference(
     let prg = Prg::new(Block::random(&mut r0), Block::random(&mut r0));
     let roots = [sample_root(&mut r0, 0), sample_root(&mut r1, 1)];
 
-    let (mut l0, mut a0) = CprgLocal::start(prg.clone(), n_size, bm, roots[0]);
-    let (mut l1, mut a1) = CprgLocal::start(prg.clone(), n_size, bm, roots[1]);
+    let (mut l0, mut a0) = CprgLocal::start(prg.clone(), n_size, out_bits, roots[0]);
+    let (mut l1, mut a1) = CprgLocal::start(prg.clone(), n_size, out_bits, roots[1]);
     let mut cws = Vec::with_capacity(depth);
     for (j, &aj) in bits_msb_first(alpha, depth).iter().enumerate() {
         let dl = a0.0 ^ a1.0;
         let dr = a0.1 ^ a1.1;
         let cw = CorrectionWord {
-            z: if aj { dl } else { dr },
+            z: Block(if aj { dl } else { dr }.0 & !1),
             tau_l: dl.lsb() ^ aj ^ true,
             tau_r: dr.lsb() ^ aj,
         };
@@ -377,6 +422,7 @@ pub fn gen_reference(
     let mk = |party: usize| DpfKey {
         party,
         n_size,
+        out_bits,
         bm,
         prg: prg.clone(),
         root: roots[party],

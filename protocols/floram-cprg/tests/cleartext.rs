@@ -107,3 +107,26 @@ fn every_alpha_small_domain() {
         check_against_cleartext(&[o0.key, o1.key], &[o0.full, o1.full], n, alpha, &beta);
     }
 }
+
+#[test]
+fn public_key_parts_do_not_leak() {
+    let mut rng = ChaCha20Rng::seed_from_u64(31);
+    let trials = 64;
+    let mut lsb_hits = 0;
+    for _ in 0..trials {
+        // σ_j has lsb 0, so it no longer equals the off-path advice bit.
+        let n = 1 << 8;
+        let beta = random_beta(&mut rng, 128);
+        let (keys, _) = gen_reference(n, 128, rng.gen_range(0..n), &beta, [rng.gen(), rng.gen()]);
+        assert!(keys[0].cws.iter().all(|cw| !cw.z.lsb()), "σ_j has a nonzero lsb");
+        // lsb(β) is not determined by γ and the last advice bits.
+        let cw = keys[0].cws.last().unwrap();
+        lsb_hits += (keys[0].gamma[0].lsb() ^ true ^ cw.tau_l ^ cw.tau_r == beta[0].lsb()) as u32;
+        // N = 5, α = 4: the off-path siblings at levels 2 and 3 have no leaf
+        // below N, but σ_2 and σ_3 must still be pseudorandom.
+        let (keys, _) = gen_reference(5, 128, 4, &beta, [rng.gen(), rng.gen()]);
+        assert_ne!(keys[0].cws[1].z, Block::ZERO, "σ_2 is publicly zero");
+        assert_ne!(keys[0].cws[2].z, Block::ZERO, "σ_3 is publicly zero");
+    }
+    assert!((12..=52).contains(&lsb_hits), "lsb(β) predictable: {lsb_hits}/{trials}");
+}
