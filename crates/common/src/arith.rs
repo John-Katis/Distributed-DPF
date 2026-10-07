@@ -3,7 +3,7 @@
 //! Ring elements are `u64` values reduced with [`mask`]. [`mux`] is
 //! F^{A,ℓ}_MUX of NDSS'25 (instantiated as in SIRNN): from an XOR-shared
 //! selector `g` and additive shares of `W0`, `W1`, it outputs additive shares of
-//! `W_g`, using one COT per selection in each direction.
+//! `W_g`, using one correlated OT per selection in each direction.
 
 use crate::block::Block;
 use crate::coin::Abort;
@@ -41,10 +41,20 @@ fn pad(k: Block, tweak: u64, bits: usize) -> u64 {
 /// Additive shares of `W_{g_i}` for each i, given this party's XOR share of
 /// every `g_i` and additive shares of `W0_i`, `W1_i` in Z_2^bits.
 ///
-/// With `D = W1 − W0 = D_0 + D_1` and `g = g_0 ⊕ g_1`, each party `b` acts as OT
-/// sender for the term `g·D_b`: the peer selects with `g_{1−b}` between
-/// `(g_b ⊕ c)·D_b − r_b` for `c ∈ {0,1}`, and party `b` keeps `r_b`. The COTs
-/// are derandomised with `H(K)`, `H(K ⊕ Δ)`. Two flights (semi-honest COT).
+/// This is SIRNN's optimised F_MUX (App. C), the instantiation XLH+25 names
+/// (and the reference code's `multiplexer2`): with `D = W1 − W0` and
+/// `g = g_0 ⊕ g_1`,
+///
+/// ```text
+/// g·D = g_0·D_0 + g_1·D_1 + g_1·(1 − 2g_0)·D_0 + g_0·(1 − 2g_1)·D_1.
+/// ```
+///
+/// The first two terms are local. For the cross term `g_{1−b}·c_b` with
+/// `c_b = (1 − 2g_b)·D_b`, party b is the sender of a correlated OT with
+/// correlation `c_b` and the peer selects with `g_{1−b}`. From a COT
+/// `(K, K ⊕ Δ)` the sender keeps `−H(K)` and sends the single word
+/// `u = H(K ⊕ Δ) − H(K) − c_b`; the receiver gets `H(M) − g_{1−b}·u`. That is
+/// one ℓ-bit word per COT, 2(λ + ℓ) bits per selection in total.
 pub fn mux<R: RngCore + CryptoRng>(
     ch: &mut Channel,
     cot: &mut CotPair,
@@ -60,29 +70,29 @@ pub fn mux<R: RngCore + CryptoRng>(
     let (k, mm) = cot.extend(ch, g, n, rng)?;
     let delta = cot.delta();
 
-    // Sender side: party b's own term g·D_b.
+    // Sender side: correlation c_b = (1 − 2g_b)·D_b.
     let mut out: Vec<u64> = Vec::with_capacity(n);
-    let mut msgs = Vec::with_capacity(2 * n);
+    let mut msgs = Vec::with_capacity(n);
     for i in 0..n {
         let d = w1[i].wrapping_sub(w0[i]) & m;
-        let r: u64 = rng.gen::<u64>() & m;
-        let m0 = (if g[i] { d } else { 0 }).wrapping_sub(r) & m;
-        let m1 = (if g[i] { 0 } else { d }).wrapping_sub(r) & m;
-        msgs.push(m0.wrapping_add(pad(k[i], i as u64, bits)) & m);
-        msgs.push(m1.wrapping_add(pad(k[i] ^ delta, i as u64, bits)) & m);
-        out.push(w0[i].wrapping_add(r) & m);
+        let c = signed(g[i], d, bits);
+        let x0 = pad(k[i], i as u64, bits);
+        let x1 = pad(k[i] ^ delta, i as u64, bits);
+        msgs.push(x1.wrapping_sub(x0).wrapping_sub(c) & m);
+        let local = if g[i] { d } else { 0 };
+        out.push(w0[i].wrapping_add(local).wrapping_sub(x0) & m);
     }
     ch.send(msgs.iter().flat_map(|x| x.to_le_bytes()).collect());
 
-    // Receiver side: the peer's term g·D_{1−b}, selected with g_b.
+    // Receiver side: H(M) − g_b·u for the peer's correlation.
     let theirs = ch.recv();
-    if theirs.len() != 16 * n {
+    if theirs.len() != 8 * n {
         return Err(Abort("malformed MUX message"));
     }
     for i in 0..n {
-        let off = (2 * i + g[i] as usize) * 8;
-        let e = u64::from_le_bytes(theirs[off..off + 8].try_into().unwrap());
-        out[i] = out[i].wrapping_add(e.wrapping_sub(pad(mm[i], i as u64, bits))) & m;
+        let u = u64::from_le_bytes(theirs[8 * i..8 * i + 8].try_into().unwrap());
+        let y = pad(mm[i], i as u64, bits).wrapping_sub(if g[i] { u } else { 0 });
+        out[i] = out[i].wrapping_add(y) & m;
     }
     Ok(out)
 }
