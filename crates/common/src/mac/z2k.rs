@@ -62,13 +62,19 @@ pub type Spdz2k32 = Z2k<32, 64>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mac::ring::tests::{dealer_algebra, engine_roundtrip};
+    use crate::mac::ring::tests::{dealer_algebra, engine_roundtrip, error_is_caught};
 
     #[test]
     fn spdz2k_engine() {
         engine_roundtrip::<Spdz2k64>();
         engine_roundtrip::<Spdz2k32>();
         engine_roundtrip::<Z2k<16, 40>>();
+    }
+
+    #[test]
+    fn spdz2k_high_bit_error_is_caught() {
+        error_is_caught(Spdz2k64::from_u128(1 << 63));
+        error_is_caught(Z2k::<16, 40>::from_u128(1 << 15));
     }
 
     #[test]

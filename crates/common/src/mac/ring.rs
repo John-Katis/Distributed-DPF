@@ -8,13 +8,14 @@
 //!   authenticated shares with an OT-based VOLE: the cross terms `x_b·α_{1−b}` are
 //!   Gilboa products, one KOS-checked COT per bit of `x_b`. An extra random value
 //!   is authenticated in the same batch, and a random linear combination of the
-//!   batch is opened and recorded for the MAC check (the MASCOT/SPDZ2k
-//!   consistency check against a sender that uses inconsistent α's).
+//!   batch is opened in full and MAC-checked at once (the ΠAuth consistency
+//!   check of MASCOT/SPDZ2k).
 //! * [`ArithMacParty::open`] opens without checking and records the opening;
 //!   [`ArithMacParty::check`] verifies every recorded opening at once.
 //!
-//! For SPDZ2k, `open` reveals only the low k bits, and the check masks the
-//! combined value with `2^k·[r]`, as in Cramer et al. (CRYPTO'18), Fig. 9/10.
+//! For SPDZ2k, `open` masks every value with `2^k·[r]` before opening it in
+//! full, and `check` is the batch MAC check of Cramer et al. (CRYPTO'18),
+//! Fig. 6.
 
 use crate::block::Block;
 use crate::coin::{coin_block, commit_and_open, Abort};
@@ -165,19 +166,23 @@ impl<R: MacRing> ArithMacParty<R> {
 
     /// Authenticates additively shared values. Both parties pass their shares;
     /// a value known to one party is shared as `(x, 0)`.
+    ///
+    /// Consistency check of ΠAuth (SPDZ2k Fig. 11 steps 6–10, MASCOT Prot. 3):
+    /// with public χ, `x̂ = Σ χ_j x_j + x_extra` is broadcast in full and
+    /// `Σ_b (m̂_b − x̂·α_b) = 0` is checked at once.
     pub fn authenticate(&mut self, ch: &mut Channel, mine: &[R]) -> Result<Vec<Auth<R>>, Abort> {
         let mut all = mine.to_vec();
         all.push(R::random(&mut self.rng));
         let cross = self.vole(ch, &all)?;
         let auth: Vec<Auth<R>> = all.iter().zip(&cross).map(|(x, c)| Auth { x: *x, m: x.mul(self.key).add(*c) }).collect();
-        // Consistency: open Σ χ_j [x_j] + [x_extra] and record it for the check.
         let seed = coin_block(ch, &mut self.rng)?;
         let chi: Vec<R> = CtrPrg::new(seed).next_words(mine.len()).into_iter().map(R::chi).collect();
         let mut comb = *auth.last().unwrap();
         for (a, c) in auth.iter().zip(&chi) {
             comb = comb.add(&a.scale(*c));
         }
-        self.open(ch, &[comb])?;
+        let x_hat = self.reveal(ch, &[comb])?[0];
+        self.zero_check(ch, comb.m, x_hat)?;
         Ok(auth[..mine.len()].to_vec())
     }
 
@@ -187,61 +192,71 @@ impl<R: MacRing> ArithMacParty<R> {
         self.authenticate(ch, &mine)
     }
 
-    /// Opens without checking (for SPDZ2k, only the low k bits) and records each
-    /// opening for [`check`](Self::check). One flight.
+    /// Opens values without checking them and records each opening for
+    /// [`check`](Self::check). For fields this is a plain opening.
+    ///
+    /// For SPDZ2k this is the Open phase of BatchCheck (Fig. 6): every `[x_i]`
+    /// is masked as `[x̃_i] = [x_i] + 2^k·[r_i]` with a fresh authenticated
+    /// `r_i ∈ Z_2^s`, `x̃_i` is opened in all k+s bits, and `x̃_i mod 2^k` is
+    /// returned. The mask hides the upper bits of `x_i`. Opening only the low k
+    /// bits and masking later in the check (the earlier version of the paper,
+    /// §3.4) lets a cheater pass with probability 1/2.
     pub fn open(&mut self, ch: &mut Channel, vals: &[Auth<R>]) -> Result<Vec<R>, Abort> {
-        let mine: Vec<R> = vals.iter().map(|v| R::opened(v.x)).collect();
-        ch.send(ring_bytes(&mine));
-        let theirs: Vec<R> = ring_from_bytes(&ch.recv(), vals.len())?;
-        let out: Vec<R> = mine.iter().zip(&theirs).map(|(a, b)| R::opened(a.add(*b))).collect();
-        self.opened.extend(vals.iter().copied().zip(out.iter().copied()));
-        Ok(out)
+        let masked: Vec<Auth<R>> = match R::check_mask() {
+            None => vals.to_vec(),
+            Some(w) => {
+                let r_shares: Vec<R> = (0..vals.len()).map(|_| R::chi(R::random(&mut self.rng).to_u128())).collect();
+                let r = self.authenticate(ch, &r_shares)?;
+                vals.iter().zip(&r).map(|(v, r)| v.add(&r.scale(w))).collect()
+            }
+        };
+        self.open_premasked(ch, &masked)
     }
 
-    /// Batch MAC check over every recorded opening (ΠMACCheck). Clears the
+    /// Opens values in full, without a mask, and records them for
+    /// [`check`](Self::check). For SPDZ2k this is only safe for values that are
+    /// already uniform modulo 2^{k+s}, such as values masked by a random
+    /// triple component (§3.3); otherwise use [`open`](Self::open).
+    pub fn open_premasked(&mut self, ch: &mut Channel, vals: &[Auth<R>]) -> Result<Vec<R>, Abort> {
+        let full = self.reveal(ch, vals)?;
+        self.opened.extend(vals.iter().copied().zip(full.iter().copied()));
+        Ok(full.into_iter().map(R::opened).collect())
+    }
+
+    /// Batch MAC check over every recorded opening (MAC check phase of
+    /// BatchCheck, Fig. 6 steps 5–7): public χ_i, `ỹ = Σ χ_i x̃_i`,
+    /// `z_b = Σ χ_i m_{b,i} − α_b·ỹ`, commit-and-open, `Σ z_b = 0`. Clears the
     /// record.
     pub fn check(&mut self, ch: &mut Channel) -> Result<(), Abort> {
         let items = std::mem::take(&mut self.opened);
         let seed = coin_block(ch, &mut self.rng)?;
         let chi: Vec<R> = CtrPrg::new(seed).next_words(items.len()).into_iter().map(R::chi).collect();
         let zero = R::from_u128(0);
-        let (mut y_pub, mut y, mut my) = (zero, zero, zero);
+        let (mut y, mut my) = (zero, zero);
         for ((a, v), c) in items.iter().zip(&chi) {
-            y_pub = y_pub.add(c.mul(*v));
-            y = y.add(c.mul(a.x));
+            y = y.add(c.mul(*v));
             my = my.add(c.mul(a.m));
         }
-        let public = match R::check_mask() {
-            None => y_pub,
-            Some(w) => {
-                // SPDZ2k: open y + 2^k·r in full and compare its low k bits.
-                let r = self.rand_unchecked(ch)?;
-                let mine = y.add(w.mul(r.x));
-                ch.send(ring_bytes(&[mine]));
-                let theirs: Vec<R> = ring_from_bytes(&ch.recv(), 1)?;
-                let full = mine.add(theirs[0]);
-                if R::opened(full) != R::opened(y_pub) {
-                    return Err(Abort("MAC check failed"));
-                }
-                my = my.add(w.mul(r.m));
-                full
-            }
-        };
-        let z = my.sub(public.mul(self.key));
+        self.zero_check(ch, my, y)
+    }
+
+    /// Exchanges shares and returns the full reconstructed values. One flight.
+    fn reveal(&mut self, ch: &mut Channel, vals: &[Auth<R>]) -> Result<Vec<R>, Abort> {
+        let mine: Vec<R> = vals.iter().map(|v| v.x).collect();
+        ch.send(ring_bytes(&mine));
+        let theirs: Vec<R> = ring_from_bytes(&ch.recv(), vals.len())?;
+        Ok(mine.iter().zip(&theirs).map(|(a, b)| a.add(*b)).collect())
+    }
+
+    /// Commits to `z_b = m_b − y·α_b`, opens, and checks `z_0 + z_1 = 0`.
+    fn zero_check(&mut self, ch: &mut Channel, m: R, y: R) -> Result<(), Abort> {
+        let z = m.sub(y.mul(self.key));
         let theirs = commit_and_open(ch, &z.to_u128().to_le_bytes(), &mut self.rng)?;
         let theirs = R::from_u128(u128::from_le_bytes(theirs.try_into().map_err(|_| Abort("malformed MAC share"))?));
-        if z.add(theirs) != zero {
+        if z.add(theirs) != R::from_u128(0) {
             return Err(Abort("MAC check failed"));
         }
         Ok(())
-    }
-
-    /// One random authenticated value whose own consistency opening is not
-    /// recorded (it is the mask of the check itself).
-    fn rand_unchecked(&mut self, ch: &mut Channel) -> Result<Auth<R>, Abort> {
-        let x = R::random(&mut self.rng);
-        let c = self.vole(ch, &[x])?;
-        Ok(Auth { x, m: x.mul(self.key).add(c[0]) })
     }
 }
 
@@ -274,14 +289,14 @@ pub(crate) mod tests {
     use crate::net::run_two_party;
     use rand::Rng;
 
-    fn session<R: MacRing>(c: &mut Channel, seed: u8, xs: Vec<R>, tamper: bool) -> Result<Vec<R>, Abort> {
+    fn session<R: MacRing>(c: &mut Channel, seed: u8, xs: Vec<R>, tamper: Option<R>) -> Result<Vec<R>, Abort> {
         let mut p = ArithMacParty::<R>::setup(c, [seed; 32])?;
         let mut v = p.authenticate(c, &xs)?;
         let r = p.rand(c, 1)?[0];
         v.push(v[0].add(&r).scale(R::from_u128(5)).add_const(R::from_u128(3), p.party, p.key()));
         v.push(v[0].sub(&r));
-        if tamper {
-            v[0].x = v[0].x.add(R::from_u128(1));
+        if let Some(e) = tamper {
+            v[0].x = v[0].x.add(e);
         }
         let out = p.open(c, &v)?;
         p.check(c)?;
@@ -294,17 +309,31 @@ pub(crate) mod tests {
         let x: Vec<R> = (0..4).map(|_| R::opened(R::random(&mut rng))).collect();
         let x0: Vec<R> = (0..4).map(|_| R::random(&mut rng)).collect();
         let x1: Vec<R> = x.iter().zip(&x0).map(|(a, b)| a.sub(*b)).collect();
-        let (a, b) = run_two_party(move |c| session(c, 1, x0, false), move |c| session(c, 2, x1, false));
+        let (a, b) = run_two_party(move |c| session(c, 1, x0, None), move |c| session(c, 2, x1, None));
         let (a, b) = (a.unwrap(), b.unwrap());
         assert_eq!(a, b);
         assert_eq!(&a[..4], &x[..]);
 
         let (a, b) = run_two_party(
-            |c| session(c, 1, vec![R::from_u128(10)], true),
-            |c| session(c, 2, vec![R::from_u128(20)], false),
+            |c| session(c, 1, vec![R::from_u128(10)], Some(R::from_u128(1))),
+            |c| session(c, 2, vec![R::from_u128(20)], None),
         );
         assert_eq!(a, Err(Abort("MAC check failed")));
         assert_eq!(b, Err(Abort("MAC check failed")));
+    }
+
+    /// An additive error `e` on one opened value aborts, for many seeds. For
+    /// SPDZ2k, `e = 2^{k−1}` is the error of the §3.4 attack on the earlier
+    /// check; with Fig. 6 the cheater has no correction left to choose after χ.
+    pub(crate) fn error_is_caught<R: MacRing>(e: R) {
+        for seed in 1..9u8 {
+            let (a, b) = run_two_party(
+                move |c| session(c, seed, vec![R::from_u128(10)], Some(e)),
+                move |c| session(c, seed + 100, vec![R::from_u128(20)], None),
+            );
+            assert_eq!(a, Err(Abort("MAC check failed")), "seed {seed}");
+            assert_eq!(b, Err(Abort("MAC check failed")), "seed {seed}");
+        }
     }
 
     /// Dealer shares open and verify; linear operations keep MACs valid.
