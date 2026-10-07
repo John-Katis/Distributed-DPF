@@ -1,0 +1,10 @@
+[package]
+name = "half-tree"
+description = "Half-Tree distributed DPF (Guo et al., EC'23) and its actively secure variant with one-bit leakage (Zhang et al., S&P'24)."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true

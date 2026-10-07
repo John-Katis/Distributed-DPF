@@ -43,6 +43,24 @@ impl FixedKeyHash {
         self.pi(s ^ Block(tweak as u128)) ^ s
     }
 
+    /// `dst[i] = h(src[i], tweak)`, batched.
+    pub fn h_many(&self, src: &[Block], tweak: u64, dst: &mut [Block]) {
+        assert_eq!(src.len(), dst.len());
+        let mut buf = [GenericArray::default(); BATCH];
+        let mut sig = [Block::ZERO; BATCH];
+        for (s, d) in src.chunks(BATCH).zip(dst.chunks_mut(BATCH)) {
+            let k = s.len();
+            for i in 0..k {
+                sig[i] = sigma(s[i]);
+                buf[i] = GenericArray::from((sig[i] ^ Block(tweak as u128)).to_bytes());
+            }
+            self.aes.encrypt_blocks(&mut buf[..k]);
+            for i in 0..k {
+                d[i] = Block::from_bytes(buf[i].as_slice()) ^ sig[i];
+            }
+        }
+    }
+
     /// Hashes two inputs under consecutive tweaks in one 2-block AES call.
     #[inline]
     pub fn h2(&self, a: Block, ta: u64, b: Block, tb: u64) -> (Block, Block) {
