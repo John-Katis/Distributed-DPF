@@ -9,3 +9,7 @@ dpf-common.workspace = true
 floram-cprg = { path = "../floram-cprg" }
 rand.workspace = true
 rand_chacha.workspace = true
+
+[[example]]
+name = "bench-floram-arith"
+path = "examples/bench.rs"

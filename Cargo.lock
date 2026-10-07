@@ -166,6 +166,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "floram-arith"
+version = "0.1.0"
+dependencies = [
+ "dpf-common",
+ "floram-cprg",
+ "rand",
+ "rand_chacha",
+]
+
+[[package]]
 name = "floram-cprg"
 version = "0.1.0"
 dependencies = [
@@ -205,6 +215,15 @@ dependencies = [
  "ff",
  "rand_core",
  "subtle",
+]
+
+[[package]]
+name = "half-tree"
+version = "0.1.0"
+dependencies = [
+ "dpf-common",
+ "rand",
+ "rand_chacha",
 ]
 
 [[package]]

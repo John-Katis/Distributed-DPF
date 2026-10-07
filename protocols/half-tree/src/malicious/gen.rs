@@ -64,11 +64,7 @@ impl MalSession {
         let before = ch.stats();
         let mut mac = MacParty::setup(ch, seed)?;
         let coins = mac.coins(ch, 2)?;
-        if ch.party() == 1 {
-            ch.send(vec![0]);
-        } else {
-            ch.recv();
-        }
+        ch.sync();
         Ok(MalSession {
             mac,
             hash: CcrHash::new(coins[0]),

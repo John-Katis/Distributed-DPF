@@ -8,3 +8,7 @@ edition.workspace = true
 dpf-common.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
+
+[[example]]
+name = "bench-half-tree"
+path = "examples/bench.rs"

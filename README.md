@@ -8,7 +8,21 @@ crates/
   common/            dpf-common: the shared library
 protocols/
   floram-cprg/       Floram-CPRG distributed DPF (Doerner–shelat, CCS'17)
+  half-tree/         Half-Tree distributed DPF (Guo et al., EC'23), semi-honest,
+                     and its actively secure variant with one-bit leakage
+                     (Zhang et al., S&P'24)
+  floram-arith/      dealer-less DPF with arithmetic input/output
+                     (Xing et al., NDSS'25) on the Floram tree
+scripts/
+  bench_all.sh       runs all four benchmarks into results/*.csv
 ```
+
+| Protocol | Security | α input | Payload | Correction words via |
+|---|---|---|---|---|
+| `floram-cprg` | semi-honest | XOR shares | `F_2^m` | GC MUX per level |
+| `half-tree` (`semi_honest`) | semi-honest | XOR shares | `F_2^m` | COT + global offset Δ (no 2PC per level) |
+| `half-tree` (`malicious`) | malicious, one-bit leakage | BDOZ-authenticated bits | `GF(2^128)^bm` + SPDZ MACs | as above, plus a batch MAC check |
+| `floram-arith` | semi-honest | additive shares mod 2^n (A2B in GC) | `Z_2^ℓ`, ℓ ≤ 64 | GC MUX per level, CCMP + arithmetic MUX for the last word |
 
 ## Shared library: `dpf-common`
 
@@ -16,9 +30,14 @@ protocols/
 |---|---|
 | `block`   | `Block` (128-bit), bit/byte packing, domain-depth and payload-width helpers |
 | `prg`     | two-key Davies–Meyer AES PRG (`left`, `right`, batched `expand_many`) |
-| `hash`    | fixed-key AES tweakable hash (with the σ orthomorphism), AES-CTR stream |
+| `hash`    | fixed-key AES tweakable hash (with the σ orthomorphism), Half-Tree CCR hash `H_S`, AES-CTR stream |
 | `net`     | in-process two-party network (`run_two_party`, `Channel`, `CommStats`) |
-| `ot`      | Naor–Pinkas base OT over secp256r1 and semi-honest IKNP extension |
+| `ot`      | Naor–Pinkas base OT over secp256r1, semi-honest IKNP extension, and 128-bit correlated OT (`CotPair`, sender-chosen Δ, optional KOS15 check) |
+| `gf128`   | GF(2^128) multiplication (`pclmulqdq` with a portable fallback) |
+| `coin`    | SHA-256 commitments, coin tossing, `Abort` |
+| `mac`     | authenticated sharing: `binary` (BDOZ bits + SPDZ over GF(2^128)), `z2k` (SPDZ2k), `fp` (SPDZ over F_p), all with deferred batch MAC checks |
+| `arith`   | Z_2^ℓ helpers and the OT-based arithmetic MUX |
+| `bench`   | shared CLI and CSV schema for every `examples/bench*.rs` |
 | `gc`      | half-gates garbled circuits over XOR-shared inputs (`GcParty`, `Garbler`, `Evaluator`) |
 | `testing` | cleartext point function `point_fn` and `random_beta`, for tests and benchmarks |
 
@@ -44,4 +63,11 @@ protocols/
 cargo test --workspace --release                 # everything
 cargo test -p floram-cprg --release              # one protocol
 cargo run --release -p floram-cprg --example bench -- all --in-bits 16
+cargo run --release -p half-tree --example bench-half-tree -- all --variant ht --in-bits 16
+cargo run --release -p half-tree --example bench-half-tree -- all --variant mal --in-bits 16
+cargo run --release -p floram-arith --example bench-floram-arith -- all --in-bits 16 --out-bits 64
+scripts/bench_all.sh --max-in-bits 20         # all four, CSV into results/
 ```
+
+All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`); the
+first two columns are `mode,variant`.

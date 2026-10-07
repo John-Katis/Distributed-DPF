@@ -174,11 +174,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_sh
     let delta = Block::random(&mut rng);
 
     let setup = |ch: &mut Channel| {
-        if ch.party() == 1 {
-            ch.send(vec![0]);
-        } else {
-            ch.recv();
-        }
+        ch.sync();
         (ch.stats(), t_setup.elapsed(), Instant::now())
     };
     let (key, full, setup_stats, setup_time, t_gen, and_gates, cots) = if party == 0 {

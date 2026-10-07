@@ -82,6 +82,19 @@ impl Channel {
         msg
     }
 
+    /// A round trip (party 1 → party 0 → party 1) after which both parties
+    /// know the other has finished everything before the call. Used to start
+    /// generation timers on a common footing after setup.
+    pub fn sync(&mut self) {
+        if self.party == 1 {
+            self.send(vec![0]);
+            self.recv();
+        } else {
+            self.recv();
+            self.send(vec![0]);
+        }
+    }
+
     pub fn send_blocks(&mut self, v: &[Block]) {
         self.send(blocks_to_bytes(v));
     }

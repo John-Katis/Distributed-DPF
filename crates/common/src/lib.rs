@@ -12,8 +12,10 @@
 //! * [`mac`]: authenticated secret sharing (BDOZ/SPDZ) with batch MAC checks.
 //! * [`gc`]: semi-honest half-gates garbled circuits over shared inputs.
 //! * [`testing`]: cleartext oracles for protocol tests and benchmarks.
+//! * [`bench`]: shared CLI and CSV rows for the protocols' benchmarks.
 
 pub mod arith;
+pub mod bench;
 pub mod block;
 pub mod coin;
 pub mod gc;

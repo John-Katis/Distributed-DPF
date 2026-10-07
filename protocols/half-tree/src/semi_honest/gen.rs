@@ -56,11 +56,7 @@ impl Session {
         let cot = CotPair::setup(ch, &mut rng, delta, false);
         let coins = coin_blocks(ch, 2, &mut rng).expect("semi-honest coin toss");
         // Synchronise so neither party's gen time includes the other's setup.
-        if party == 1 {
-            ch.send(vec![0]);
-        } else {
-            ch.recv();
-        }
+        ch.sync();
         Session {
             party,
             cot,
