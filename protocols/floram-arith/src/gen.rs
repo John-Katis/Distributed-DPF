@@ -11,7 +11,8 @@
 //!    or right (p = 1) children. `σ_b = F_MUX^{B,λ}(S^{i,0}_b, S^{i,1}_b, α_b ⊕ b)`
 //!    selects the off-path side, `τ^{i,0}_b = lsb(S^{i,0}_b) ⊕ α_b ⊕ b` and
 //!    `τ^{i,1}_b = lsb(S^{i,1}_b) ⊕ α_b` are local, and `(σ, τ_0, τ_1)` is
-//!    revealed in one flight.
+//!    revealed in one flight. The lsb of a block is its control bit `t`, so
+//!    σ is the `s` part only (lsb 0), as Alg. 2's `s ∥ t` split prescribes.
 //! 3. **Final CW** (lines 16–22): `w_b = Σ Convert(s_b)` over the leaves (line
 //!    16 says level `ℓ_in − 1`, but line 17, Alg. 3 and the reference use the
 //!    leaves) and the integer `T_b = Σ t_b`, which differ by exactly one between
@@ -113,7 +114,8 @@ fn gen_with(
     let mut cws = Vec::with_capacity(n);
     for &a in &alpha {
         let (sl, sr) = tree.expand_level();
-        let sigma = mux_block(ch, cot, a ^ (b == 1), &[sl], &[sr], rng).expect("semi-honest MUX")[0];
+        // σ without its lsb, which would equal τ of the off-path side.
+        let sigma = mux_block(ch, cot, a ^ (b == 1), &[sl.with_lsb(false)], &[sr.with_lsb(false)], rng).expect("semi-honest MUX")[0];
         let tau = [sl.lsb() ^ a ^ (b == 1), sr.lsb() ^ a];
         let mut msg = sigma.to_bytes().to_vec();
         msg.push(tau[0] as u8 | (tau[1] as u8) << 1);
@@ -186,7 +188,7 @@ pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64) 
         let (l0, r0) = tr[0].expand_level();
         let (l1, r1) = tr[1].expand_level();
         let (dl, dr) = (l0 ^ l1, r0 ^ r1);
-        let cw = CorrectionWord { sigma: if a { dl } else { dr }, tau: [dl.lsb() ^ a ^ true, dr.lsb() ^ a] };
+        let cw = CorrectionWord { sigma: if a { dl } else { dr }.with_lsb(false), tau: [dl.lsb() ^ a ^ true, dr.lsb() ^ a] };
         tr[0].correct(cw);
         tr[1].correct(cw);
         cws.push(cw);

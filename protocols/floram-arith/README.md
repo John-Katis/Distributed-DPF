@@ -45,8 +45,14 @@ Differences from the reference code:
   single-AND calls of the DPF path are unaffected.
 - **COTs:** the reference builds each block COT from two 64-bit chosen OTs. Here
   it is one derandomised IKNP COT (λ + λ bits). The functionality is the same.
+- **σ without the control bit:** a node's lsb is its control bit `t`, so σ is
+  selected and revealed with lsb 0, and a corrected node's lsb is set to `t`
+  (Alg. 2's `s ∥ t` split). Revealing the full block, as a block-level port of
+  the reference does, gives `lsb(σ) = τ` of the off-path side, which makes α_i
+  public whenever `τ_0 ≠ τ_1`.
 - **Domain:** N need not be a power of two. Nodes with no leaf below N are
-  skipped. They are off-path, so the keys on `[0, N)` are unchanged.
+  not kept, but the level sums include every child of a kept parent.
+  Otherwise σ is publicly 0 when α's off-path sibling has no leaf below N.
 - **Not ported:** the reference's optional random input mask (`masked = true`).
   It belongs to the equality-test gate (Alg. 5), not to the DPF.
 

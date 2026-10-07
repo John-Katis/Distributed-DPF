@@ -5,11 +5,15 @@
 //!   right children are the two output blocks, and a child's control bit is
 //!   its lsb (the `s∥t` of Alg. 2 line 4 read as one 128-bit block).
 //! * Correction (lines 10–13): if the parent's control bit is 1, both children
-//!   are XORed with σ and each child's control bit with `τ_side`.
+//!   are XORed with σ and each child's control bit with `τ_side`. σ has lsb 0
+//!   and a corrected node's lsb is set to its control bit, which keeps the
+//!   paper's `s ∥ t` split: with a full-block σ, `lsb(σ) = τ_{ᾱ_i}` would make
+//!   α_i public whenever `τ_0 ≠ τ_1`.
 //!
-//! Only nodes with a leaf below `N` are expanded (as in Floram). The skipped
-//! nodes are off-path, so both parties' copies of them are equal and would
-//! cancel in every sum the protocol uses.
+//! Only nodes with a leaf below `N` are kept (as in Floram). The skipped
+//! nodes are off-path, so both parties' copies of them are equal. The level
+//! sums still include every child of a kept parent: otherwise σ is publicly 0
+//! when α's off-path sibling is a skipped node.
 
 // `aes` 0.8 re-exports generic-array 0.14, whose newest patch release marks it deprecated.
 #![allow(deprecated)]
@@ -37,6 +41,7 @@ pub fn expand(s: Block) -> [Block; 2] {
 /// One level's correction word `CW_i = σ ∥ τ_0 ∥ τ_1`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CorrectionWord {
+    /// Seed correction, lsb 0.
     pub sigma: Block,
     pub tau: [bool; 2],
 }
@@ -64,7 +69,8 @@ impl Tree {
     }
 
     /// Lines 4–5: expands every node and returns `(S^{i,0}, S^{i,1})`, the XOR
-    /// of all left and of all right children.
+    /// of all left and of all right children (including right children with
+    /// no leaf below N, which are then dropped).
     pub fn expand_level(&mut self) -> (Block, Block) {
         assert!(self.level < self.depth);
         let next = level_count(self.n_size, self.depth, self.level + 1);
@@ -74,9 +80,9 @@ impl Tree {
             let kids = expand(*s);
             self.raw.push(kids[0]);
             l ^= kids[0];
+            r ^= kids[1];
             if 2 * j + 1 < next {
                 self.raw.push(kids[1]);
-                r ^= kids[1];
             }
         }
         (l, r)
@@ -87,8 +93,9 @@ impl Tree {
         let mut t = Vec::with_capacity(self.raw.len());
         for (c, x) in self.raw.iter_mut().enumerate() {
             let tp = self.t[c / 2];
-            t.push(x.lsb() ^ (tp & cw.tau[c & 1]));
-            *x ^= cw.sigma.and_bit(tp);
+            let tc = x.lsb() ^ (tp & cw.tau[c & 1]);
+            t.push(tc);
+            *x = (*x ^ cw.sigma.and_bit(tp)).with_lsb(tc);
         }
         std::mem::swap(&mut self.nodes, &mut self.raw);
         self.t = t;

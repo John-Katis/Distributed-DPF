@@ -73,3 +73,21 @@ fn dealer_matches_cleartext_function() {
         }
     }
 }
+
+#[test]
+fn correction_words_do_not_leak_alpha() {
+    let mut rng = ChaCha20Rng::seed_from_u64(23);
+    for _ in 0..32 {
+        // σ has lsb 0, so it no longer equals the off-path τ.
+        let n = 1 << 8;
+        let keys = gen_reference(n, 64, rng.gen_range(0..n), rng.gen(), rng.gen());
+        assert!(keys[0].cws.iter().all(|cw| !cw.sigma.lsb()), "σ has a nonzero lsb");
+        // N = 5, α = 4: the off-path siblings at levels 2 and 3 have no leaf
+        // below N, but σ_2 and σ_3 must still be pseudorandom.
+        let beta = rng.gen::<u64>();
+        let keys = gen_reference(5, 64, 4, beta, rng.gen());
+        assert_ne!(keys[0].cws[1].sigma.0, 0, "σ_2 is publicly zero");
+        assert_ne!(keys[0].cws[2].sigma.0, 0, "σ_3 is publicly zero");
+        check(&keys, None, 5, 4, beta);
+    }
+}

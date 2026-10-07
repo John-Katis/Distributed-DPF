@@ -50,8 +50,9 @@ impl ArithKey {
         for (j, cw) in self.cws.iter().enumerate() {
             let side = ((x >> (depth - 1 - j)) & 1) as usize;
             let raw = expand(s)[side];
-            s = raw ^ cw.sigma.and_bit(t);
-            t = raw.lsb() ^ (t & cw.tau[side]);
+            let tc = raw.lsb() ^ (t & cw.tau[side]);
+            s = (raw ^ cw.sigma.and_bit(t)).with_lsb(tc);
+            t = tc;
         }
         self.output(s, t)
     }
