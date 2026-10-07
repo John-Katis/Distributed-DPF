@@ -2,24 +2,27 @@
 //! coRRElated OT with small communicaTion", CCS'20), the F_COT instantiation of
 //! the malicious DPF paper (ZGY+24 §7.1).
 //!
-//! One iteration turns `consumed(p)` reserved COTs into `n` fresh COTs under the
-//! same Δ (Ferret Fig. 7):
+//! One iteration of ΠCOT (Fig. 9) turns `consumed(p)` reserved COTs into `n`
+//! fresh COTs under the same Δ:
 //!
-//! 1. **Regular-noise MPCOT** (Fig. 4/5): `t` single-point COTs over bins of
-//!    `2^h` leaves. The sender expands a GGM tree per bin and sends, for every
-//!    level, both sibling sums masked with `H(K)` / `H(K ⊕ Δ)` of one reserved
-//!    COT. The receiver's random choice bit selects the sum of the off-path
-//!    side, so its punctured point `α_i` is the complement of those bits, and
-//!    it rebuilds every leaf except `α_i`. A final word `ψ = Δ ⊕ ⊕_j v_j` fixes
-//!    `w[α] = v[α] ⊕ Δ`. The result is `w = v ⊕ e·Δ` with `e` regular of weight t.
-//! 2. **Consistency check** (malicious; Ferret Fig. 6): for public χ,
-//!    the parties compare `Σ χ_j w_j ⊕ Z` and `Σ χ_j v_j ⊕ Y`, where
-//!    `Z ⊕ Y = χ_α·Δ` comes from 128 reserved COTs derandomised to the bits of
-//!    `χ_α = Σ_i χ_{α_i}`. The sender sends a hash of its side and the receiver
-//!    aborts on mismatch. A cheating sender learns at most whether its guess
-//!    about α held (the selective-failure leakage F_COT of Ferret allows).
-//! 3. **LPN** with a local linear code (d = 10 random rows per column):
-//!    `K'_j = v_j ⊕ Σ_r K[A_{j,r}]`, `(r'_j, M'_j) = (e_j ⊕ Σ u[A_{j,r}], w_j ⊕ Σ M[A_{j,r}])`.
+//! 1. The receiver samples a seed for the LPN matrix A and a regular noise
+//!    vector, i.e. one point `α_i` per bin of `2^h` leaves (Fig. 9 step 3, with
+//!    the regular-index MPCOT of §5).
+//! 2. **SPCOT per bin** (Fig. 6). For every tree level the receiver sends
+//!    `b = r ⊕ α_l ⊕ 1` for its reserved COT `(r, t = q ⊕ r·Δ)`. The sender
+//!    expands a GGM tree, sends the level sums masked as
+//!    `M_0 = K_0 ⊕ H(q ⊕ b·Δ, j)` and `M_1 = K_1 ⊕ H(q ⊕ b̄·Δ, j)` with the
+//!    tweakable CR hash TMMO, and sends `c = Δ ⊕ Σ v`. The receiver recovers
+//!    `K_{ᾱ_l} = M_{ᾱ_l} ⊕ H(t, j)`, rebuilds every leaf except `α_i`, and sets
+//!    `w[α] = c ⊕ Σ_{j≠α} w_j`, so `w = v ⊕ e·Δ`.
+//! 3. **Consistency check** (malicious; Fig. 6 steps 6–9, once for all bins as
+//!    in the regular-index MPCOT). The receiver samples the χ-seed (§4.2,
+//!    "Optimization for generating random coefficients") and sends it with
+//!    `x' = χ_α ⊕ x*`. The sender sends `H'(Σ χ_j v_j ⊕ Y)` and the receiver
+//!    compares with `H'(Σ χ_j w_j ⊕ Z)`. It aborts on mismatch and tells the
+//!    sender with one byte, so the in-process peer does not wait forever.
+//! 4. **LPN** with a local linear code (d = 10 random rows per column):
+//!    `y = v·A + s` and `(x, z) = (u·A + e, w·A + r)` (Fig. 9 step 5).
 //!
 //! The first `consumed(main)` outputs are reserved for the next iteration and
 //! the rest are handed out. The very first iteration uses the smaller `pre`
@@ -29,9 +32,9 @@
 //! of the peer's). Chosen-choice COTs are derandomised with one bit each.
 
 use crate::block::Block;
-use crate::coin::{coin_block, Abort};
+use crate::coin::Abort;
 use crate::gf128;
-use crate::hash::{cot_hash, CtrPrg};
+use crate::hash::{tccr_hash, CtrPrg};
 use crate::net::Channel;
 use crate::prg::Prg;
 use rand::{CryptoRng, Rng, RngCore};
@@ -40,8 +43,7 @@ use sha2::{Digest, Sha256};
 /// Nonzero entries per column of the LPN code.
 pub const LPN_D: usize = 10;
 
-/// Public seed of the LPN matrix and of the GGM PRG keys.
-const LPN_SEED: Block = Block(0x6665_7272_6574_2d6c_706e_2d6d_6174_7269);
+/// Public keys of the GGM PRG.
 const GGM_KEYS: (Block, Block) = (Block(0x6665_7272_6574_2d67_676d_2d6c_6566_7400), Block(0x6665_7272_6574_2d67_676d_2d72_6967_6874));
 
 /// One parameter set: `n = t·2^h` outputs from `k` LPN-secret COTs.
@@ -111,16 +113,17 @@ fn ggm_prg() -> Prg {
     Prg::new(GGM_KEYS.0, GGM_KEYS.1)
 }
 
-/// `H(x)` for derandomising COT number `j` of iteration `iter`.
+/// `H(x, i∥l)` (TMMO) for derandomising COT number `j` of iteration `iter`.
 #[inline]
 fn pad(x: Block, iter: u64, j: usize) -> Block {
-    cot_hash().h(x, (iter << 40) | j as u64)
+    tccr_hash().h(x, ((iter as u128) << 64) | j as u128)
 }
 
-/// Applies the local linear code: for every output `j`, calls `f(j, rows)`.
-fn for_each_lpn_row(n: usize, k: usize, mut f: impl FnMut(usize, &[usize; LPN_D])) {
+/// Applies the local linear code `A = C(k, n)` given by `seed`: for every
+/// output `j`, calls `f(j, rows)`.
+fn for_each_lpn_row(seed: Block, n: usize, k: usize, mut f: impl FnMut(usize, &[usize; LPN_D])) {
     const CHUNK: usize = 4096;
-    let mut prg = CtrPrg::new(LPN_SEED ^ Block(k as u128));
+    let mut prg = CtrPrg::new(seed);
     let mut rows = [0usize; LPN_D];
     let mut j = 0;
     while j < n {
@@ -189,12 +192,9 @@ fn ggm_puncture(prg: &Prg, alpha: &[bool], sib: &[Block], leaves: &mut [Block], 
     leaves.copy_from_slice(scratch);
 }
 
-fn alpha_bits(choice: &[bool]) -> Vec<bool> {
-    choice.iter().map(|c| !c).collect()
-}
-
-fn index_of(bits: &[bool]) -> usize {
-    bits.iter().fold(0, |a, &b| (a << 1) | b as usize)
+/// The `h` bits of `a`, MSB first (the GGM path from the root).
+fn bits_of(a: usize, h: usize) -> Vec<bool> {
+    (0..h).map(|l| (a >> (h - 1 - l)) & 1 == 1).collect()
 }
 
 /// χ_j for every position of an iteration.
@@ -203,6 +203,7 @@ fn chis(seed: Block, n: usize) -> Vec<Block> {
 }
 
 /// Sender side of one iteration on reserved keys `base` (`consumed` of them).
+#[allow(clippy::too_many_arguments)]
 fn sender_iteration<R: RngCore + CryptoRng>(
     ch: &mut Channel,
     p: &LpnParams,
@@ -219,7 +220,11 @@ fn sender_iteration<R: RngCore + CryptoRng>(
     let (tree_ots, check) = rest.split_at(p.t * h);
     let prg = ggm_prg();
 
-    // 1. GGM trees and the masked sibling sums.
+    // The receiver's matrix seed and its masked path bits b.
+    let lpn_seed = ch.recv_blocks(1)[0];
+    let b = ch.recv_bits(p.t * h);
+
+    // 1. GGM trees and the masked level sums.
     let mut v = vec![Block::ZERO; p.n];
     let mut msg = Vec::with_capacity(p.t * (2 * h + 1));
     let (mut scratch, mut sums) = (Vec::with_capacity(bin), Vec::with_capacity(h));
@@ -228,14 +233,14 @@ fn sender_iteration<R: RngCore + CryptoRng>(
         ggm_expand(&prg, Block::random(rng), h, leaves, &mut scratch, &mut sums);
         for (l, (s0, s1)) in sums.iter().enumerate() {
             let j = i * h + l;
-            let kj = tree_ots[j];
-            msg.push(*s0 ^ pad(kj, iter, j));
-            msg.push(*s1 ^ pad(kj ^ delta, iter, j));
+            let q = tree_ots[j];
+            msg.push(*s0 ^ pad(q ^ delta.and_bit(b[j]), iter, j));
+            msg.push(*s1 ^ pad(q ^ delta.and_bit(!b[j]), iter, j));
         }
         msg.push(leaves.iter().fold(delta, |a, b| a ^ *b));
     }
     if fault {
-        // Corrupt both level-1 sums of tree 0, so whichever the receiver picks is wrong.
+        // Corrupt both level-1 sums of tree 0, so whichever the receiver uses is wrong.
         msg[0].0 ^= 1;
         msg[1].0 ^= 1;
     }
@@ -243,10 +248,10 @@ fn sender_iteration<R: RngCore + CryptoRng>(
 
     // 2. Consistency check.
     if malicious {
-        let seed = coin_block(ch, rng)?;
-        let x = ch.recv_blocks(1)[0];
+        let m = ch.recv_blocks(2);
+        let (chi_seed, x) = (m[0], m[1]);
         let y = (0..128).fold(Block::ZERO, |a, b| a ^ gf128::mul(gf128::x_pow(b), check[b] ^ delta.and_bit(x.bit(b))));
-        let vsum = gf128::inner(&chis(seed, p.n), &v) ^ y;
+        let vsum = gf128::inner(&chis(chi_seed, p.n), &v) ^ y;
         ch.send(Sha256::digest(vsum.to_bytes()).to_vec());
         if ch.recv() != [1] {
             return Err(Abort("Ferret consistency check failed"));
@@ -254,7 +259,7 @@ fn sender_iteration<R: RngCore + CryptoRng>(
     }
 
     // 3. LPN.
-    for_each_lpn_row(p.n, p.k, |j, rows| {
+    for_each_lpn_row(lpn_seed, p.n, p.k, |j, rows| {
         for &r in rows {
             v[j] ^= lpn[r];
         }
@@ -281,6 +286,14 @@ fn receiver_iteration<R: RngCore + CryptoRng>(
     let (tree_m, check_m) = rest_m.split_at(p.t * h);
     let prg = ggm_prg();
 
+    // A ← C(k, n) and regular noise: one uniform point per bin.
+    let lpn_seed = Block::random(rng);
+    let alphas_local: Vec<usize> = (0..p.t).map(|_| rng.gen_range(0..bin)).collect();
+    let alpha_bits: Vec<Vec<bool>> = alphas_local.iter().map(|&a| bits_of(a, h)).collect();
+    let b: Vec<bool> = (0..p.t * h).map(|j| tree_r[j] ^ alpha_bits[j / h][j % h] ^ true).collect();
+    ch.send_blocks(&[lpn_seed]);
+    ch.send_bits(&b);
+
     // 1. Rebuild every leaf except α_i in each bin.
     let msg = ch.recv_blocks(p.t * (2 * h + 1));
     let mut w = vec![Block::ZERO; p.n];
@@ -288,16 +301,16 @@ fn receiver_iteration<R: RngCore + CryptoRng>(
     let mut scratch = Vec::with_capacity(bin);
     let mut sib = vec![Block::ZERO; h];
     for i in 0..p.t {
-        let r = &tree_r[i * h..(i + 1) * h];
+        let a = &alpha_bits[i];
         for l in 0..h {
             let j = i * h + l;
-            let c = msg[i * (2 * h + 1) + 2 * l + r[l] as usize];
+            // K_{ᾱ_l} = M_{ᾱ_l} ⊕ H(t, j).
+            let c = msg[i * (2 * h + 1) + 2 * l + !a[l] as usize];
             sib[l] = c ^ pad(tree_m[j], iter, j);
         }
-        let a = alpha_bits(r);
         let leaves = &mut w[i * bin..(i + 1) * bin];
-        ggm_puncture(&prg, &a, &sib, leaves, &mut scratch);
-        let ai = index_of(&a);
+        ggm_puncture(&prg, a, &sib, leaves, &mut scratch);
+        let ai = alphas_local[i];
         let psi = msg[i * (2 * h + 1) + 2 * h];
         leaves[ai] = leaves.iter().fold(psi, |acc, x| acc ^ *x);
         alphas.push(i * bin + ai);
@@ -305,11 +318,11 @@ fn receiver_iteration<R: RngCore + CryptoRng>(
 
     // 2. Consistency check.
     if malicious {
-        let seed = coin_block(ch, rng)?;
-        let chi = chis(seed, p.n);
+        let chi_seed = Block::random(rng);
+        let chi = chis(chi_seed, p.n);
         let chi_a = alphas.iter().fold(Block::ZERO, |a, &j| a ^ chi[j]);
         let x = Block(chi_a.0 ^ Block::from_bits(check_r).0);
-        ch.send_blocks(&[x]);
+        ch.send_blocks(&[chi_seed, x]);
         let z = (0..128).fold(Block::ZERO, |a, b| a ^ gf128::mul(gf128::x_pow(b), check_m[b]));
         let wsum = gf128::inner(&chi, &w) ^ z;
         let ok = ch.recv() == Sha256::digest(wsum.to_bytes()).to_vec();
@@ -324,7 +337,7 @@ fn receiver_iteration<R: RngCore + CryptoRng>(
     for &j in &alphas {
         e[j] = true;
     }
-    for_each_lpn_row(p.n, p.k, |j, rows| {
+    for_each_lpn_row(lpn_seed, p.n, p.k, |j, rows| {
         for &r in rows {
             e[j] ^= u[r];
             w[j] ^= m_lpn[r];
