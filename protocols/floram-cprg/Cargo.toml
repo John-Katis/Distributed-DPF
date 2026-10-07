@@ -1,0 +1,10 @@
+[package]
+name = "floram-cprg"
+description = "Floram-CPRG distributed DPF (Doerner-shelat, CCS'17, Section 5)."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
