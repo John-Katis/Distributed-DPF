@@ -1,4 +1,4 @@
-//! In-process two-party network with byte and round counting.
+//! In-process two- and three-party networks with byte and round counting.
 //!
 //! Each party runs on its own thread and talks over a pair of `mpsc` channels.
 //! Nothing touches a socket. `CommStats` has the shape of the one in the
@@ -143,9 +143,100 @@ where
     })
 }
 
+/// One party's links to the other two in a three-party protocol. Each link is
+/// an ordinary [`Channel`] pair, so every link keeps its own [`CommStats`];
+/// on the link between parties `i < j`, `i` is the channel's party 0.
+pub struct Peers {
+    party: usize,
+    links: [Option<Channel>; 3],
+}
+
+impl Peers {
+    /// Party index in 0..3.
+    pub fn party(&self) -> usize {
+        self.party
+    }
+
+    /// The link to party `j`.
+    pub fn to(&mut self, j: usize) -> &mut Channel {
+        self.links[j].as_mut().expect("no link to self")
+    }
+
+    /// Counters of the link to party `j`.
+    pub fn stats_with(&self, j: usize) -> CommStats {
+        self.links[j].as_ref().expect("no link to self").stats()
+    }
+
+    /// Counters summed over both links.
+    pub fn stats(&self) -> CommStats {
+        let mut s = CommStats::default();
+        for l in self.links.iter().flatten() {
+            let t = l.stats();
+            s.bytes_sent += t.bytes_sent;
+            s.bytes_recv += t.bytes_recv;
+            s.messages_sent += t.messages_sent;
+            s.flights += t.flights;
+        }
+        s
+    }
+}
+
+/// Runs `f0`, `f1`, `f2` as parties 0, 1 and 2 on three scoped threads, fully
+/// connected, and returns their results.
+pub fn run_three_party<R0, R1, R2, F0, F1, F2>(f0: F0, f1: F1, f2: F2) -> (R0, R1, R2)
+where
+    R0: Send,
+    R1: Send,
+    R2: Send,
+    F0: FnOnce(&mut Peers) -> R0 + Send,
+    F1: FnOnce(&mut Peers) -> R1 + Send,
+    F2: FnOnce(&mut Peers) -> R2 + Send,
+{
+    let (c01, c10) = channel_pair();
+    let (c02, c20) = channel_pair();
+    let (c12, c21) = channel_pair();
+    let mut p0 = Peers { party: 0, links: [None, Some(c01), Some(c02)] };
+    let mut p1 = Peers { party: 1, links: [Some(c10), None, Some(c12)] };
+    let mut p2 = Peers { party: 2, links: [Some(c20), Some(c21), None] };
+    std::thread::scope(|s| {
+        let h0 = s.spawn(move || f0(&mut p0));
+        let h1 = s.spawn(move || f1(&mut p1));
+        let h2 = s.spawn(move || f2(&mut p2));
+        let r0 = h0.join().expect("party 0 panicked");
+        let r1 = h1.join().expect("party 1 panicked");
+        let r2 = h2.join().expect("party 2 panicked");
+        (r0, r1, r2)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn three_party_links() {
+        let (a, b, c) = run_three_party(
+            |p| {
+                p.to(1).send(vec![1]);
+                p.to(2).send(vec![2, 2]);
+                p.to(2).recv()
+            },
+            |p| {
+                let m = p.to(0).recv();
+                p.to(2).send(m);
+                p.stats()
+            },
+            |p| {
+                assert_eq!(p.to(0).recv(), vec![2, 2]);
+                assert_eq!(p.to(1).recv(), vec![1]);
+                p.to(0).send(vec![7]);
+                p.stats_with(0)
+            },
+        );
+        assert_eq!(a, vec![7]);
+        assert_eq!(b, CommStats { bytes_sent: 1, bytes_recv: 1, messages_sent: 1, flights: 1 });
+        assert_eq!(c, CommStats { bytes_sent: 1, bytes_recv: 2, messages_sent: 1, flights: 1 });
+    }
 
     #[test]
     fn ping_pong_counts() {
