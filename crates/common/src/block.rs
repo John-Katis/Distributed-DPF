@@ -25,6 +25,12 @@ impl Block {
         self.0 & 1 == 1
     }
 
+    /// `self` with its lsb replaced by `b` (a GGM node whose lsb is its t-bit).
+    #[inline]
+    pub fn with_lsb(self, b: bool) -> Block {
+        Block((self.0 & !1) | b as u128)
+    }
+
     #[inline]
     pub fn bit(self, i: usize) -> bool {
         (self.0 >> i) & 1 == 1
