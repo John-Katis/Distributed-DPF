@@ -6,7 +6,7 @@
 //! `⟨β_k⟩ ∈ GF(2^128)`. With `Δ = Δ_0 ⊕ Δ_1` (lsb 1) the shared tree keeps the
 //! invariant that on-path nodes differ by Δ and off-path nodes are equal:
 //!
-//! 1. Root share `Δ_b ⊕ W` (W from the session's coin stream).
+//! 1. Root share `Δ_b ⊕ W`, with W from one F_coin call per run (Fig. 5 step 1).
 //! 2. For every level (one flight each):
 //!    `CW_b = ⊕_j H(X^j_b) ⊕ Δ_b ⊕ α_{i,b}·Δ_b ⊕ K_b[α_{i,1−b}] ⊕ M_b[α_{i,b}]`,
 //!    which reconstructs to `H-difference ⊕ ᾱ_i·Δ` and needs no 2PC.
@@ -25,9 +25,9 @@
 use super::key::{leaf_outputs, leaf_sums, MalFull, MalKey};
 use crate::tree::HtLocal;
 use dpf_common::block::{bits_msb_first, blocks_from_bytes, blocks_to_bytes, depth_for, Block};
-use dpf_common::coin::Abort;
+use dpf_common::coin::{coin_block, Abort};
 use dpf_common::gf128;
-use dpf_common::hash::{CcrHash, CtrPrg};
+use dpf_common::hash::CcrHash;
 use dpf_common::mac::binary::{AuthBit, AuthGf, MacParty};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::ot::FerretConfig;
@@ -46,7 +46,6 @@ pub struct Fault {
 pub struct MalSession {
     pub mac: MacParty,
     pub hash: CcrHash,
-    w_stream: CtrPrg,
     pub setup_stats: CommStats,
     pub setup_time: Duration,
 }
@@ -59,7 +58,7 @@ pub struct MalGenOutput {
 
 impl MalSession {
     /// MAC keys with `lsb(Δ_b) = b`, KOS-checked COTs, the lsb proof, and one
-    /// coin toss for the hash key and the W-stream.
+    /// coin toss for the hash key.
     pub fn setup(ch: &mut Channel, seed: [u8; 32]) -> Result<Self, Abort> {
         Self::setup_with(ch, seed, None)
     }
@@ -76,12 +75,11 @@ impl MalSession {
             mac.cot.enable_ferret(ch, cfg, &mut rng)?;
             *mac.rng() = rng;
         }
-        let coins = mac.coins(ch, 2)?;
+        let coins = mac.coins(ch, 1)?;
         ch.sync();
         Ok(MalSession {
             mac,
             hash: CcrHash::new(coins[0]),
-            w_stream: CtrPrg::new(coins[1]),
             setup_stats: ch.stats().since(&before),
             setup_time: t.elapsed(),
         })
@@ -123,7 +121,8 @@ impl MalSession {
         };
 
         // 1–2. Root and correlated levels.
-        let root = delta ^ Block(self.w_stream.next_words(1)[0]);
+        let w = coin_block(ch, self.mac.rng())?;
+        let root = delta ^ w;
         let mut local = HtLocal::start_all_correlated(self.hash.clone(), n_size, root);
         let mut cws = Vec::with_capacity(n);
         for (i, a) in alpha.iter().enumerate() {

@@ -5,7 +5,9 @@
 //! offset with `lsb(Δ_b) = b`, so `lsb(Δ_0 ⊕ Δ_1) = 1` without the lsb exchange of
 //! Fig. 11, and runs the base OTs of a COT instance keyed by `Δ_b` in each
 //! direction. One coin toss fixes the hash key `S` and the seed from which the
-//! per-run root re-randomiser `W` is derived (the F_Rand compression of §5.2).
+//! per-run root re-randomiser `W` is derived. GYW+23 §5.2 allows exactly this:
+//! "all invocations of F_Rand can be compressed via another independent PRF
+//! key sampled after the one-time initialization of F_COT".
 //!
 //! Per run, with `α` XOR-shared MSB-first and `β` XOR-shared:
 //!
