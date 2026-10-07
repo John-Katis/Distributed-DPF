@@ -49,7 +49,8 @@ pub struct IknpSender {
 impl IknpSender {
     pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
         let s_bits: Vec<bool> = (0..OT_KEY_BITS).map(|_| rng.gen()).collect();
-        let seeds = np::recv_random(ch, &s_bits, rng);
+        // Semi-honest IKNP: a malformed base-OT message is a protocol violation.
+        let seeds = np::recv_random(ch, &s_bits, rng).expect("base OT");
         IknpSender {
             s: Block::from_bits(&s_bits).0,
             prgs: seeds.into_iter().map(CtrPrg::new).collect(),
@@ -101,7 +102,7 @@ pub struct IknpReceiver {
 
 impl IknpReceiver {
     pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
-        let pairs = np::send_random(ch, OT_KEY_BITS, rng);
+        let pairs = np::send_random(ch, OT_KEY_BITS, rng).expect("base OT");
         IknpReceiver {
             prgs: pairs.into_iter().map(|(a, b)| (CtrPrg::new(a), CtrPrg::new(b))).collect(),
             nonce: 0,

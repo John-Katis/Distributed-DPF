@@ -32,7 +32,7 @@ scripts/
 | `prg`     | two-key Davies–Meyer AES PRG (`left`, `right`, batched `expand_many`) |
 | `hash`    | fixed-key AES tweakable hash (with the σ orthomorphism), Half-Tree CCR hash `H_S`, AES-CTR stream |
 | `net`     | in-process two-party network (`run_two_party`, `Channel`, `CommStats`) |
-| `ot`      | Naor–Pinkas base OT over secp256r1, semi-honest IKNP extension, and 128-bit correlated OT (`CotPair`, sender-chosen Δ, optional KOS15 check) |
+| `ot`      | base OTs over secp256r1 (Naor–Pinkas, semi-honest; Masny–Rindal endemic OT, malicious), semi-honest IKNP extension, and 128-bit correlated OT (`CotPair`, sender-chosen Δ; in malicious mode endemic base OTs + KOS15 check) |
 | `gf128`   | GF(2^128) multiplication (`pclmulqdq` with a portable fallback) |
 | `coin`    | SHA-256 commitments, coin tossing, `Abort` |
 | `mac`     | authenticated sharing: `binary` (BDOZ bits + SPDZ over GF(2^128)), `z2k` (SPDZ2k), `fp` (SPDZ over F_p), all with deferred batch MAC checks |

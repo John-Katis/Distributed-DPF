@@ -103,13 +103,14 @@ pub struct ArithMacParty<R: MacRing> {
 }
 
 impl<R: MacRing> ArithMacParty<R> {
-    /// Samples `α_b` and sets up KOS-checked COT in both directions.
-    pub fn setup(ch: &mut Channel, seed: [u8; 32]) -> Self {
+    /// Samples `α_b` and sets up KOS-checked COT (endemic base OTs) in both
+    /// directions.
+    pub fn setup(ch: &mut Channel, seed: [u8; 32]) -> Result<Self, Abort> {
         let mut rng = ChaCha20Rng::from_seed(seed);
         let key = R::random_key(&mut rng);
         let cot_delta = Block::random(&mut rng);
-        let cot = CotPair::setup(ch, &mut rng, cot_delta, true);
-        ArithMacParty { party: ch.party(), key, cot, opened: Vec::new(), tweak: 0, rng }
+        let cot = CotPair::setup(ch, &mut rng, cot_delta, true)?;
+        Ok(ArithMacParty { party: ch.party(), key, cot, opened: Vec::new(), tweak: 0, rng })
     }
 
     /// `α_b`, this party's MAC-key share.
@@ -274,7 +275,7 @@ pub(crate) mod tests {
     use rand::Rng;
 
     fn session<R: MacRing>(c: &mut Channel, seed: u8, xs: Vec<R>, tamper: bool) -> Result<Vec<R>, Abort> {
-        let mut p = ArithMacParty::<R>::setup(c, [seed; 32]);
+        let mut p = ArithMacParty::<R>::setup(c, [seed; 32])?;
         let mut v = p.authenticate(c, &xs)?;
         let r = p.rand(c, 1)?[0];
         v.push(v[0].add(&r).scale(R::from_u128(5)).add_const(R::from_u128(3), p.party, p.key()));

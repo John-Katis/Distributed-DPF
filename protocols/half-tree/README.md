@@ -39,8 +39,9 @@ Two choices differ from the paper's presentation:
   the check abort. The adversary learns at most whether it aborted, which is
   one bit.
 * `lsb(Δ_b) = b` is enforced by revealing `lsb(K_j)` for 64 sacrificed COTs.
-* Limitation: the base OTs are Naor–Pinkas (semi-honest). Swap in a malicious
-  base OT for full active security.
+* F_aBit / F_COT: the paper uses Ferret in EMP. Here it is IKNP-style COT with
+  the KOS15 consistency check, bootstrapped from the maliciously secure
+  Masny–Rindal endemic base OT (`dpf_common::ot::endemic`).
 
 `run_mal` / `run_mal_gen` run setup, input authentication, generation and the
 MAC check. `Fault` injects a deviation for tests.

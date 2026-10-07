@@ -143,7 +143,7 @@ impl MacParty {
         let mut rng = ChaCha20Rng::from_seed(seed);
         let mut delta = Block::random(&mut rng);
         delta.0 = (delta.0 & !1) | party as u128;
-        let mut cot = CotPair::setup(ch, &mut rng, delta, true);
+        let mut cot = CotPair::setup(ch, &mut rng, delta, true)?;
         let r: Vec<bool> = (0..LSB_CHECK_COTS).map(|_| rng.gen()).collect();
         let (k, m) = cot.extend(ch, &r, LSB_CHECK_COTS, &mut rng)?;
         let lsbs: Vec<bool> = k.iter().map(|x| x.lsb()).collect();

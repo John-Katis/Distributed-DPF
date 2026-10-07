@@ -16,15 +16,16 @@
 //! coin for χ, the receiver sends `x = Σ χ_j r_j` and `t = Σ χ_j M_j`, and the
 //! sender checks `t = Σ χ_j K_j ⊕ x·Δ`. A cheating receiver that sent
 //! inconsistent columns is caught except with probability 2^-40, at the cost of
-//! a few bits of Δ leaking, as in KOS15. The base OTs are Naor–Pinkas, which is
-//! only semi-honest; swap in a malicious base OT for full active security.
+//! a few bits of Δ leaking, as in KOS15. Malicious mode also bootstraps from
+//! the maliciously secure endemic base OT ([`super::endemic`], Masny–Rindal);
+//! semi-honest mode keeps the cheaper Naor–Pinkas base OT.
 //!
 //! [`CotPair`] holds both directions for one party: it is the sender (with its
 //! own Δ) in one instance and the receiver in the other, and `extend` runs both
 //! directions with shared flights.
 
 use super::iknp::{pack_words, transpose, words_to_bytes};
-use super::np;
+use super::{endemic, np};
 use crate::block::Block;
 use crate::coin::{coin_block, Abort};
 use crate::gf128;
@@ -45,6 +46,31 @@ fn bytes_to_cols(u: &[u8], words: usize) -> Vec<Vec<u128>> {
         .collect()
 }
 
+/// Which base OT bootstraps the extension.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BaseOt {
+    /// Naor–Pinkas, semi-honest.
+    NaorPinkas,
+    /// Masny–Rindal endemic OT, malicious (ROM).
+    Endemic,
+}
+
+impl BaseOt {
+    fn recv<R: RngCore + CryptoRng>(self, ch: &mut Channel, choices: &[bool], rng: &mut R) -> Result<Vec<Block>, Abort> {
+        match self {
+            BaseOt::NaorPinkas => np::recv_random(ch, choices, rng),
+            BaseOt::Endemic => endemic::recv_random(ch, choices, rng),
+        }
+    }
+
+    fn send<R: RngCore + CryptoRng>(self, ch: &mut Channel, k: usize, rng: &mut R) -> Result<Vec<(Block, Block)>, Abort> {
+        match self {
+            BaseOt::NaorPinkas => np::send_random(ch, k, rng),
+            BaseOt::Endemic => endemic::send_random(ch, k, rng),
+        }
+    }
+}
+
 pub struct CotSender {
     delta: Block,
     prgs: Vec<CtrPrg>,
@@ -52,9 +78,9 @@ pub struct CotSender {
 
 impl CotSender {
     /// Runs the base OTs as base-OT receiver with choice bits `delta`.
-    pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R, delta: Block) -> Self {
-        let seeds = np::recv_random(ch, &delta.to_bits(), rng);
-        CotSender { delta, prgs: seeds.into_iter().map(CtrPrg::new).collect() }
+    pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R, delta: Block, base: BaseOt) -> Result<Self, Abort> {
+        let seeds = base.recv(ch, &delta.to_bits(), rng)?;
+        Ok(CotSender { delta, prgs: seeds.into_iter().map(CtrPrg::new).collect() })
     }
 
     pub fn delta(&self) -> Block {
@@ -90,9 +116,9 @@ pub struct CotReceiver {
 
 impl CotReceiver {
     /// Runs the base OTs as base-OT sender.
-    pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
-        let pairs = np::send_random(ch, COT_KEY_BITS, rng);
-        CotReceiver { prgs: pairs.into_iter().map(|(a, b)| (CtrPrg::new(a), CtrPrg::new(b))).collect() }
+    pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R, base: BaseOt) -> Result<Self, Abort> {
+        let pairs = base.send(ch, COT_KEY_BITS, rng)?;
+        Ok(CotReceiver { prgs: pairs.into_iter().map(|(a, b)| (CtrPrg::new(a), CtrPrg::new(b))).collect() })
     }
 
     /// Sends the correction columns for the given choice bits and returns `M`.
@@ -130,16 +156,19 @@ pub struct CotPair {
 
 impl CotPair {
     /// Base OTs for both directions. `delta` is this party's global key.
-    pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R, delta: Block, malicious: bool) -> Self {
+    /// Malicious mode uses the endemic base OT and KOS-checks every extension;
+    /// semi-honest mode uses Naor–Pinkas.
+    pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R, delta: Block, malicious: bool) -> Result<Self, Abort> {
         let party = ch.party();
+        let base = if malicious { BaseOt::Endemic } else { BaseOt::NaorPinkas };
         let (sender, receiver) = if party == 0 {
-            let s = CotSender::setup(ch, rng, delta);
-            (s, CotReceiver::setup(ch, rng))
+            let s = CotSender::setup(ch, rng, delta, base)?;
+            (s, CotReceiver::setup(ch, rng, base)?)
         } else {
-            let r = CotReceiver::setup(ch, rng);
-            (CotSender::setup(ch, rng, delta), r)
+            let r = CotReceiver::setup(ch, rng, base)?;
+            (CotSender::setup(ch, rng, delta, base)?, r)
         };
-        CotPair { party, malicious, sender, receiver, produced: 0 }
+        Ok(CotPair { party, malicious, sender, receiver, produced: 0 })
     }
 
     pub fn delta(&self) -> Block {
@@ -210,12 +239,12 @@ mod tests {
         let ((k0, m0), (k1, m1)) = run_two_party(
             move |c| {
                 let mut r = ChaCha20Rng::seed_from_u64(1);
-                let mut p = CotPair::setup(c, &mut r, d0, malicious);
+                let mut p = CotPair::setup(c, &mut r, d0, malicious).unwrap();
                 p.extend(c, &a, 77, &mut r).unwrap()
             },
             move |c| {
                 let mut r = ChaCha20Rng::seed_from_u64(2);
-                let mut p = CotPair::setup(c, &mut r, d1, malicious);
+                let mut p = CotPair::setup(c, &mut r, d1, malicious).unwrap();
                 p.extend(c, &b, 300, &mut r).unwrap()
             },
         );
@@ -239,12 +268,12 @@ mod tests {
         let (r0, _) = run_two_party(
             |c| {
                 let mut r = ChaCha20Rng::seed_from_u64(1);
-                let mut p = CotPair::setup(c, &mut r, Block(5), true);
+                let mut p = CotPair::setup(c, &mut r, Block(5), true).unwrap();
                 p.extend(c, &[true; 10], 10, &mut r).map(|_| ())
             },
             |c| {
                 let mut r = ChaCha20Rng::seed_from_u64(2);
-                let mut p = CotPair::setup(c, &mut r, Block(6), true);
+                let mut p = CotPair::setup(c, &mut r, Block(6), true).unwrap();
                 // Cheating receiver: column 2 uses the flipped choice vector, the
                 // proof is computed honestly from its own rows.
                 let padded: Vec<bool> = (0..10 + KOS_EXTRA).map(|_| r.gen()).collect();

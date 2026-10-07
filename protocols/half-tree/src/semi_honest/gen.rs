@@ -53,7 +53,7 @@ impl Session {
         let mut rng = ChaCha20Rng::from_seed(seed);
         let mut delta = Block::random(&mut rng);
         delta.0 = (delta.0 & !1) | party as u128;
-        let cot = CotPair::setup(ch, &mut rng, delta, false);
+        let cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
         let coins = coin_blocks(ch, 2, &mut rng).expect("semi-honest coin toss");
         // Synchronise so neither party's gen time includes the other's setup.
         ch.sync();

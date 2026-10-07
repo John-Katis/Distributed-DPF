@@ -9,7 +9,7 @@ edition = "2021"
 [workspace.dependencies]
 dpf-common = { path = "crates/common" }
 aes = "0.8"
-p256 = { version = "0.13", features = ["arithmetic"] }
+p256 = { version = "0.13", features = ["arithmetic", "hash2curve"] }
 rand = "0.8"
 rand_chacha = "0.3"
 sha2 = "0.10"

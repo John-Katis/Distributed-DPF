@@ -1,12 +1,14 @@
-//! Oblivious transfer: Naor–Pinkas base OTs, semi-honest IKNP as in Obliv-C,
-//! and 128-bit correlated OT (optionally KOS-checked) for the Half-Tree
-//! protocols and the MAC library.
+//! Oblivious transfer: Naor–Pinkas base OTs (semi-honest), Masny–Rindal
+//! endemic base OTs (malicious, ROM), semi-honest IKNP as in Obliv-C, and
+//! 128-bit correlated OT (optionally KOS-checked) for the Half-Tree protocols
+//! and the MAC library.
 
 pub mod cot;
+pub mod endemic;
 pub mod iknp;
 pub mod np;
 
-pub use cot::{CotPair, CotReceiver, CotSender, COT_KEY_BITS, KOS_EXTRA};
+pub use cot::{BaseOt, CotPair, CotReceiver, CotSender, COT_KEY_BITS, KOS_EXTRA};
 pub use iknp::{IknpReceiver, IknpSender, OT_KEY_BITS};
 
 #[cfg(test)]
@@ -22,8 +24,8 @@ mod tests {
         let choices: Vec<bool> = (0..37).map(|i| i % 3 == 0).collect();
         let ch2 = choices.clone();
         let (pairs, got) = run_two_party(
-            |c| np::send_random(c, 37, &mut ChaCha20Rng::seed_from_u64(1)),
-            move |c| np::recv_random(c, &ch2, &mut ChaCha20Rng::seed_from_u64(2)),
+            |c| np::send_random(c, 37, &mut ChaCha20Rng::seed_from_u64(1)).unwrap(),
+            move |c| np::recv_random(c, &ch2, &mut ChaCha20Rng::seed_from_u64(2)).unwrap(),
         );
         for i in 0..37 {
             let (k0, k1) = pairs[i];

@@ -179,13 +179,13 @@ pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_sh
     };
     let (key, full, setup_stats, setup_time, t_gen, and_gates, cots) = if party == 0 {
         let mut g = Garbler::setup(ch, &mut rng);
-        let mut cot = CotPair::setup(ch, &mut rng, delta, false);
+        let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
         let (s, st, tg) = setup(ch);
         let (k, f) = gen_with(&mut g, &mut cot, &mut rng, ch, prg, root, n_size, bits, alpha_share, beta_share);
         (k, f, s, st, tg, g.and_count(), cot.produced)
     } else {
         let mut e = Evaluator::setup(ch, &mut rng);
-        let mut cot = CotPair::setup(ch, &mut rng, delta, false);
+        let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
         let (s, st, tg) = setup(ch);
         let (k, f) = gen_with(&mut e, &mut cot, &mut rng, ch, prg, root, n_size, bits, alpha_share, beta_share);
         (k, f, s, st, tg, e.and_count(), cot.produced)

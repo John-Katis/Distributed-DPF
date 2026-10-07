@@ -113,13 +113,13 @@ mod tests {
                 move |c| {
                     let mut r = ChaCha20Rng::seed_from_u64(1);
                     let d = Block::random(&mut r);
-                    let mut cot = CotPair::setup(c, &mut r, d, false);
+                    let mut cot = CotPair::setup(c, &mut r, d, false).unwrap();
                     mux(c, &mut cot, &g0, &a0, &b0, bits, &mut r).unwrap()
                 },
                 move |c| {
                     let mut r = ChaCha20Rng::seed_from_u64(2);
                     let d = Block::random(&mut r);
-                    let mut cot = CotPair::setup(c, &mut r, d, false);
+                    let mut cot = CotPair::setup(c, &mut r, d, false).unwrap();
                     mux(c, &mut cot, &g1, &a1, &b1, bits, &mut r).unwrap()
                 },
             );
