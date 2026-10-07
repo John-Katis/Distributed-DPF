@@ -185,6 +185,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fssnn"
+version = "0.1.0"
+dependencies = [
+ "dpf-common",
+ "rand",
+ "rand_chacha",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

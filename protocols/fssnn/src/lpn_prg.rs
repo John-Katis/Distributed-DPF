@@ -409,7 +409,10 @@ mod tests {
         }
     }
 
-    fn run_pair(calls: usize, seed: u64) -> (Vec<PrgCorr>, Vec<PrgCorr>, Vec<[u128; 2]>, Vec<[u128; 2]>, Vec<u128>) {
+    /// Both parties' correlations and output shares, and the inputs.
+    type PairRun = ([Vec<PrgCorr>; 2], [Vec<[u128; 2]>; 2], Vec<u128>);
+
+    fn run_pair(calls: usize, seed: u64) -> PairRun {
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let x: Vec<u128> = (0..calls).map(|_| rng.gen()).collect();
         let x0: Vec<u128> = (0..calls).map(|_| rng.gen()).collect();
@@ -427,12 +430,12 @@ mod tests {
             }
         };
         let ((c0, y0), (c1, y1)) = run_two_party(party(0, x0), party(1, x1));
-        (c0, c1, y0, y1, x)
+        ([c0, c1], [y0, y1], x)
     }
 
     #[test]
     fn correlations_hold() {
-        let (c0, c1, ..) = run_pair(3, 2);
+        let ([c0, c1], ..) = run_pair(3, 2);
         for (a, b) in c0.iter().zip(&c1) {
             for j in 0..N_IN {
                 let w = ((a.w ^ b.w) >> j) & 1;
@@ -450,7 +453,7 @@ mod tests {
 
     #[test]
     fn shared_eval_matches_clear() {
-        let (_, _, y0, y1, x) = run_pair(5, 3);
+        let (_, [y0, y1], x) = run_pair(5, 3);
         for k in 0..x.len() {
             let want = lpn_prg().eval(x[k]);
             assert_eq!([y0[k][0] ^ y1[k][0], y0[k][1] ^ y1[k][1]], want, "call {k}");
