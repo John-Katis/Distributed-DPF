@@ -9,6 +9,7 @@
 //! * [`gf128`]: GF(2^128) multiplication.
 //! * [`arith`]: Z_2^ℓ helpers and the OT-based arithmetic MUX.
 //! * [`coin`]: commitments and coin tossing.
+//! * [`mac`]: authenticated secret sharing (BDOZ/SPDZ) with batch MAC checks.
 //! * [`gc`]: semi-honest half-gates garbled circuits over shared inputs.
 //! * [`testing`]: cleartext oracles for protocol tests and benchmarks.
 
@@ -18,6 +19,7 @@ pub mod coin;
 pub mod gc;
 pub mod gf128;
 pub mod hash;
+pub mod mac;
 pub mod net;
 pub mod ot;
 pub mod prg;

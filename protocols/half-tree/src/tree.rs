@@ -96,6 +96,9 @@ pub struct HtLocal {
     n_size: u64,
     depth: usize,
     conv: Convert,
+    /// Levels expanded with the correlated rule: `depth − 1` for the
+    /// semi-honest tree, `depth` for the malicious one.
+    corr_levels: usize,
     /// Level of `nodes` (0 = root).
     level: usize,
     nodes: Vec<Block>,
@@ -117,7 +120,20 @@ fn sum_interleaved(v: &[Block]) -> (Block, Block) {
 }
 
 impl HtLocal {
+    /// The semi-honest tree: correlated levels `1..n−1`, then the last level.
     pub fn start(h: CcrHash, n_size: u64, conv: Convert, root: Block) -> Self {
+        let depth = depth_for(n_size);
+        Self::with_corr_levels(h, n_size, conv, root, depth - 1)
+    }
+
+    /// The malicious tree of ZGY+24 Fig. 5: every level is correlated, and the
+    /// caller hashes the leaves itself.
+    pub fn start_all_correlated(h: CcrHash, n_size: u64, root: Block) -> Self {
+        let depth = depth_for(n_size);
+        Self::with_corr_levels(h, n_size, Convert::new(128), root, depth)
+    }
+
+    fn with_corr_levels(h: CcrHash, n_size: u64, conv: Convert, root: Block, corr_levels: usize) -> Self {
         let depth = depth_for(n_size);
         let mut nodes = Vec::with_capacity(n_size as usize);
         nodes.push(root);
@@ -126,6 +142,7 @@ impl HtLocal {
             n_size,
             depth,
             conv,
+            corr_levels,
             level: 0,
             nodes,
             scratch: Vec::with_capacity(n_size as usize),
@@ -137,10 +154,9 @@ impl HtLocal {
         self.depth
     }
 
-    /// Before a correlated level (`level + 1 < depth`): hashes every node and
-    /// returns `⊕_j H(X^j)`.
+    /// Before a correlated level: hashes every node and returns `⊕_j H(X^j)`.
     pub fn correlated_sum(&mut self) -> Block {
-        assert!(self.level + 1 < self.depth, "next level is the last level");
+        assert!(self.level < self.corr_levels, "next level is not correlated");
         self.scratch.clear();
         self.scratch.resize(self.nodes.len(), Block::ZERO);
         self.h.h_many(&self.nodes, &mut self.scratch);
@@ -164,10 +180,16 @@ impl HtLocal {
         self.level += 1;
     }
 
+    /// The current level's nodes (the leaves once every level is expanded).
+    pub fn nodes(&self) -> &[Block] {
+        &self.nodes
+    }
+
     /// Before the last level: computes the raw children `H(X ⊕ σ)` and returns
     /// `(⊕_j H(X^j), ⊕_j H(X^j ⊕ 1))` over the children that exist.
     pub fn last_sums(&mut self) -> (Block, Block) {
         assert_eq!(self.level + 1, self.depth);
+        assert_eq!(self.corr_levels + 1, self.depth);
         let next = level_count(self.n_size, self.depth, self.depth);
         let p = self.nodes.len();
         let mut q0 = vec![Block::ZERO; p];
