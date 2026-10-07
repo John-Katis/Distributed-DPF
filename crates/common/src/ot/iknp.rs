@@ -17,7 +17,7 @@ use rand::{CryptoRng, Rng, RngCore};
 /// computational security level. Must be at most 128.
 pub const OT_KEY_BITS: usize = 80;
 
-fn pack_words(bits: &[bool]) -> Vec<u128> {
+pub(crate) fn pack_words(bits: &[bool]) -> Vec<u128> {
     let mut w = vec![0u128; bits.len().div_ceil(128)];
     for (j, &b) in bits.iter().enumerate() {
         w[j / 128] |= (b as u128) << (j % 128);
@@ -26,7 +26,7 @@ fn pack_words(bits: &[bool]) -> Vec<u128> {
 }
 
 /// Turns `k` columns of `m` bits into `m` rows of `k` bits each.
-fn transpose(cols: &[Vec<u128>], m: usize) -> Vec<u128> {
+pub(crate) fn transpose(cols: &[Vec<u128>], m: usize) -> Vec<u128> {
     let mut rows = vec![0u128; m];
     for (i, col) in cols.iter().enumerate() {
         for (j, row) in rows.iter_mut().enumerate() {
@@ -36,7 +36,7 @@ fn transpose(cols: &[Vec<u128>], m: usize) -> Vec<u128> {
     rows
 }
 
-fn words_to_bytes(cols: &[Vec<u128>]) -> Vec<u8> {
+pub(crate) fn words_to_bytes(cols: &[Vec<u128>]) -> Vec<u8> {
     cols.iter().flat_map(|c| c.iter().flat_map(|w| w.to_le_bytes())).collect()
 }
 

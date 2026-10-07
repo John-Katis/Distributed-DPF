@@ -1,9 +1,12 @@
-//! Oblivious transfer as in Obliv-C: Naor–Pinkas base OTs extended with
-//! semi-honest IKNP.
+//! Oblivious transfer: Naor–Pinkas base OTs, semi-honest IKNP as in Obliv-C,
+//! and 128-bit correlated OT (optionally KOS-checked) for the Half-Tree
+//! protocols and the MAC library.
 
+pub mod cot;
 pub mod iknp;
 pub mod np;
 
+pub use cot::{CotPair, CotReceiver, CotSender, COT_KEY_BITS, KOS_EXTRA};
 pub use iknp::{IknpReceiver, IknpSender, OT_KEY_BITS};
 
 #[cfg(test)]

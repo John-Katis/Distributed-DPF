@@ -91,3 +91,80 @@ impl CtrPrg {
         buf.iter().map(|g| u128::from_le_bytes(g.as_slice().try_into().unwrap())).collect()
     }
 }
+
+/// Blocks per batched AES call, as in `prg.rs`.
+const BATCH: usize = 64;
+
+/// Fixed AES key of the Half-Tree CCR hash. It equals `HT_EXPAND_AES_KEY` of the
+/// Verifiable-Half-Tree-IDPF code, so both implementations compute the same `H`.
+pub const CCR_AES_KEY: [u8; 16] = *b"HT-IDPF-HALFTREE";
+
+/// The circular-correlation-robust hash of Half-Tree (GKWY20 / GYW+23 Thm. 2),
+/// keyed by a public `S`:
+///
+/// ```text
+/// H_S(x) = π(σ(x ⊕ S)) ⊕ σ(x ⊕ S)
+/// ```
+///
+/// with π fixed-key AES and σ the orthomorphism [`sigma`]. One AES call per hash.
+#[derive(Clone)]
+pub struct CcrHash {
+    aes: Aes128,
+    s: Block,
+}
+
+impl CcrHash {
+    pub fn new(s: Block) -> Self {
+        CcrHash { aes: Aes128::new(GenericArray::from_slice(&CCR_AES_KEY)), s }
+    }
+
+    /// The public hash key `S`.
+    pub fn key(&self) -> Block {
+        self.s
+    }
+
+    #[inline]
+    pub fn h(&self, x: Block) -> Block {
+        let s = sigma(x ^ self.s);
+        let mut g = GenericArray::from(s.to_bytes());
+        self.aes.encrypt_block(&mut g);
+        Block::from_bytes(g.as_slice()) ^ s
+    }
+
+    /// `dst[i] = H_S(src[i] ⊕ tweak)`, batched.
+    pub fn h_many_tweak(&self, src: &[Block], tweak: Block, dst: &mut [Block]) {
+        assert_eq!(src.len(), dst.len());
+        let mut buf = [GenericArray::default(); BATCH];
+        let mut sig = [Block::ZERO; BATCH];
+        for (s, d) in src.chunks(BATCH).zip(dst.chunks_mut(BATCH)) {
+            let k = s.len();
+            for i in 0..k {
+                sig[i] = sigma(s[i] ^ tweak ^ self.s);
+                buf[i] = GenericArray::from(sig[i].to_bytes());
+            }
+            self.aes.encrypt_blocks(&mut buf[..k]);
+            for i in 0..k {
+                d[i] = Block::from_bytes(buf[i].as_slice()) ^ sig[i];
+            }
+        }
+    }
+
+    /// `dst[i] = H_S(src[i])`, batched.
+    pub fn h_many(&self, src: &[Block], dst: &mut [Block]) {
+        self.h_many_tweak(src, Block::ZERO, dst);
+    }
+}
+
+/// Hash that turns a (pseudo)random leaf seed into payload words (the
+/// `Convert` of Half-Tree and BCG+21). Domain-separated from every other hash by
+/// its key. Word `k` of the expansion of `s` is `h(s, k)`.
+pub fn convert_hash() -> &'static FixedKeyHash {
+    static H: OnceLock<FixedKeyHash> = OnceLock::new();
+    H.get_or_init(|| FixedKeyHash::new(b"dpf-common/conv!"))
+}
+
+/// Hash used to derive random OTs from correlated OTs (`H(K)`, `H(K ⊕ Δ)`).
+pub fn cot_hash() -> &'static FixedKeyHash {
+    static H: OnceLock<FixedKeyHash> = OnceLock::new();
+    H.get_or_init(|| FixedKeyHash::new(b"dpf-common/cot-h"))
+}

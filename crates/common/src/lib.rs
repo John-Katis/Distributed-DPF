@@ -4,12 +4,19 @@
 //! * [`prg`]: two-key Davies–Meyer AES PRG (left/right child).
 //! * [`hash`]: fixed-key AES hashes and an AES-CTR stream.
 //! * [`net`]: in-process two-party network with byte and flight counting.
-//! * [`ot`]: Naor–Pinkas base OT + semi-honest IKNP extension.
+//! * [`ot`]: Naor–Pinkas base OT, semi-honest IKNP, and correlated OT with an
+//!   optional KOS check.
+//! * [`gf128`]: GF(2^128) multiplication.
+//! * [`arith`]: Z_2^ℓ helpers and the OT-based arithmetic MUX.
+//! * [`coin`]: commitments and coin tossing.
 //! * [`gc`]: semi-honest half-gates garbled circuits over shared inputs.
 //! * [`testing`]: cleartext oracles for protocol tests and benchmarks.
 
+pub mod arith;
 pub mod block;
+pub mod coin;
 pub mod gc;
+pub mod gf128;
 pub mod hash;
 pub mod net;
 pub mod ot;
