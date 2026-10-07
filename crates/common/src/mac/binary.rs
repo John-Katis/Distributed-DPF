@@ -22,8 +22,10 @@ use crate::ot::CotPair;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
-/// COTs sacrificed per direction by the `lsb(Δ_b) = b` check.
-pub const LSB_CHECK_COTS: usize = 64;
+/// COTs sacrificed per direction by the `lsb(Δ_b) = b` check: λ = 128, as
+/// ZGY+24 §3.3 prescribes ("λ random authenticated sharings need to be
+/// sacrificed").
+pub const LSB_CHECK_COTS: usize = 128;
 
 /// A BDOZ-authenticated bit, this party's view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

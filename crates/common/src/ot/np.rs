@@ -36,9 +36,13 @@ pub(crate) fn decode(b: &[u8]) -> Result<ProjectivePoint, Abort> {
     Ok(p)
 }
 
-fn kdf(p: &ProjectivePoint, i: usize) -> Block {
+/// `H(PK_σ^r, σ, i)`. NP01 §3 appends σ so that the two keys stay independent
+/// even when a receiver picks `PK_0 = PK_1`. The OT index `i` plays the role of
+/// NP01's per-transfer value R, since `C` and `r` serve the whole batch.
+fn kdf(p: &ProjectivePoint, sigma: bool, i: usize) -> Block {
     let mut h = Sha256::new();
     h.update(encode(p));
+    h.update([sigma as u8]);
     h.update((i as u64).to_le_bytes());
     Block::from_bytes(&h.finalize()[..16])
 }
@@ -62,7 +66,7 @@ pub fn send_random<R: RngCore + CryptoRng>(ch: &mut Channel, k: usize, rng: &mut
         .map(|(i, b)| {
             let pk0 = decode(b)?;
             let pk1 = c - pk0;
-            Ok((kdf(&(pk0 * r), i), kdf(&(pk1 * r), i)))
+            Ok((kdf(&(pk0 * r), false, i), kdf(&(pk1 * r), true, i)))
         })
         .collect()
 }
@@ -87,5 +91,29 @@ pub fn recv_random<R: RngCore + CryptoRng>(ch: &mut Channel, choices: &[bool], r
         ks.push(k);
     }
     ch.send(msg);
-    Ok(ks.iter().enumerate().map(|(i, k)| kdf(&(gr * k), i)).collect())
+    Ok(ks.iter().zip(choices).enumerate().map(|(i, (k, &sel))| kdf(&(gr * k), sel, i)).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::run_two_party;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
+
+    /// A receiver that sends `PK_0 = C/2`, so `PK_0 = PK_1`, still leaves the
+    /// sender with two different keys.
+    #[test]
+    fn equal_public_keys_give_distinct_keys() {
+        let (pairs, _) = run_two_party(
+            |c| send_random(c, 1, &mut ChaCha20Rng::seed_from_u64(1)).unwrap(),
+            |c| {
+                let first = c.recv();
+                let big_c = decode(&first[..POINT_BYTES]).unwrap();
+                let half = Scalar::from(2u64).invert().unwrap();
+                c.send(encode(&(big_c * half)).to_vec());
+            },
+        );
+        assert_ne!(pairs[0].0, pairs[0].1);
+    }
 }
