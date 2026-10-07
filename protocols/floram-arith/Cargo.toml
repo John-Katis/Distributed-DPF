@@ -1,0 +1,11 @@
+[package]
+name = "floram-arith"
+description = "Dealer-less DPF with arithmetic input and output shares (Xing et al., NDSS'25): Floram-style GGM tree, A2B, CCMP and arithmetic MUX."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+floram-cprg = { path = "../floram-cprg" }
+rand.workspace = true
+rand_chacha.workspace = true

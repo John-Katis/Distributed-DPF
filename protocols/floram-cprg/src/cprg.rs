@@ -149,6 +149,11 @@ impl CprgLocal {
         acc
     }
 
+    /// After `finalize`: the corrected leaf seeds and their t-bits.
+    pub fn leaves(&self) -> (&[Block], &[bool]) {
+        (&self.leaf_cols[0], &self.leaf_t)
+    }
+
     /// Output shares `y(x) = leaf(x) ⊕ t(x)·γ`, as in Floram's
     /// `scanwrom_write_with_blockvector_offline`.
     pub fn output(self, gamma: &[Block]) -> FullEval {
@@ -204,7 +209,7 @@ pub struct GenOutput {
 
 /// The per-level 2PC (`fss_cprg_traverselevels` + `fss_cprg_getadvice`). Returns
 /// the revealed `(Z, τ_L, τ_R)`.
-fn level_circuit<P: GcParty>(
+pub fn level_circuit<P: GcParty>(
     p: &mut P,
     ch: &mut Channel,
     alpha_j: Wire,
