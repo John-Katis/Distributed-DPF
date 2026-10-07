@@ -1,0 +1,14 @@
+[package]
+name = "fssnn"
+description = "Distributed DPF key generation in the style of FssNN (Yang et al., ProvSec'24, Alg. 5): both trees' seeds secret-shared, the PRG evaluated in 2PC with the DGH+21 LPN-PRG; Z2 output with early termination."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[[example]]
+name = "bench-fssnn"
+path = "examples/bench.rs"
