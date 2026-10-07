@@ -39,7 +39,7 @@ fn two_party_gen_matches_cleartext_function() {
                 let [o0, o1] = run.outs;
                 let keys = [o0.key, o1.key];
                 check(&keys, Some(&[o0.full, o1.full]), n, alpha, beta);
-                let d = deal(&keys[0].prg, [keys[0].root, keys[1].root], n, bits, alpha, beta);
+                let d = deal([keys[0].root, keys[1].root], n, bits, alpha, beta);
                 assert_eq!(d[0].public_part(), keys[0].public_part(), "protocol differs from dealer");
             }
         }

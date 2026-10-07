@@ -1,19 +1,22 @@
 //! Dealer-less DPF with arithmetic-shared input and output (Xing et al.,
-//! "Distributed Function Secret Sharing and Applications", NDSS'25), built on
-//! the Floram-CPRG tree:
+//! "Distributed Function Secret Sharing and Applications", NDSS'25, Alg. 2),
+//! as in the authors' reference implementation:
 //!
-//! * [`gen::gen`]: A2B of the additively shared α in the garbled circuit,
-//!   Floram's GC-selected correction words, and CCMP + arithmetic MUX for the
-//!   final correction word over Z_2^ℓ.
+//! * [`gen::gen`]: BitDec of the additively shared α (Alg. 14), Floram-style
+//!   layer correction words selected with F_MUX^{B,λ}, and CCMP (Alg. 1) plus
+//!   F_MUX^{A,ℓ} for the final correction word over Z_2^ℓ.
 //! * [`key::ArithKey`]: point and full-domain evaluation.
+//! * [`tree`]: the GGM tree with the reference's keyed-AES PRG.
 //!
 //! Semi-honest only, as in the paper.
 
 pub mod gen;
 pub mod key;
+pub mod tree;
 
 pub use gen::{deal, gen, gen_reference, GenOutput};
 pub use key::ArithKey;
+pub use tree::CorrectionWord;
 
 use dpf_common::arith::mask;
 use rand::{Rng, SeedableRng};

@@ -23,7 +23,7 @@ REFERENCES.md        papers and techniques this code implements
 | `floram-cprg` | semi-honest | XOR shares | `F_2^m` | GC MUX per level |
 | `half-tree` (`semi_honest`) | semi-honest | XOR shares | `F_2^m` | COT + global offset Δ (no 2PC per level) |
 | `half-tree` (`malicious`) | malicious, one-bit leakage | BDOZ-authenticated bits | `GF(2^128)^bm` + SPDZ MACs | as above, plus a batch MAC check |
-| `floram-arith` | semi-honest | additive shares mod 2^n (A2B in GC) | `Z_2^ℓ`, ℓ ≤ 64 | GC MUX per level, CCMP + arithmetic MUX for the last word |
+| `floram-arith` | semi-honest | additive shares mod 2^n (BitDec from bit triples) | `Z_2^ℓ`, ℓ ≤ 64 | COT-based block MUX per level, CCMP + arithmetic MUX for the last word |
 
 ## Shared library: `dpf-common`
 
@@ -31,13 +31,14 @@ REFERENCES.md        papers and techniques this code implements
 |---|---|
 | `block`   | `Block` (128-bit), bit/byte packing, domain-depth and payload-width helpers |
 | `prg`     | two-key Davies–Meyer AES PRG (`left`, `right`, batched `expand_many`) |
-| `hash`    | fixed-key AES tweakable hash (with the σ orthomorphism), Half-Tree CCR hash `H_S`, AES-CTR stream |
+| `hash`    | fixed-key AES hashes (with the σ orthomorphism), the keyed CCR hash `H_S` (Half-Tree, half-gates), TMMO tweakable CCR hash, AES-CTR stream |
 | `net`     | in-process two-party network (`run_two_party`, `Channel`, `CommStats`) |
-| `ot`      | base OTs over secp256r1 (Naor–Pinkas, semi-honest; Masny–Rindal endemic OT, malicious), semi-honest IKNP extension, 128-bit correlated OT (`CotPair`, sender-chosen Δ; in malicious mode endemic base OTs + KOS15 check), and Ferret LPN-based COT extension (`CotPair::enable_ferret`) |
+| `ot`      | base OTs over secp256r1 (Naor–Pinkas, semi-honest; Masny–Rindal endemic OT, malicious), semi-honest IKNP extension, 128-bit correlated OT (`CotPair`, sender-chosen Δ; in malicious mode endemic base OTs + KOS15 check), Ferret LPN-based COT extension (`CotPair::enable_ferret`), and KK13 1-of-N OT (`kkot`) |
 | `gf128`   | GF(2^128) multiplication (`pclmulqdq` with a portable fallback) |
 | `coin`    | SHA-256 commitments, coin tossing, `Abort` |
 | `mac`     | authenticated sharing: `binary` (BDOZ bits + SPDZ over GF(2^128)), `z2k` (SPDZ2k), `fp` (SPDZ over F_p), all with deferred batch MAC checks |
-| `arith`   | Z_2^ℓ helpers and the OT-based arithmetic MUX |
+| `arith`   | Z_2^ℓ helpers and SIRNN's COT-based arithmetic MUX |
+| `bool2pc` | F_AND / F_OR on XOR-shared bits from CrypTFlow2 bit triples, COT-based block MUX |
 | `bench`   | shared CLI and CSV schema for every `examples/bench*.rs` |
 | `gc`      | half-gates garbled circuits over XOR-shared inputs (`GcParty`, `Garbler`, `Evaluator`) |
 | `testing` | cleartext point function `point_fn` and `random_beta`, for tests and benchmarks |

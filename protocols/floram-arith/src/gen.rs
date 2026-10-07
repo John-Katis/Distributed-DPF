@@ -1,30 +1,42 @@
-//! Dealer-less DPF key generation with arithmetic inputs and outputs, as in
-//! Xing et al., "Distributed Function Secret Sharing and Applications"
-//! (NDSS'25, §IV-A, Alg. 1 and 2), on top of the Floram-CPRG tree.
+//! Dealer-less DPF key generation with arithmetic input and output (Xing et
+//! al., "Distributed Function Secret Sharing and Applications", NDSS'25,
+//! Alg. 1, 2 and 14), following the authors' reference implementation
+//! (`keyGenDPF` in `src/legacy/dpf.cpp` of xingpz2008/dealerless-FSS_public).
 //!
-//! 1. **A2B.** `α` is additively shared over Z_2^n. Each party feeds its share
-//!    into the garbled circuit, and a ripple-carry adder (n−1 AND gates)
-//!    produces the bits of `α`. They stay as wires and are never revealed (the
-//!    paper's ΠBitDec computes the same carries with AND/OR on Boolean shares).
-//! 2. **Tree.** Floram's per-level circuit selects the correction word
-//!    `(σ_i, τ_{i,0}, τ_{i,1})` with the secret bit `α_i` (Alg. 2 lines 3–15).
-//! 3. **Final correction word** (lines 16–22): `w_b = Σ_j Convert(s^j_b)` and the
-//!    integer `T_b = Σ_j t^j_b`. Off-path leaves cancel, so `|T_0 − T_1| = 1`, and
-//!    CCMP (Alg. 1, one AND gate) yields XOR shares of `g = 1{T_0 < T_1}`, i.e.
-//!    of `t_1` at the α-leaf. With
-//!    `W⁰_b = β_b + (−1)^{1−b} w_b` and `W¹_b = −β_b + (−1)^b w_b`, the arithmetic
-//!    MUX gives shares of `W_CW = W^g = (−1)^{t_1}(β − Convert(s_0) + Convert(s_1))`,
-//!    which are then opened.
+//! 1. **BitDec** (Alg. 14, line 1): from the LSB, `y[i] = x_b[i] ⊕ q` and the
+//!    carry `q := OR(AND(x_0[i], x_1[i]), AND(x[i], q))`, three F_AND calls
+//!    per bit (the reference's `check_bit_overflow`). Alg. 14 line 3 prints
+//!    "∧ q"; the sum bit is "⊕ q", which is what the reference computes.
+//! 2. **Layer CWs** (lines 3–15): `S^{i,p}_b` is the XOR of all left (p = 0)
+//!    or right (p = 1) children. `σ_b = F_MUX^{B,λ}(S^{i,0}_b, S^{i,1}_b, α_b ⊕ b)`
+//!    selects the off-path side, `τ^{i,0}_b = lsb(S^{i,0}_b) ⊕ α_b ⊕ b` and
+//!    `τ^{i,1}_b = lsb(S^{i,1}_b) ⊕ α_b` are local, and `(σ, τ_0, τ_1)` is
+//!    revealed in one flight.
+//! 3. **Final CW** (lines 16–22): `w_b = Σ Convert(s_b)` over the leaves (line
+//!    16 says level `ℓ_in − 1`, but line 17, Alg. 3 and the reference use the
+//!    leaves) and the integer `T_b = Σ t_b`, which differ by exactly one between
+//!    the parties. CCMP (Alg. 1, one F_AND) gives XOR shares of
+//!    `g = 1{T_0 < T_1}`, i.e. of `t_1` at the α-leaf, and
+//!    `W_CW = F_MUX^{A,ℓ}(β_b + (−1)^{1−b}w_b, −β_b + (−1)^b w_b, g)`
+//!    `= (−1)^{t_1}(β − Convert(s_0) + Convert(s_1))` is revealed.
+//!
+//! The 2PC functionalities are those of App. A: F_AND from CrypTFlow2 bit
+//! triples ([`dpf_common::bool2pc`]), F_MUX^{B,λ} from two parallel COTs and
+//! F_MUX^{A,ℓ} as in SIRNN ([`dpf_common::arith::mux`]), all over semi-honest
+//! IKNP / KK13 OT extension.
+//!
+//! `Convert` reads the ℓ bits of the leaf label above its control bit, as the
+//! paper's `s∥t` split implies. The reference converts the low ℓ bits
+//! including the control bit; then `lsb(W_CW) = lsb(β) ⊕ τ^{n−1,0} ⊕ τ^{n−1,1} ⊕ 1`,
+//! which reveals the lsb of β, so we do not copy that.
 
 use crate::key::ArithKey;
+use crate::tree::{CorrectionWord, Tree};
 use dpf_common::arith::{convert, mask, mux, signed};
-use dpf_common::block::{depth_for, Block};
-use dpf_common::gc::{Evaluator, GcParty, Garbler, Wire};
+use dpf_common::block::{bits_msb_first, depth_for, Block};
+use dpf_common::bool2pc::{mux_block, BoolParty};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::ot::CotPair;
-use dpf_common::prg::Prg;
-use floram_cprg::cprg::{level_circuit, CprgLocal};
-use floram_cprg::CorrectionWord;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
@@ -36,62 +48,40 @@ pub struct GenOutput {
     pub full: Vec<u64>,
     pub setup_stats: CommStats,
     pub gen_stats: CommStats,
+    /// F_AND invocations (BitDec and CCMP).
     pub and_gates: usize,
-    /// COTs used by the arithmetic MUX (both directions).
+    /// COTs used by the two MUXes (both directions).
     pub cots: usize,
     pub setup_time: Duration,
     pub gen_time: Duration,
 }
 
-/// Bits `[x_0, …, x_{n−1}]` of `x`, least significant first.
-fn bits_lsb_first(x: u64, n: usize) -> Vec<bool> {
-    (0..n).map(|i| (x >> i) & 1 == 1).collect()
-}
-
-/// A2B: wires for the bits of `a_0 + a_1 mod 2^n`, most significant first.
-fn a2b<P: GcParty>(p: &mut P, ch: &mut Channel, share: u64, n: usize) -> Vec<Wire> {
-    let mine = bits_lsb_first(share, n);
-    let zeros = vec![false; n];
-    let input = if ch.party() == 0 { [mine, zeros].concat() } else { [zeros, mine].concat() };
-    let w = p.input_shared(ch, &input);
-    let (x, y) = w.split_at(n);
-    let mut sum = Vec::with_capacity(n);
-    let mut carry: Option<Wire> = None;
+/// Π_BitDec (Alg. 14): XOR shares of the bits of `x_0 + x_1 mod 2^n`, MSB
+/// first.
+fn bit_dec(bp: &mut BoolParty, ch: &mut Channel, share: u64, n: usize) -> Vec<bool> {
+    let mut y = vec![false; n];
+    let mut q = false;
     for i in 0..n {
-        let xy = p.xor(x[i], y[i]);
-        sum.push(match carry {
-            Some(c) => p.xor(xy, c),
-            None => xy,
-        });
-        if i + 1 < n {
-            // c_{i+1} = maj(x_i, y_i, c_i) = c_i ⊕ (x_i ⊕ c_i)(y_i ⊕ c_i), and x_0·y_0 for i = 0.
-            carry = Some(match carry {
-                Some(c) => {
-                    let a = p.and_many(ch, &[(p.xor(x[i], c), p.xor(y[i], c))])[0];
-                    p.xor(a, c)
-                }
-                None => p.and_many(ch, &[(x[i], y[i])])[0],
-            });
-        }
+        let x = (share >> i) & 1 == 1;
+        y[n - 1 - i] = x ^ q;
+        let t = bp.and_cross(ch, x);
+        let u = bp.and1(ch, x, q);
+        q = bp.or1(ch, t, u);
     }
-    sum.reverse();
-    sum
+    y
 }
 
-/// CCMP (NDSS'25 Alg. 1): XOR shares of `1{T_0 < T_1}` for integers with
-/// `|T_0 − T_1| = 1`, from their last two bits and one AND gate. The gate output
-/// stays shared: with `lsb(R) = 1`, the garbler's 0-label and the evaluator's
-/// active label have lsbs that XOR to the wire's value.
-fn ccmp<P: GcParty>(p: &mut P, ch: &mut Channel, t_count: u64) -> bool {
-    let b = ch.party() == 1;
-    let (h, l) = ((t_count >> 1) & 1 == 1, t_count & 1 == 1);
-    let w = p.input_shared(ch, &[h, h ^ l ^ b]);
-    let t = p.and_many(ch, &[(w[0], w[1])])[0];
-    t.lsb() ^ (l && b)
+/// Π_CCMP (Alg. 1): XOR shares of `1{x_0 < x_1}` for integers with
+/// `|x_0 − x_1| = 1`, with one F_AND.
+fn ccmp(bp: &mut BoolParty, ch: &mut Channel, x: u64) -> bool {
+    let b = bp.party() == 1;
+    let (h, l) = ((x >> 1) & 1 == 1, x & 1 == 1);
+    let t = bp.and1(ch, h, h ^ l ^ b);
+    t ^ (l && b)
 }
 
-/// One party's tree randomness (PRG keys, root) and protocol randomness, split
-/// as in floram-cprg so the dealer can reproduce the tree.
+/// One party's tree randomness (root) and protocol randomness, split so the
+/// dealer can reproduce the tree.
 fn party_rngs(seed: [u8; 32]) -> (ChaCha20Rng, ChaCha20Rng) {
     let tree = ChaCha20Rng::from_seed(seed);
     let mut proto = ChaCha20Rng::from_seed(seed);
@@ -99,18 +89,12 @@ fn party_rngs(seed: [u8; 32]) -> (ChaCha20Rng, ChaCha20Rng) {
     (tree, proto)
 }
 
-fn sample_root(rng: &mut ChaCha20Rng, party: usize) -> Block {
-    let r = Block::random(rng);
-    Block((r.0 & !1) | party as u128)
-}
-
 #[allow(clippy::too_many_arguments)]
-fn gen_with<P: GcParty>(
-    p: &mut P,
+fn gen_with(
+    bp: &mut BoolParty,
     cot: &mut CotPair,
     rng: &mut ChaCha20Rng,
     ch: &mut Channel,
-    prg: Prg,
     root: Block,
     n_size: u64,
     bits: usize,
@@ -121,26 +105,34 @@ fn gen_with<P: GcParty>(
     let n = depth_for(n_size);
     let m = mask(bits);
 
-    // 1. A2B.
-    let alpha = a2b(p, ch, alpha_share, n);
+    // Line 1: BitDec.
+    let alpha = bit_dec(bp, ch, alpha_share, n);
 
-    // 2. Floram tree with GC-selected correction words.
-    let (mut local, mut acc) = CprgLocal::start(prg.clone(), n_size, 1, root);
-    let mut cws: Vec<CorrectionWord> = Vec::with_capacity(n);
-    for &alpha_j in &alpha {
-        let cw = level_circuit(p, ch, alpha_j, acc);
+    // Lines 2–15.
+    let mut tree = Tree::new(n_size, root, b == 1);
+    let mut cws = Vec::with_capacity(n);
+    for &a in &alpha {
+        let (sl, sr) = tree.expand_level();
+        let sigma = mux_block(ch, cot, a ^ (b == 1), &[sl], &[sr], rng).expect("semi-honest MUX")[0];
+        let tau = [sl.lsb() ^ a ^ (b == 1), sr.lsb() ^ a];
+        let mut msg = sigma.to_bytes().to_vec();
+        msg.push(tau[0] as u8 | (tau[1] as u8) << 1);
+        ch.send(msg);
+        let theirs = ch.recv();
+        assert_eq!(theirs.len(), 17, "malformed correction-word share");
+        let cw = CorrectionWord {
+            sigma: sigma ^ Block::from_bytes(&theirs[..16]),
+            tau: [tau[0] ^ (theirs[16] & 1 == 1), tau[1] ^ (theirs[16] & 2 == 2)],
+        };
+        tree.correct(cw);
         cws.push(cw);
-        if let Some(next) = local.step(cw.z, cw.tau_l, cw.tau_r) {
-            acc = next;
-        }
     }
-    local.finalize();
 
-    // 3. Final correction word.
-    let (seeds, ts) = local.leaves();
+    // Lines 16–22.
+    let (seeds, ts) = tree.leaves();
     let w = seeds.iter().fold(0u64, |a, s| a.wrapping_add(convert(*s, bits))) & m;
     let t_count = ts.iter().filter(|t| **t).count() as u64;
-    let g = ccmp(p, ch, t_count);
+    let g = ccmp(bp, ch, t_count);
     let w0 = beta_share.wrapping_add(signed(b == 0, w, bits)) & m;
     let w1 = beta_share.wrapping_neg().wrapping_add(signed(b == 1, w, bits)) & m;
     let wcw_share = mux(ch, cot, &[g], &[w0], &[w1], bits, rng).expect("semi-honest MUX")[0];
@@ -148,8 +140,8 @@ fn gen_with<P: GcParty>(
     let theirs = u64::from_le_bytes(ch.recv().try_into().expect("8-byte share"));
     let w_cw = wcw_share.wrapping_add(theirs) & m;
 
-    let key = ArithKey { party: b, n_size, bits, prg, root, cws, w_cw };
-    let (seeds, ts) = local.leaves();
+    let key = ArithKey { party: b, n_size, bits, root, cws, w_cw };
+    let (seeds, ts) = tree.leaves();
     let full = seeds.iter().zip(ts).map(|(s, t)| key.output(*s, *t)).collect();
     (key, full)
 }
@@ -159,86 +151,58 @@ fn gen_with<P: GcParty>(
 /// * `alpha_share`: additive share of `α < N` modulo `2^n`, `n = ceil(log2 N)`.
 /// * `beta_share`: additive share of `β` modulo `2^bits`, `1 ≤ bits ≤ 64`.
 pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32]) -> GenOutput {
-    let party = ch.party();
     let t_setup = Instant::now();
     let (mut rng_tree, mut rng) = party_rngs(seed);
-    let prg = if party == 0 {
-        let (kl, kr) = (Block::random(&mut rng_tree), Block::random(&mut rng_tree));
-        ch.send_blocks(&[kl, kr]);
-        Prg::new(kl, kr)
-    } else {
-        let k = ch.recv_blocks(2);
-        Prg::new(k[0], k[1])
-    };
-    let root = sample_root(&mut rng_tree, party);
+    let root = Block::random(&mut rng_tree);
     let delta = Block::random(&mut rng);
-
-    let setup = |ch: &mut Channel| {
-        ch.sync();
-        (ch.stats(), t_setup.elapsed(), Instant::now())
-    };
-    let (key, full, setup_stats, setup_time, t_gen, and_gates, cots) = if party == 0 {
-        let mut g = Garbler::setup(ch, &mut rng);
-        let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
-        let (s, st, tg) = setup(ch);
-        let (k, f) = gen_with(&mut g, &mut cot, &mut rng, ch, prg, root, n_size, bits, alpha_share, beta_share);
-        (k, f, s, st, tg, g.and_count(), cot.produced)
-    } else {
-        let mut e = Evaluator::setup(ch, &mut rng);
-        let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
-        let (s, st, tg) = setup(ch);
-        let (k, f) = gen_with(&mut e, &mut cot, &mut rng, ch, prg, root, n_size, bits, alpha_share, beta_share);
-        (k, f, s, st, tg, e.and_count(), cot.produced)
-    };
+    let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
+    let mut bp = BoolParty::setup(ch, &mut rng);
+    ch.sync();
+    let setup_stats = ch.stats();
+    let setup_time = t_setup.elapsed();
+    let t_gen = Instant::now();
+    let (key, full) = gen_with(&mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share);
     GenOutput {
         key,
         full,
         gen_stats: ch.stats().since(&setup_stats),
         setup_stats,
-        and_gates,
-        cots,
+        and_gates: bp.ands,
+        cots: cot.produced,
         setup_time,
         gen_time: t_gen.elapsed(),
     }
 }
 
-/// Trusted-dealer generation for given PRG and root shares (the plaintext
-/// version of [`gen`], used as its bit-exact oracle).
-pub fn deal(prg: &Prg, roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64) -> [ArithKey; 2] {
+/// Trusted-dealer generation for given root shares: the plaintext version of
+/// [`gen`] and its bit-exact oracle.
+pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64) -> [ArithKey; 2] {
     assert!(alpha < n_size);
-    assert_ne!(roots[0].lsb(), roots[1].lsb(), "root t-bits must differ");
     let n = depth_for(n_size);
     let m = mask(bits);
-    let (mut l0, mut a0) = CprgLocal::start(prg.clone(), n_size, 1, roots[0]);
-    let (mut l1, mut a1) = CprgLocal::start(prg.clone(), n_size, 1, roots[1]);
+    let mut tr = [Tree::new(n_size, roots[0], false), Tree::new(n_size, roots[1], true)];
     let mut cws = Vec::with_capacity(n);
-    for (j, aj) in dpf_common::block::bits_msb_first(alpha, n).into_iter().enumerate() {
-        let (dl, dr) = (a0.0 ^ a1.0, a0.1 ^ a1.1);
-        let cw = CorrectionWord { z: if aj { dl } else { dr }, tau_l: dl.lsb() ^ aj ^ true, tau_r: dr.lsb() ^ aj };
+    for a in bits_msb_first(alpha, n) {
+        let (l0, r0) = tr[0].expand_level();
+        let (l1, r1) = tr[1].expand_level();
+        let (dl, dr) = (l0 ^ l1, r0 ^ r1);
+        let cw = CorrectionWord { sigma: if a { dl } else { dr }, tau: [dl.lsb() ^ a ^ true, dr.lsb() ^ a] };
+        tr[0].correct(cw);
+        tr[1].correct(cw);
         cws.push(cw);
-        let n0 = l0.step(cw.z, cw.tau_l, cw.tau_r);
-        let n1 = l1.step(cw.z, cw.tau_l, cw.tau_r);
-        if j + 1 < n {
-            a0 = n0.unwrap();
-            a1 = n1.unwrap();
-        }
     }
-    l0.finalize();
-    l1.finalize();
     let i = alpha as usize;
-    let (s0, t0) = (l0.leaves().0[i], l0.leaves().1[i]);
-    let (s1, t1) = (l1.leaves().0[i], l1.leaves().1[i]);
-    assert!(t0 ^ t1, "α-leaf t-bits must differ");
+    let ((s0, t0), (s1, t1)) = ((tr[0].leaves().0[i], tr[0].leaves().1[i]), (tr[1].leaves().0[i], tr[1].leaves().1[i]));
+    assert!(t0 ^ t1, "α-leaf control bits must differ");
     let base = beta.wrapping_sub(convert(s0, bits)).wrapping_add(convert(s1, bits));
     let w_cw = signed(t1, base, bits) & m;
-    let mk = |party: usize| ArithKey { party, n_size, bits, prg: prg.clone(), root: roots[party], cws: cws.clone(), w_cw };
+    let mk = |party: usize| ArithKey { party, n_size, bits, root: roots[party], cws: cws.clone(), w_cw };
     [mk(0), mk(1)]
 }
 
 /// Trusted-dealer generation from a seed.
 pub fn gen_reference(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: [u8; 32]) -> [ArithKey; 2] {
     let mut rng = ChaCha20Rng::from_seed(seed);
-    let prg = Prg::new(Block::random(&mut rng), Block::random(&mut rng));
-    let roots = [sample_root(&mut rng, 0), sample_root(&mut rng, 1)];
-    deal(&prg, roots, n_size, bits, alpha, beta)
+    let roots = [Block::random(&mut rng), Block::random(&mut rng)];
+    deal(roots, n_size, bits, alpha, beta)
 }

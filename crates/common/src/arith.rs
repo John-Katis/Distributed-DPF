@@ -10,7 +10,7 @@ use crate::coin::Abort;
 use crate::hash::cot_hash;
 use crate::net::Channel;
 use crate::ot::CotPair;
-use rand::{CryptoRng, Rng, RngCore};
+use rand::{CryptoRng, RngCore};
 
 /// `2^bits − 1`, the reduction mask of Z_2^bits.
 #[inline]
@@ -101,7 +101,7 @@ pub fn mux<R: RngCore + CryptoRng>(
 mod tests {
     use super::*;
     use crate::net::run_two_party;
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
     #[test]

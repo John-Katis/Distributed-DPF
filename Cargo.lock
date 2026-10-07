@@ -169,8 +169,8 @@ dependencies = [
 name = "floram-arith"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "dpf-common",
- "floram-cprg",
  "rand",
  "rand_chacha",
 ]
