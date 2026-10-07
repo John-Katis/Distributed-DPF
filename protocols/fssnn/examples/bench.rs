@@ -1,21 +1,26 @@
-//! Benchmarks for the FssNN-style distributed DPF (Alg. 5 with the DGH+21
-//! LPN-PRG).
+//! Benchmarks for the FssNN-style distributed DPF.
 //!
 //! ```text
-//! cargo run --release -p fssnn --example bench-fssnn -- <gen|eval|full|all> [options]
+//! cargo run --release -p fssnn --example bench-fssnn -- <gen|eval|full|all> [--variant fssnn] [options]
 //! ```
 //!
+//! * `fssnn`: semi-honest (Alg. 5 with the DGH+21 LPN-PRG in 2PC, correlations
+//!   from IKNP and KK13 OT).
+//!
 //! The output group is Z2, so `--out-bits` must be 1 (the default). Options
-//! and CSV columns are those of `dpf_common::bench`; `cots` also counts the
-//! random OTs behind the PRG correlations. `eval` and `full` use dealer keys.
+//! and CSV columns are those of `dpf_common::bench`. Setup (base OTs of the
+//! COT, bit-triple and 1-of-3 OT instances) is reported apart from
+//! generation; the PRG correlations are part of generation, and `cots` also
+//! counts the random OTs behind them. `eval` and `full` use dealer keys.
 
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
-use fssnn::{gen_reference, run_gen};
+use fssnn::run_gen;
+use fssnn::semi_honest;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
 
-fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
+fn gen_sh(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
@@ -52,20 +57,26 @@ fn main() {
     assert!(opts.out_bits == 1 && opts.out_list.iter().all(|&b| b == 1), "FssNN's output group is Z2: --out-bits 1");
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
-        if o.runs("gen") {
-            bench_gen(o, &mut rng);
-        }
-        let keys = gen_reference(o.size, rng.gen_range(0..o.size), true, rng.gen());
-        if o.runs("eval") {
-            let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
-            bench_eval(o, 1, &xs, |x| {
-                black_box(keys[0].eval_point(x));
-            });
-        }
-        if o.runs("full") {
-            bench_full(o, 1, || {
-                black_box(keys[0].eval_full());
-            });
+        let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
+        match o.variant.as_str() {
+            "fssnn" => {
+                if o.runs("gen") {
+                    gen_sh(o, &mut rng);
+                }
+                let keys = semi_honest::gen_reference(o.size, rng.gen_range(0..o.size), true, rng.gen());
+                let k = &keys[0];
+                if o.runs("eval") {
+                    bench_eval(o, 1, &xs, |x| {
+                        black_box(k.eval_point(x));
+                    });
+                }
+                if o.runs("full") {
+                    bench_full(o, 1, || {
+                        black_box(k.eval_full());
+                    });
+                }
+            }
+            v => unreachable!("unknown variant {v}"),
         }
     });
 }

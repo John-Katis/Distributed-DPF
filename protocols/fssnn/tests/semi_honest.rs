@@ -1,8 +1,9 @@
-//! The FssNN-style DPF against the cleartext point function over Z2.
+//! Semi-honest FssNN-style DPF against the cleartext point function over Z2.
 
 use dpf_common::block::Block;
-use fssnn::key::levels_for;
-use fssnn::{deal, gen_reference, run_gen, FssKey};
+use fssnn::run_gen;
+use fssnn::semi_honest::{deal, gen_reference, FssKey};
+use fssnn::tree::levels_for;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 

@@ -4,6 +4,9 @@
 //! cargo run --release -p duoram --example bench-duoram -- <gen|eval|full|all> --variant <2p|3p> [options]
 //! ```
 //!
+//! * `2p`: 2P-Duoram, P0 and P1 alone; correlations from IKNP OT.
+//! * `3p`: 3P-Duoram, correlations dealt by the helper P2.
+//!
 //! `--out-bits w` (1..=64, default 64) is the payload ring Z_2^w. Options and
 //! CSV columns are those of `dpf_common::bench`. For `gen`:
 //!
@@ -79,21 +82,29 @@ fn main() {
     assert!((1..=64).contains(&opts.out_bits) && opts.out_list.iter().all(|b| (1..=64).contains(b)), "out-bits must be 1..=64");
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
-        if o.runs("gen") {
-            bench_gen(o, &mut rng);
-        }
-        let beta = rng.gen::<u64>() & mask(o.out_bits);
-        let keys = gen_reference(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
-        if o.runs("eval") {
-            let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
-            bench_eval(o, 1, &xs, |x| {
-                black_box(keys[0].eval_point(x));
-            });
-        }
-        if o.runs("full") {
-            bench_full(o, 1, || {
-                black_box(keys[0].eval_full());
-            });
+        let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
+        match o.variant.as_str() {
+            // Both variants produce the same key; they differ only in how the
+            // preprocessing gets its correlations.
+            "2p" | "3p" => {
+                if o.runs("gen") {
+                    bench_gen(o, &mut rng);
+                }
+                let beta = rng.gen::<u64>() & mask(o.out_bits);
+                let keys = gen_reference(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
+                let k = &keys[0];
+                if o.runs("eval") {
+                    bench_eval(o, 1, &xs, |x| {
+                        black_box(k.eval_point(x));
+                    });
+                }
+                if o.runs("full") {
+                    bench_full(o, 1, || {
+                        black_box(k.eval_full());
+                    });
+                }
+            }
+            v => unreachable!("unknown variant {v}"),
         }
     });
 }

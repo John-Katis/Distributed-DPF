@@ -6,7 +6,7 @@
 //! trivial sharing `(s, 0)`), so every level is a 2PC on XOR shares:
 //!
 //! 1. Step 4, F_SecPRG on `⟨s_0^(i−1)⟩` and `⟨s_1^(i−1)⟩`: the LPN-PRG 2PC of
-//!    [`crate::lpn_prg`]. (Step 4 prints `s^L ∥ v^L ∥ t^L ∥ s^L ∥ v^L ∥ t^L`; the
+//!    [`super::sec_prg`]. (Step 4 prints `s^L ∥ v^L ∥ t^L ∥ s^L ∥ v^L ∥ t^L`; the
 //!    second half is the right child.)
 //! 2. Step 5, F_2PC for the CW: `s_CW = s_0^Lose ⊕ s_1^Lose` with Lose = L iff
 //!    α_i = 1, i.e. one F_MUX^{B,λ} on `(D^R, D^L)` with selector α_i
@@ -27,8 +27,9 @@
 //! Correlations for all `2υ` PRG evaluations are generated up front from
 //! OT (DGH+21 §5.5), so no dealer is involved anywhere.
 
-use crate::key::{child, conv, expand, levels_for, CorrectionWord, FssKey, PACK_BITS};
-use crate::lpn_prg::{eval_shared, preprocess, Kk};
+use super::key::FssKey;
+use super::sec_prg::{eval_shared, preprocess, Kk};
+use crate::tree::{child, conv, expand, levels_for, CorrectionWord, PACK_BITS};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::bool2pc::{mux_block, BoolParty};
 use dpf_common::net::{Channel, CommStats};
