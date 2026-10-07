@@ -1,13 +1,18 @@
 //! Semi-honest Yao garbling with free-XOR, point-and-permute and half-gates
 //! (Zahur–Rosulek–Evans 2015). This is the Obliv-C protocol Floram runs in.
 //!
+//! The half-gate hash is `H'_S(x, j) = MMO^σ(S ⊕ x ⊕ j)` with a uniform public
+//! key S that the garbler samples and sends at setup, which GKWY20 Thm. 3
+//! proves sufficient for half-gates (circular correlation robustness for
+//! naturally derived keys).
+//!
 //! A circuit is written once against [`GcParty`], and the garbler (party 0 =
 //! Floram's party 1) and the evaluator (party 1) each run the same code. A wire
 //! is a single [`Block`]: the 0-label for the garbler, the active label for the
 //! evaluator.
 
 use crate::block::Block;
-use crate::hash::gc_hash;
+use crate::hash::CcrHash;
 use crate::net::Channel;
 use crate::ot::{IknpReceiver, IknpSender};
 use rand::{CryptoRng, RngCore, SeedableRng};
@@ -47,6 +52,7 @@ pub trait GcParty {
 }
 
 pub struct Garbler {
+    hash: CcrHash,
     delta: Block,
     gid: u64,
     ands: usize,
@@ -58,8 +64,10 @@ impl Garbler {
     pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
         let mut delta = Block::random(rng);
         delta.0 |= 1; // point-and-permute: lsb(R) = 1
+        let s = Block::random(rng);
+        ch.send_blocks(&[s]);
         let ot = IknpSender::setup(ch, rng);
-        Garbler { delta, gid: 0, ands: 0, ot, rng: ChaCha20Rng::from_rng(rng).unwrap() }
+        Garbler { hash: CcrHash::new(s), delta, gid: 0, ands: 0, ot, rng: ChaCha20Rng::from_rng(rng).unwrap() }
     }
 }
 
@@ -78,7 +86,7 @@ impl GcParty for Garbler {
     }
 
     fn and_many(&mut self, ch: &mut Channel, pairs: &[(Wire, Wire)]) -> Vec<Wire> {
-        let h = gc_hash();
+        let h = &self.hash;
         let r = self.delta;
         let mut tables = Vec::with_capacity(2 * pairs.len());
         let mut out = Vec::with_capacity(pairs.len());
@@ -87,8 +95,8 @@ impl GcParty for Garbler {
             self.gid += 1;
             let pa = a0.lsb();
             let pb = b0.lsb();
-            let (ha0, hb0) = h.h2(a0, j0, b0, j1);
-            let (ha1, hb1) = h.h2(a0 ^ r, j0, b0 ^ r, j1);
+            let (ha0, hb0) = h.h2_tweak(a0, j0, b0, j1);
+            let (ha1, hb1) = h.h2_tweak(a0 ^ r, j0, b0 ^ r, j1);
             // Garbler half gate.
             let tg = ha0 ^ ha1 ^ r.and_bit(pb);
             let wg = ha0 ^ tg.and_bit(pa);
@@ -120,6 +128,7 @@ impl GcParty for Garbler {
 }
 
 pub struct Evaluator {
+    hash: CcrHash,
     gid: u64,
     ands: usize,
     ot: IknpReceiver,
@@ -127,7 +136,8 @@ pub struct Evaluator {
 
 impl Evaluator {
     pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
-        Evaluator { gid: 0, ands: 0, ot: IknpReceiver::setup(ch, rng) }
+        let s = ch.recv_blocks(1)[0];
+        Evaluator { hash: CcrHash::new(s), gid: 0, ands: 0, ot: IknpReceiver::setup(ch, rng) }
     }
 }
 
@@ -137,14 +147,14 @@ impl GcParty for Evaluator {
     }
 
     fn and_many(&mut self, ch: &mut Channel, pairs: &[(Wire, Wire)]) -> Vec<Wire> {
-        let h = gc_hash();
+        let h = &self.hash;
         let tables = ch.recv_blocks(2 * pairs.len());
         let mut out = Vec::with_capacity(pairs.len());
         for (i, &(a, b)) in pairs.iter().enumerate() {
             let (j0, j1) = (2 * self.gid, 2 * self.gid + 1);
             self.gid += 1;
             let (tg, te) = (tables[2 * i], tables[2 * i + 1]);
-            let (ha, hb) = h.h2(a, j0, b, j1);
+            let (ha, hb) = h.h2_tweak(a, j0, b, j1);
             let wg = ha ^ tg.and_bit(a.lsb());
             let we = hb ^ (te ^ a).and_bit(b.lsb());
             out.push(wg ^ we);

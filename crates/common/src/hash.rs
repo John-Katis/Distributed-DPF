@@ -60,25 +60,6 @@ impl FixedKeyHash {
             }
         }
     }
-
-    /// Hashes two inputs under consecutive tweaks in one 2-block AES call.
-    #[inline]
-    pub fn h2(&self, a: Block, ta: u64, b: Block, tb: u64) -> (Block, Block) {
-        let sa = sigma(a);
-        let sb = sigma(b);
-        let mut buf = [
-            GenericArray::from((sa ^ Block(ta as u128)).to_bytes()),
-            GenericArray::from((sb ^ Block(tb as u128)).to_bytes()),
-        ];
-        self.aes.encrypt_blocks(&mut buf);
-        (Block::from_bytes(buf[0].as_slice()) ^ sa, Block::from_bytes(buf[1].as_slice()) ^ sb)
-    }
-}
-
-/// Hash used by the garbled circuit. Domain-separated from the OT hash by its key.
-pub fn gc_hash() -> &'static FixedKeyHash {
-    static H: OnceLock<FixedKeyHash> = OnceLock::new();
-    H.get_or_init(|| FixedKeyHash::new(b"dpf-common/gc-h!"))
 }
 
 /// Hash used to pad IKNP OT-extension messages.
@@ -171,6 +152,55 @@ impl CcrHash {
     pub fn h_many(&self, src: &[Block], dst: &mut [Block]) {
         self.h_many_tweak(src, Block::ZERO, dst);
     }
+
+    /// `(H_S(a ⊕ ta), H_S(b ⊕ tb))` in one 2-block AES call. With a random
+    /// public S this is the half-gates hash `H'_S(x, j) = H(S ⊕ x ⊕ j)` of
+    /// GKWY20 Thm. 3 (H = MMO^σ).
+    #[inline]
+    pub fn h2_tweak(&self, a: Block, ta: u64, b: Block, tb: u64) -> (Block, Block) {
+        let sa = sigma(a ^ Block(ta as u128) ^ self.s);
+        let sb = sigma(b ^ Block(tb as u128) ^ self.s);
+        let mut buf = [GenericArray::from(sa.to_bytes()), GenericArray::from(sb.to_bytes())];
+        self.aes.encrypt_blocks(&mut buf);
+        (Block::from_bytes(buf[0].as_slice()) ^ sa, Block::from_bytes(buf[1].as_slice()) ^ sb)
+    }
+}
+
+/// The tweakable circular-correlation-robust hash of GKWY20 §7.4,
+///
+/// ```text
+/// TMMO_π(x, i) = π(π(x) ⊕ i) ⊕ π(x)
+/// ```
+///
+/// with π fixed-key AES (two calls per hash). Ferret's SPCOT needs a tweakable
+/// CR hash to turn correlated OTs into chosen-message OTs (YWL+20 Fig. 6).
+pub struct TmmoHash {
+    aes: Aes128,
+}
+
+impl TmmoHash {
+    pub fn new(key: &[u8; 16]) -> Self {
+        TmmoHash { aes: Aes128::new(GenericArray::from_slice(key)) }
+    }
+
+    #[inline]
+    fn pi(&self, x: Block) -> Block {
+        let mut g = GenericArray::from(x.to_bytes());
+        self.aes.encrypt_block(&mut g);
+        Block::from_bytes(g.as_slice())
+    }
+
+    #[inline]
+    pub fn h(&self, x: Block, tweak: u128) -> Block {
+        let p = self.pi(x);
+        self.pi(p ^ Block(tweak)) ^ p
+    }
+}
+
+/// TMMO instance for Ferret's SPCOT masks.
+pub fn tccr_hash() -> &'static TmmoHash {
+    static H: OnceLock<TmmoHash> = OnceLock::new();
+    H.get_or_init(|| TmmoHash::new(b"dpf-common/tccr!"))
 }
 
 /// Hash that turns a (pseudo)random leaf seed into payload words (the
