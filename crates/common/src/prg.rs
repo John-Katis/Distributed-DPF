@@ -83,12 +83,9 @@ impl Prg {
     }
 
     /// Writes the children of `parents` into `children`, interleaved as
-    /// `[L(p0), R(p0), L(p1), R(p1), ...]`. When `children` is one short (an odd
-    /// count on a non-power-of-two level), the last right child is skipped, as in
-    /// Floram's `process_round` tail loop.
+    /// `[L(p0), R(p0), L(p1), R(p1), ...]`.
     pub fn expand_many(&self, parents: &[Block], children: &mut [Block]) {
-        let n = children.len();
-        assert!(n == 2 * parents.len() || n + 1 == 2 * parents.len());
+        assert_eq!(children.len(), 2 * parents.len());
         let mut lbuf = [Block::ZERO; BATCH];
         let mut rbuf = [Block::ZERO; BATCH];
         for (ci, chunk) in parents.chunks(BATCH).enumerate() {
@@ -98,9 +95,7 @@ impl Prg {
             let base = ci * BATCH * 2;
             for i in 0..k {
                 children[base + 2 * i] = lbuf[i];
-                if base + 2 * i + 1 < n {
-                    children[base + 2 * i + 1] = rbuf[i];
-                }
+                children[base + 2 * i + 1] = rbuf[i];
             }
         }
     }
@@ -128,12 +123,10 @@ mod tests {
     fn batched_matches_single() {
         let prg = Prg::new(Block(7), Block(9));
         let parents: Vec<Block> = (0..131u128).map(|i| Block(i * 0x9e37_79b9_7f4a_7c15)).collect();
-        for n in [262usize, 261] {
-            let mut kids = vec![Block::ZERO; n];
-            prg.expand_many(&parents, &mut kids);
-            for (i, k) in kids.iter().enumerate() {
-                assert_eq!(*k, prg.child(parents[i / 2], i % 2 == 1));
-            }
+        let mut kids = vec![Block::ZERO; 2 * parents.len()];
+        prg.expand_many(&parents, &mut kids);
+        for (i, k) in kids.iter().enumerate() {
+            assert_eq!(*k, prg.child(parents[i / 2], i % 2 == 1));
         }
         let mut l = vec![Block::ZERO; parents.len()];
         prg.left_many(&parents, &mut l);

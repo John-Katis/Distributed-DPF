@@ -122,8 +122,8 @@ fn public_key_parts_do_not_leak() {
         // lsb(β) is not determined by γ and the last advice bits.
         let cw = keys[0].cws.last().unwrap();
         lsb_hits += (keys[0].gamma[0].lsb() ^ true ^ cw.tau_l ^ cw.tau_r == beta[0].lsb()) as u32;
-        // N = 5, α = 4: the off-path siblings at levels 2 and 3 have no leaf
-        // below N, but σ_2 and σ_3 must still be pseudorandom.
+        // N = 5, α = 4: the off-path siblings at levels 2 and 3 cover only
+        // padding leaves, but σ_2 and σ_3 must still be pseudorandom.
         let (keys, _) = gen_reference(5, 128, 4, &beta, [rng.gen(), rng.gen()]);
         assert_ne!(keys[0].cws[1].z, Block::ZERO, "σ_2 is publicly zero");
         assert_ne!(keys[0].cws[2].z, Block::ZERO, "σ_3 is publicly zero");

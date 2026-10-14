@@ -11,14 +11,15 @@
 //! Ported from `src/oram_fssl/fss_cprg.{c,oc}` of the Floram code:
 //! [`CprgLocal`] is `fss_cprg_offline` and [`gen`] is `fss_cprg_traverselevels`.
 //!
-//! Three deviations from Fig. 7 as printed, each closing a leak:
+//! Unlike Floram's code, the tree is always the full `2^n`-leaf tree: a domain
+//! size N that is not a power of two is padded, every level expands every
+//! node, and only the outputs for `x < N` are returned.
+//!
+//! Two deviations from Fig. 7 as printed, each closing a leak:
 //!
 //! * A node's lsb is its t-bit, so σ_j is revealed without its lsb (and a
 //!   corrected node's lsb is set to t). Opening the full block gives
 //!   `lsb(σ_j) = τ_{j,ᾱ_j}`, which reveals α_j whenever `τ_{j,0} ≠ τ_{j,1}`.
-//! * The accumulators sum both children of every expanded parent, even a
-//!   right child with no leaf below N. Otherwise, if α's off-path sibling is
-//!   such a child, σ_j is publicly 0.
 //! * The payload never contains a leaf's lsb ([`leaf_columns`]). Otherwise
 //!   `lsb(γ) = lsb(β) ⊕ 1 ⊕ τ_{m,0} ⊕ τ_{m,1}` is public.
 
@@ -30,13 +31,6 @@ use dpf_common::prg::Prg;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
-
-/// Nodes on level `l` (0 = root) of a tree of `depth` levels with `n_size`
-/// leaves. Only nodes with a descendant leaf below `n_size` are expanded. This
-/// is Floram's `nextlevelblocks` formula.
-pub fn level_count(n_size: u64, depth: usize, l: usize) -> usize {
-    n_size.div_ceil(1u64 << (depth - l)) as usize
-}
 
 /// One party's full-domain output: `bm` blocks for each of the `n` points.
 /// Stored column-major, so sub-block `k` of every point is contiguous.
@@ -87,17 +81,13 @@ fn accumulate(children: &[Block]) -> (Block, Block) {
     (acc_l, acc_r)
 }
 
-/// Expands every parent into both children (`out.len() = 2·parents`), returns
-/// the accumulators over all of them, then drops the children that have no
-/// leaf below N (`keep`). Summing the dropped ones too keeps σ pseudorandom
-/// when α's off-path sibling is one of them.
-fn expand_level(prg: &Prg, parents: &[Block], out: &mut Vec<Block>, keep: usize) -> (Block, Block) {
+/// Expands every parent into both children (`out.len() = 2·parents`) and
+/// returns the accumulators.
+fn expand_level(prg: &Prg, parents: &[Block], out: &mut Vec<Block>) -> (Block, Block) {
     out.clear();
     out.resize(2 * parents.len(), Block::ZERO);
     prg.expand_many(parents, out);
-    let acc = accumulate(out);
-    out.truncate(keep);
-    acc
+    accumulate(out)
 }
 
 /// Payload columns of the leaves (`Convert`). A leaf's lsb is its t-bit and
@@ -135,8 +125,8 @@ impl CprgLocal {
     /// accumulators. The root's lsb is the party's initial t-bit.
     pub fn start(prg: Prg, n_size: u64, out_bits: usize, root: Block) -> (Self, (Block, Block)) {
         let depth = depth_for(n_size);
-        let mut nodes = Vec::with_capacity(n_size as usize + 1);
-        let acc = expand_level(&prg, &[root], &mut nodes, level_count(n_size, depth, 1));
+        let mut nodes = Vec::with_capacity(1 << depth);
+        let acc = expand_level(&prg, &[root], &mut nodes);
         let local = CprgLocal {
             prg,
             n_size,
@@ -146,7 +136,7 @@ impl CprgLocal {
             level: 1,
             nodes,
             parent_t: vec![root.lsb()],
-            scratch: Vec::with_capacity(n_size as usize + 1),
+            scratch: Vec::with_capacity(1 << depth),
             leaf_cols: Vec::new(),
             leaf_t: Vec::new(),
         };
@@ -178,18 +168,17 @@ impl CprgLocal {
             return None;
         }
         self.level += 1;
-        let keep = level_count(self.n_size, self.depth, self.level);
-        let acc = expand_level(&self.prg, &self.nodes, &mut self.scratch, keep);
+        let acc = expand_level(&self.prg, &self.nodes, &mut self.scratch);
         std::mem::swap(&mut self.nodes, &mut self.scratch);
         Some(acc)
     }
 
-    /// `fss_cprg_offline_finalize`, after the last `step`. Converts the
+    /// `fss_cprg_offline_finalize`, after the last `step`. Converts all `2^n`
     /// corrected leaves into payload columns ([`leaf_columns`]) and returns the
     /// XOR of every column.
     pub fn finalize(&mut self) -> Vec<Block> {
         assert_eq!(self.level, self.depth);
-        assert_eq!(self.nodes.len(), self.n_size as usize);
+        assert_eq!(self.nodes.len(), 1 << self.depth);
         let cols = leaf_columns(&self.prg, &self.nodes, self.out_bits);
         let acc = cols.iter().map(|c| c.iter().fold(Block::ZERO, |a, b| a ^ *b)).collect();
         self.leaf_cols = cols;
@@ -197,16 +186,18 @@ impl CprgLocal {
         acc
     }
 
-    /// Output shares `y(x) = leaf(x) ⊕ t(x)·γ`, as in Floram's
+    /// Output shares `y(x) = leaf(x) ⊕ t(x)·γ` for `x < N`, as in Floram's
     /// `scanwrom_write_with_blockvector_offline`.
     pub fn output(self, gamma: &[Block]) -> FullEval {
         assert_eq!(gamma.len(), self.bm);
-        let t = &self.leaf_t;
+        let n = self.n_size as usize;
+        let t = &self.leaf_t[..n];
         let cols = self
             .leaf_cols
             .into_iter()
             .zip(gamma)
             .map(|(mut col, g)| {
+                col.truncate(n);
                 for (y, &tx) in col.iter_mut().zip(t) {
                     *y ^= g.and_bit(tx);
                 }
