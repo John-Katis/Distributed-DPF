@@ -144,7 +144,8 @@ fn gen_with(
 
     let key = ArithKey { party: b, n_size, bits, root, cws, w_cw };
     let (seeds, ts) = tree.leaves();
-    let full = seeds.iter().zip(ts).map(|(s, t)| key.output(*s, *t)).collect();
+    let n = n_size as usize;
+    let full = seeds[..n].iter().zip(&ts[..n]).map(|(s, t)| key.output(*s, *t)).collect();
     (key, full)
 }
 

@@ -82,8 +82,8 @@ fn correction_words_do_not_leak_alpha() {
         let n = 1 << 8;
         let keys = gen_reference(n, 64, rng.gen_range(0..n), rng.gen(), rng.gen());
         assert!(keys[0].cws.iter().all(|cw| !cw.sigma.lsb()), "σ has a nonzero lsb");
-        // N = 5, α = 4: the off-path siblings at levels 2 and 3 have no leaf
-        // below N, but σ_2 and σ_3 must still be pseudorandom.
+        // N = 5, α = 4: the off-path siblings at levels 2 and 3 cover only
+        // padding leaves, but σ_2 and σ_3 must still be pseudorandom.
         let beta = rng.gen::<u64>();
         let keys = gen_reference(5, 64, 4, beta, rng.gen());
         assert_ne!(keys[0].cws[1].sigma.0, 0, "σ_2 is publicly zero");

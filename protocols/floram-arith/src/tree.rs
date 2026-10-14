@@ -10,10 +10,8 @@
 //!   paper's `s ∥ t` split: with a full-block σ, `lsb(σ) = τ_{ᾱ_i}` would make
 //!   α_i public whenever `τ_0 ≠ τ_1`.
 //!
-//! Only nodes with a leaf below `N` are kept (as in Floram). The skipped
-//! nodes are off-path, so both parties' copies of them are equal. The level
-//! sums still include every child of a kept parent: otherwise σ is publicly 0
-//! when α's off-path sibling is a skipped node.
+//! The tree is always the full `2^n`-leaf tree: a domain size N that is not a
+//! power of two is padded, and every level expands every node.
 
 // `aes` 0.8 re-exports generic-array 0.14, whose newest patch release marks it deprecated.
 #![allow(deprecated)]
@@ -22,12 +20,6 @@ use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::Aes128;
 use dpf_common::block::{depth_for, Block};
-
-/// Nodes on level `l` (0 = root) of a depth-`depth` tree with `n_size` leaves
-/// that have a leaf below `n_size`.
-pub fn level_count(n_size: u64, depth: usize, l: usize) -> usize {
-    n_size.div_ceil(1u64 << (depth - l)) as usize
-}
 
 /// `G(s) = (AES_s(0), AES_s(1))`.
 #[inline]
@@ -48,7 +40,6 @@ pub struct CorrectionWord {
 
 /// One party's tree, advanced one level at a time.
 pub struct Tree {
-    n_size: u64,
     depth: usize,
     level: usize,
     nodes: Vec<Block>,
@@ -61,7 +52,7 @@ impl Tree {
     /// Root seed `s^{0,0}` with control bit `t^{0,0} = b` (Alg. 2 line 2).
     pub fn new(n_size: u64, root: Block, t0: bool) -> Self {
         let depth = depth_for(n_size);
-        Tree { n_size, depth, level: 0, nodes: vec![root], t: vec![t0], raw: Vec::with_capacity(n_size as usize) }
+        Tree { depth, level: 0, nodes: vec![root], t: vec![t0], raw: Vec::with_capacity(1 << depth) }
     }
 
     pub fn depth(&self) -> usize {
@@ -69,21 +60,16 @@ impl Tree {
     }
 
     /// Lines 4–5: expands every node and returns `(S^{i,0}, S^{i,1})`, the XOR
-    /// of all left and of all right children (including right children with
-    /// no leaf below N, which are then dropped).
+    /// of all left and of all right children.
     pub fn expand_level(&mut self) -> (Block, Block) {
         assert!(self.level < self.depth);
-        let next = level_count(self.n_size, self.depth, self.level + 1);
         self.raw.clear();
         let (mut l, mut r) = (Block::ZERO, Block::ZERO);
-        for (j, s) in self.nodes.iter().enumerate() {
+        for s in &self.nodes {
             let kids = expand(*s);
-            self.raw.push(kids[0]);
+            self.raw.extend(kids);
             l ^= kids[0];
             r ^= kids[1];
-            if 2 * j + 1 < next {
-                self.raw.push(kids[1]);
-            }
         }
         (l, r)
     }
@@ -102,7 +88,8 @@ impl Tree {
         self.level += 1;
     }
 
-    /// The leaves `s^{ℓ_in, i}` and their control bits, after the last level.
+    /// All `2^n` leaves `s^{ℓ_in, i}` and their control bits, after the last
+    /// level.
     pub fn leaves(&self) -> (&[Block], &[bool]) {
         assert_eq!(self.level, self.depth);
         (&self.nodes, &self.t)

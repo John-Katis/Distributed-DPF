@@ -50,9 +50,8 @@ Differences from the reference code:
   (Alg. 2's `s ∥ t` split). Revealing the full block, as a block-level port of
   the reference does, gives `lsb(σ) = τ` of the off-path side, which makes α_i
   public whenever `τ_0 ≠ τ_1`.
-- **Domain:** N need not be a power of two. Nodes with no leaf below N are
-  not kept, but the level sums include every child of a kept parent.
-  Otherwise σ is publicly 0 when α's off-path sibling has no leaf below N.
+- **Domain:** N need not be a power of two. It is padded to `2^n`: the full
+  tree is always expanded, and only the outputs for `x < N` are returned.
 - **Not ported:** the reference's optional random input mask (`masked = true`).
   It belongs to the equality-test gate (Alg. 5), not to the DPF.
 

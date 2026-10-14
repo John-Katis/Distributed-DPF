@@ -65,7 +65,8 @@ impl ArithKey {
             tree.correct(*cw);
         }
         let (s, t) = tree.leaves();
-        s.iter().zip(t).map(|(s, t)| self.output(*s, *t)).collect()
+        let n = self.n_size as usize;
+        s[..n].iter().zip(&t[..n]).map(|(s, t)| self.output(*s, *t)).collect()
     }
 
     pub fn ring_mask(&self) -> u64 {
