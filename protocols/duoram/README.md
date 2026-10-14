@@ -14,20 +14,20 @@ Duoram generates DPFs **before α and β are known** and adjusts them online.
    - P0 and P1 pick XOR shares of r.
    - They build Doerner–shelat's tree with `G_i(s) = AES_k(s ⊕ i) ⊕ i ⊕ s`.
    - Per level, `CW = r_i ? L : R` comes from compute_CW: a Du–Atallah
-     product with a bit-times-block AND triple, in two flights. The flag CWs
-     `lsb(L) ⊕ r_i ⊕ 1` and `lsb(R) ⊕ r_i` are opened in the second flight.
+     product with a bit-times-block AND triple, in two rounds. The flag CWs
+     `lsb(L) ⊕ r_i ⊕ 1` and `lsb(R) ⊕ r_i` are opened in the second round.
 2. **Deferred final CW** (Pirsona): `Γ_b = (−1)^b Σ lane0(leaves)`. Party 1's
    negation turns the XOR-shared tree into additive shares.
 3. **XOR → additive flags** (App. D, `convert_shares`):
    - `pm_b = (−1)^b Σ t_b` gives `pm = ±1`.
    - The second lane of the same leaves (63 bits) serves as the extra DPF
      (`Γ'_b`).
-   - One Du–Atallah product gives `Γ'·pm`, and one flight opens
+   - One Du–Atallah product gives `Γ'·pm`, and one round opens
      `c = pm + ρ` and `F̄ = Γ'·pm + ρ`.
    - Then `t̃_b = t_b·c + v'_b − t_b·F̄` are additive shares of `e_r`.
 4. **xor_to_additive** of r: one Du–Atallah product per bit, batched with
    step 3.
-5. **Online**, one flight of two words each way: open `S = α − r mod 2^n` and
+5. **Online**, one round of two words each way: open `S = α − r mod 2^n` and
    `F = β − Γ`. The output at x is
    `y_b = v_b(x − S) + F·t̃_b(x − S) mod 2^w`.
 

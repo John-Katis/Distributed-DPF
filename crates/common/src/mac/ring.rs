@@ -124,7 +124,8 @@ impl<R: MacRing> ArithMacParty<R> {
     }
 
     /// Gilboa VOLE for the cross terms: returns this party's additive shares
-    /// of `x_b·α_{1−b} + x_{1−b}·α_b` for every element. Two flights + KOS.
+    /// of `x_b·α_{1−b} + x_{1−b}·α_b` for every element. One COT extension plus
+    /// one round of derandomisation words.
     fn vole(&mut self, ch: &mut Channel, mine: &[R]) -> Result<Vec<R>, Abort> {
         let nb = R::share_bits();
         let n = mine.len();
@@ -240,7 +241,7 @@ impl<R: MacRing> ArithMacParty<R> {
         self.zero_check(ch, my, y)
     }
 
-    /// Exchanges shares and returns the full reconstructed values. One flight.
+    /// Exchanges shares and returns the full reconstructed values. One round.
     fn reveal(&mut self, ch: &mut Channel, vals: &[Auth<R>]) -> Result<Vec<R>, Abort> {
         let mine: Vec<R> = vals.iter().map(|v| v.x).collect();
         ch.send(ring_bytes(&mine));

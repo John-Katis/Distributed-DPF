@@ -17,7 +17,7 @@
 //!   rounds. In 3P the P0–P1 link starts at depth 0, so P2's dealing round is
 //!   included.
 //! * `cots` is 2P only.
-//! * The online phase alone is two words each way in one flight; it is printed
+//! * The online phase alone is two words each way in one round; it is printed
 //!   as a `#` comment line.
 //!
 //! `eval` and `full` use dealer keys.

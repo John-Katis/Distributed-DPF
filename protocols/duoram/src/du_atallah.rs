@@ -10,7 +10,7 @@
 //!   `γ_0 ⊕ γ_1 = bit_1·rand_0 ⊕ bit_0·rand_1`, each party sends
 //!   `(L_b ⊕ R_b ⊕ rand_b, c_b ⊕ bit_b)`, then its share
 //!   `R_b ⊕ γ_b ⊕ c_b·(D_b ⊕ D̂_{1−b}) ⊕ ĉ_{1−b}·rand_b`, and both shares are
-//!   opened. Two flights per level.
+//!   opened. Two rounds per level.
 //! * **cross**: shares of `x·y mod 2^64` for P0's `x` and P1's `y` (the
 //!   reference's `xor_to_additive` and `du_attalah_Pb`). With a triple
 //!   `(X, Z_0 = X·Y − T)`, `(Y, Z_1 = T)`: P0 sends `x + X`, P1 sends `y + Y`,
@@ -23,7 +23,7 @@
 //!
 //! In 2P mode the correlations come from IKNP COTs: the AND triples from
 //! derandomised OTs of `rand_b` on the peer's choice `bit_{1−b}` (both
-//! directions in one flight), and `cross` is a Gilboa product, one COT per
+//! directions in one round), and `cross` is a Gilboa product, one COT per
 //! bit of `y`.
 
 use dpf_common::block::Block;
@@ -108,7 +108,7 @@ pub fn receive_dealt(from_p2: &mut Channel, levels: usize, crosses: usize) -> He
 
 impl Helper<'_> {
     /// AND triples for `levels` correction words. 2P: one COT per triple in
-    /// each direction, plus one flight of derandomisation words.
+    /// each direction, plus one round of derandomisation words.
     pub fn cw_corr<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, levels: usize, rng: &mut R) -> Vec<CwCorr> {
         match self {
             Helper::Dealt { cw, .. } => {
@@ -203,8 +203,8 @@ impl Helper<'_> {
 }
 
 /// compute_CW: opens `CW = c ? L : R` from XOR shares, with this level's AND
-/// triple, and in the same last flight the XOR-shared bits `extra` (the
-/// reference's `cwbit`). Two flights.
+/// triple, and in the same last round the XOR-shared bits `extra` (the
+/// reference's `cwbit`). Two rounds.
 pub fn compute_cw(ch: &mut Channel, corr: &CwCorr, l: Block, r: Block, c: bool, extra: [bool; 2]) -> (Block, [bool; 2]) {
     let d = l ^ r;
     let mut msg = (d ^ corr.rand).to_bytes().to_vec();

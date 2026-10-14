@@ -527,7 +527,7 @@ impl FerretPair {
     }
 
     /// Chosen-choice COTs in both directions, as `CotPair::extend`: refills if
-    /// needed, then derandomises with one bit per COT (one flight).
+    /// needed, then derandomises with one bit per COT (one round).
     pub fn extend<R: RngCore + CryptoRng>(
         &mut self,
         ch: &mut Channel,

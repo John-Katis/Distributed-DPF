@@ -25,7 +25,7 @@ BitXA) are not implemented.
    - F_SecPRG on both shared seeds (step 4);
    - one batched F_MUX^{B,λ} on α_i, for the Lose-side difference (`s_CW`) and
      both Keep children (steps 5, 7);
-   - opening of `(s_CW, t^L_CW, t^R_CW)` in one flight;
+   - opening of `(s_CW, t^L_CW, t^R_CW)` in one round;
    - one F_AND per tree for `t^(i−1)·t^Keep_CW`.
 
    The final word needs an AND tree for the shared one-hot of α's low bits,

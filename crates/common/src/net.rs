@@ -7,7 +7,7 @@
 //! # Rounds
 //!
 //! A round is one one-way network latency (Duoram's "sequential messages").
-//! Messages that can be in flight at the same time share a round, so a
+//! Messages that can be in transit at the same time share a round, so a
 //! simultaneous exchange (both parties send their CW share, then both
 //! receive) is one round, while a request and its reply are two.
 //!

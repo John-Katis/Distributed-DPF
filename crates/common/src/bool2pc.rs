@@ -133,7 +133,7 @@ impl BoolParty {
         one ^ self.and1(ch, x ^ one, y ^ one)
     }
 
-    /// Opens XOR-shared bits to both parties. One flight each way.
+    /// Opens XOR-shared bits to both parties. One round.
     pub fn reveal_bits(&self, ch: &mut Channel, bits: &[bool]) -> Vec<bool> {
         ch.send_bits(bits);
         let theirs = ch.recv_bits(bits.len());

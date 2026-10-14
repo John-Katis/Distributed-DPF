@@ -2,7 +2,7 @@
 //! model with SHA-256.
 //!
 //! A commitment to `v` is `SHA-256("dpf-common/com" ∥ r ∥ v)` with a fresh
-//! 128-bit opening `r`. Coin tossing is two flights: both parties commit to a
+//! 128-bit opening `r`. Coin tossing is two rounds: both parties commit to a
 //! random seed, then both open; the coin is the XOR of the seeds. A party that
 //! sends a bad opening makes the call return [`Abort`].
 
@@ -45,7 +45,7 @@ pub fn verify(com: &[u8; 32], value: &[u8], opening: &[u8; 16]) -> bool {
 }
 
 /// Commits to `value`, exchanges commitments, then exchanges openings. Returns
-/// the peer's value once its opening verifies. Two flights.
+/// the peer's value once its opening verifies. Two rounds.
 pub fn commit_and_open<R: RngCore + CryptoRng>(ch: &mut Channel, value: &[u8], rng: &mut R) -> Result<Vec<u8>, Abort> {
     let (com, r) = commit(value, rng);
     ch.send(com.to_vec());

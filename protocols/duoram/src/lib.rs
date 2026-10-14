@@ -7,7 +7,7 @@
 //! * [`gen::preprocess`]: a Floram-style DPF at a random target `r`, with the
 //!   correction words from Du–Atallah products, the deferred final CW, and
 //!   the conversion of the XOR-shared tree into additive shares (App. D).
-//! * [`gen::online`]: one flight that shifts the DPF to an additively shared
+//! * [`gen::online`]: one round that shifts the DPF to an additively shared
 //!   α and sets the payload to an additively shared β ∈ Z_2^w.
 //! * [`key::DuoramKey`]: point and full-domain evaluation.
 //!

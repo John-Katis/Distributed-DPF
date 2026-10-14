@@ -69,7 +69,7 @@ fn check_run(run: Run, n: u64, bits: usize, alpha: u64, beta: u64) {
     let dealt = deal([keys[0].root, keys[1].root], n, bits, alpha, beta, r, 0);
     assert_eq!(dealt[0].cws, keys[0].cws, "N={n} alpha={alpha}");
     assert_eq!(dealt[0].f & mask(bits), keys[0].f & mask(bits), "N={n} alpha={alpha}");
-    // The online phase is one flight each way of two words.
+    // The online phase is one round of two words each way.
     assert_eq!(o0.online_stats.bytes_sent, 16);
 }
 

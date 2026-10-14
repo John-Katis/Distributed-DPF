@@ -11,7 +11,7 @@
 //!    or right (p = 1) children. `σ_b = F_MUX^{B,λ}(S^{i,0}_b, S^{i,1}_b, α_b ⊕ b)`
 //!    selects the off-path side, `τ^{i,0}_b = lsb(S^{i,0}_b) ⊕ α_b ⊕ b` and
 //!    `τ^{i,1}_b = lsb(S^{i,1}_b) ⊕ α_b` are local, and `(σ, τ_0, τ_1)` is
-//!    revealed in one flight. The lsb of a block is its control bit `t`, so
+//!    revealed in one round. The lsb of a block is its control bit `t`, so
 //!    σ is the `s` part only (lsb 0), as Alg. 2's `s ∥ t` split prescribes.
 //! 3. **Final CW** (lines 16–22): `w_b = Σ Convert(s_b)` over the leaves (line
 //!    16 says level `ℓ_in − 1`, but line 17, Alg. 3 and the reference use the

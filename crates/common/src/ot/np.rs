@@ -1,7 +1,7 @@
 //! Naor–Pinkas 1-out-of-2 base OT over secp256r1, the curve Obliv-C uses
 //! (`DHCurveName` in `obliv_common.h`). Base OTs only seed the IKNP extension,
 //! so this is the *random*-OT variant: the sender gets two random keys and the
-//! receiver gets the one it chose. This drops the final ciphertext flight that
+//! receiver gets the one it chose. This drops the final ciphertext message that
 //! Obliv-C's chosen-message `npotSend1Of2` sends.
 //!
 //! Naor–Pinkas is only semi-honest secure here (one sender secret for every

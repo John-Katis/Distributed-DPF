@@ -15,7 +15,7 @@ and output. It follows the authors' reference implementation,
    children.
    - F_MUX^{B,λ} with choice `α_b ⊕ b` picks the off-path sum `σ`.
    - `τ_0` and `τ_1` are local XORs.
-   - `(σ, τ_0, τ_1)` is revealed in one flight.
+   - `(σ, τ_0, τ_1)` is revealed in one round.
 3. **Final correction word** (lines 16–22): `T_b = Σ_j t^j_b` differs between the
    parties by exactly one.
    - CCMP (Alg. 1, one F_AND) gives XOR shares of `g = 1{T_0 < T_1}`, which is

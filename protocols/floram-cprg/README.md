@@ -48,7 +48,7 @@ is its t-bit):
 Other differences:
 - γ = acc⁰ ⊕ acc¹ ⊕ β is opened directly from XOR shares. Floram's circuit for
   it contains only XOR gates, so the result is the same.
-- Base OTs are random OTs, which saves Naor–Pinkas's last flight.
+- Base OTs are random OTs, which saves Naor–Pinkas's last message.
 - The code is single-threaded; Floram's OpenMP is not reproduced.
 
 ## Usage

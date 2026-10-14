@@ -143,7 +143,7 @@ fn corr32<R: RngCore + CryptoRng>(ch: &mut Channel, kk: &mut Kk, need: usize, rn
     }
 }
 
-/// Correlations for `calls` 2PC evaluations of G, in two flights.
+/// Correlations for `calls` 2PC evaluations of G, in two rounds.
 pub fn preprocess<R: RngCore + CryptoRng>(
     ch: &mut Channel,
     cot: &mut CotPair,
@@ -193,7 +193,7 @@ fn unpack_trits(bytes: &[u8], n: usize) -> Vec<u8> {
 }
 
 /// XOR shares of `G(x_k)` for XOR-shared inputs `x_k`, one correlation per
-/// input. Two flights each way for the whole batch.
+/// input. Two rounds for the whole batch.
 pub fn eval_shared(ch: &mut Channel, corr: &[PrgCorr], xs: &[u128]) -> Vec<[u128; 2]> {
     assert_eq!(corr.len(), xs.len());
     let p = lpn_prg();

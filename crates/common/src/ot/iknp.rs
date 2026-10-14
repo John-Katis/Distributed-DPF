@@ -2,8 +2,8 @@
 //!
 //! The extension sender (Floram party 1, the garbler) plays *receiver* in the
 //! `OT_KEY_BITS` base OTs with a secret choice vector `s`. The extension receiver
-//! plays base-OT *sender*. Every later batch of `m` OTs costs one flight each way:
-//! the receiver sends `OT_KEY_BITS × m` bits of columns, and the sender sends `2m`
+//! plays base-OT *sender*. Every later batch of `m` OTs costs two rounds: the
+//! receiver sends `OT_KEY_BITS × m` bits of columns, then the sender sends `2m`
 //! padded messages.
 
 use super::np;

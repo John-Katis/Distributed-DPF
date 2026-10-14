@@ -15,12 +15,12 @@
 //! 4. Flags to additive shares (App. D, as `convert_shares`): `pm_b =
 //!    (−1)^b Σ t_b` (so `pm = ±1`), lane 1 of the same leaves as the second
 //!    DPF (`Γ'_b`, reference `Gamma[1]`), one Du–Atallah product for `Γ'·pm`,
-//!    and one flight opening `c = pm + ρ` and `F̄ = Γ'·pm + ρ`.
+//!    and one round opening `c = pm + ρ` and `F̄ = Γ'·pm + ρ`.
 //! 5. `xor_to_additive`: additive shares `R_b` of r from the bit products
 //!    `r_{0,j}·r_{1,j}` (`r_j = r_{0,j} + r_{1,j} − 2r_{0,j}r_{1,j}`). Steps 4
 //!    and 5 share one batch of products.
 //!
-//! **Online** (Protocol 2 lines 5–7, one flight): open `S = α − r mod 2^n`
+//! **Online** (Protocol 2 lines 5–7, one round): open `S = α − r mod 2^n`
 //! and `F = β − (Γ_0 + Γ_1)`.
 
 use crate::du_atallah::{compute_cw, deal as p2_deal, receive_dealt, Helper};
@@ -142,7 +142,7 @@ pub fn preprocess(ch: &mut Channel, helper: &mut Helper, n_size: u64, rng: &mut 
     Preprocessed { party: b, n_size, root, cws, c: opened[0], fbar: opened[1], gamma, r_share }
 }
 
-/// The online phase: one flight each way.
+/// The online phase: one round.
 ///
 /// * `alpha_share`: additive share of `α < N` mod `2^n`.
 /// * `beta_share`: additive share of `β` mod `2^bits`.

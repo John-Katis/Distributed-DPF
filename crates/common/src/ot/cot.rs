@@ -22,7 +22,7 @@
 //!
 //! [`CotPair`] holds both directions for one party: it is the sender (with its
 //! own Δ) in one instance and the receiver in the other, and `extend` runs both
-//! directions with shared flights.
+//! directions in the same rounds.
 
 use super::iknp::{bytes_to_cols, pack_words, transpose, words_to_bytes};
 use super::ferret::{FerretConfig, FerretPair};
@@ -193,7 +193,7 @@ impl CotPair {
     /// `mine` (returned `M`, with `M = K_peer ⊕ r·Δ_peer`) and sends `theirs` COTs
     /// to the peer (returned `K`, with `M_peer = K ⊕ r_peer·Δ`).
     ///
-    /// Semi-honest: one flight. Malicious: four (columns, coin, proof).
+    /// Semi-honest: one round. Malicious: four (columns, coin, proof).
     pub fn extend<R: RngCore + CryptoRng>(
         &mut self,
         ch: &mut Channel,

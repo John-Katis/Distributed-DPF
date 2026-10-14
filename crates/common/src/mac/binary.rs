@@ -191,7 +191,7 @@ impl MacParty {
     }
 
     /// Opens values without checking them and records each opening for
-    /// [`check`](Self::check). One flight.
+    /// [`check`](Self::check). One round.
     pub fn open(&mut self, ch: &mut Channel, vals: &[AuthGf]) -> Vec<Block> {
         let mine: Vec<Block> = vals.iter().map(|v| v.x).collect();
         ch.send_blocks(&mine);
