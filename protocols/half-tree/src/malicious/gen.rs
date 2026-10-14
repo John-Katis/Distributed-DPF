@@ -148,7 +148,7 @@ impl MalSession {
         let (cw_v, cw_m) = (cw[..bm].to_vec(), cw[bm..].to_vec());
 
         // 4. Outputs.
-        let full = leaf_outputs(&self.hash, leaves, &cw_v, &cw_m);
+        let full = leaf_outputs(&self.hash, &leaves[..n_size as usize], &cw_v, &cw_m);
 
         // 5. Random linear combination, masked by ⟨r⟩, opened for the batch check.
         let r = self.mac.rand_gf(ch, 1)?[0];

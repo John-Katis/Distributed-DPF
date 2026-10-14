@@ -8,7 +8,7 @@
 //! * `v_k(x) = (H(X_x ⊕ 2k) ⊕ t·CW_v[k], H(X_x ⊕ 2k+1) ⊕ t·CW_M[k])`: a share
 //!   of `[x = α]·β_k` with its MAC (`H_1` of the paper, widened to `bm` blocks).
 
-use crate::tree::{level_count, HtLocal};
+use crate::tree::HtLocal;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::hash::CcrHash;
 use dpf_common::mac::binary::AuthGf;
@@ -43,7 +43,8 @@ impl MalFull {
     }
 }
 
-/// Turns leaves into `(u, v)` with the leaf correction word.
+/// Turns leaves into `(u, v)` with the leaf correction word, one output per
+/// leaf passed in.
 pub(crate) fn leaf_outputs(hash: &CcrHash, leaves: &[Block], cw_v: &[Block], cw_m: &[Block]) -> MalFull {
     let n = leaves.len();
     let u = leaves.iter().map(|x| AuthGf { x: Block(x.lsb() as u128), m: *x }).collect();
@@ -128,7 +129,6 @@ impl MalKey {
             local.correlated_sum();
             local.apply_correlated(*cw);
         }
-        debug_assert_eq!(local.nodes().len(), level_count(self.n_size, self.depth(), self.depth()));
-        leaf_outputs(&self.hash, local.nodes(), &self.cw_v, &self.cw_m)
+        leaf_outputs(&self.hash, &local.nodes()[..self.n_size as usize], &self.cw_v, &self.cw_m)
     }
 }

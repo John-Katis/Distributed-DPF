@@ -9,20 +9,13 @@
 //! * level `n` breaks the correlation: child `σ` is
 //!   `H(X ⊕ σ) ⊕ t·(HCW ∥ LCW_σ)`, two hashes per parent.
 //!
-//! A leaf `X = s ∥ t` yields the payload `Convert(s)`. Only nodes with a leaf
-//! below `N` are kept (as in Floram), which is sound because every node the
-//! parties skip is off-path and so has identical shares on both sides. The
-//! last level's sums still include every child of a kept parent, so that HCW
-//! stays pseudorandom when α's sibling is a skipped node.
+//! A leaf `X = s ∥ t` yields the payload `Convert(s)`. The tree is always the
+//! full `2^n`-leaf tree. A domain size N that is not a power of two is padded
+//! (GYW+23 §5): all `2^n` leaves are expanded and enter the sums, and only the
+//! outputs for `x < N` are returned.
 
 use dpf_common::block::{depth_for, Block};
 use dpf_common::hash::{convert_hash, CcrHash};
-
-/// Nodes on level `l` (0 = root) of a depth-`depth` tree with `n_size` leaves
-/// that have a leaf below `n_size` (Floram's `nextlevelblocks`).
-pub fn level_count(n_size: u64, depth: usize, l: usize) -> usize {
-    n_size.div_ceil(1u64 << (depth - l)) as usize
-}
 
 /// Clears the t-bit: `hb(X) ∥ 0`.
 #[inline]
@@ -114,9 +107,7 @@ fn sum_interleaved(v: &[Block]) -> (Block, Block) {
     let mut r = Block::ZERO;
     for pair in v.chunks(2) {
         l ^= pair[0];
-        if let Some(x) = pair.get(1) {
-            r ^= *x;
-        }
+        r ^= pair[1];
     }
     (l, r)
 }
@@ -137,7 +128,7 @@ impl HtLocal {
 
     fn with_corr_levels(h: CcrHash, n_size: u64, conv: Convert, root: Block, corr_levels: usize) -> Self {
         let depth = depth_for(n_size);
-        let mut nodes = Vec::with_capacity(n_size as usize);
+        let mut nodes = Vec::with_capacity(1 << depth);
         nodes.push(root);
         HtLocal {
             h,
@@ -147,7 +138,7 @@ impl HtLocal {
             corr_levels,
             level: 0,
             nodes,
-            scratch: Vec::with_capacity(n_size as usize),
+            scratch: Vec::with_capacity(1 << depth),
             leaf_cols: Vec::new(),
         }
     }
@@ -168,7 +159,7 @@ impl HtLocal {
     /// Expands a correlated level with its correction word. Needs
     /// [`correlated_sum`](Self::correlated_sum) first.
     pub fn apply_correlated(&mut self, cw: Block) {
-        let next = level_count(self.n_size, self.depth, self.level + 1);
+        let next = 2 * self.nodes.len();
         let mut kids = Vec::with_capacity(next);
         for c in 0..next {
             let p = self.nodes[c / 2];
@@ -188,13 +179,10 @@ impl HtLocal {
     }
 
     /// Before the last level: computes the raw children `H(X ⊕ σ)` and returns
-    /// `(⊕_j H(X^j), ⊕_j H(X^j ⊕ 1))` over all parents, then keeps only the
-    /// children with a leaf below N. Summing a dropped right child too keeps
-    /// HCW pseudorandom when it is α's off-path sibling (else HCW = 0).
+    /// `(⊕_j H(X^j), ⊕_j H(X^j ⊕ 1))` over all parents.
     pub fn last_sums(&mut self) -> (Block, Block) {
         assert_eq!(self.level + 1, self.depth);
         assert_eq!(self.corr_levels + 1, self.depth);
-        let next = level_count(self.n_size, self.depth, self.depth);
         let p = self.nodes.len();
         let mut q0 = vec![Block::ZERO; p];
         let mut q1 = vec![Block::ZERO; p];
@@ -205,9 +193,7 @@ impl HtLocal {
             self.scratch.push(q0[j]);
             self.scratch.push(q1[j]);
         }
-        let sums = sum_interleaved(&self.scratch);
-        self.scratch.truncate(next);
-        sums
+        sum_interleaved(&self.scratch)
     }
 
     /// Applies `(HCW, LCW_0, LCW_1)` to the last level. `hcw`'s lsb is ignored.
@@ -220,23 +206,25 @@ impl HtLocal {
         self.level += 1;
     }
 
-    /// After the last level: converts every leaf and returns `⊕_j Convert(leaf_j)`
-    /// per payload block.
+    /// After the last level: converts all `2^n` leaves and returns
+    /// `⊕_j Convert(leaf_j)` per payload block.
     pub fn finalize(&mut self) -> Vec<Block> {
         assert_eq!(self.level, self.depth);
-        assert_eq!(self.nodes.len(), self.n_size as usize);
+        assert_eq!(self.nodes.len(), 1 << self.depth);
         self.leaf_cols = (0..self.conv.bm).map(|k| self.conv.column(&self.nodes, k)).collect();
         self.leaf_cols.iter().map(|c| c.iter().fold(Block::ZERO, |a, b| a ^ *b)).collect()
     }
 
-    /// Output shares `y(x) = Convert(leaf_x) ⊕ t_x·CW_{n+1}`.
+    /// Output shares `y(x) = Convert(leaf_x) ⊕ t_x·CW_{n+1}` for `x < N`.
     pub fn output(self, cw_out: &[Block]) -> FullEval {
-        let t: Vec<bool> = self.nodes.iter().map(|x| x.lsb()).collect();
+        let n = self.n_size as usize;
+        let t: Vec<bool> = self.nodes[..n].iter().map(|x| x.lsb()).collect();
         let cols = self
             .leaf_cols
             .into_iter()
             .zip(cw_out)
             .map(|(mut col, g)| {
+                col.truncate(n);
                 for (y, &tx) in col.iter_mut().zip(&t) {
                     *y ^= g.and_bit(tx);
                 }

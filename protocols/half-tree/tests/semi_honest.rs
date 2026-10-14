@@ -104,8 +104,8 @@ fn flights_are_n_plus_3() {
 }
 
 #[test]
-fn hcw_pseudorandom_when_sibling_is_skipped() {
-    // N = 5, α = 4: α's last-level sibling (leaf 5) has no leaf below N, but it
+fn hcw_pseudorandom_when_sibling_is_padding() {
+    // N = 5, α = 4: α's last-level sibling (leaf 5) is a padding leaf, but it
     // still enters the sums, so HCW is not publicly zero.
     let mut rng = ChaCha20Rng::seed_from_u64(17);
     for _ in 0..32 {
