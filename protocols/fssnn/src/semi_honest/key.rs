@@ -54,11 +54,9 @@ impl FssKey {
 
     /// Shares of `f(0), …, f(N − 1)`.
     pub fn eval_full(&self) -> Vec<bool> {
-        let n = self.depth();
         let lb = self.leaf_bits();
         let mut nodes = vec![self.root];
-        for (i, cw) in self.cws.iter().enumerate() {
-            let keep = self.n_size.div_ceil(1 << (n - 1 - i)) as usize;
+        for cw in &self.cws {
             let mut next = Vec::with_capacity(2 * nodes.len());
             for &v in &nodes {
                 let [l, r] = expand(v);
@@ -66,7 +64,6 @@ impl FssKey {
                 next.push(l ^ cl);
                 next.push(r ^ cr);
             }
-            next.truncate(keep);
             nodes = next;
         }
         (0..self.n_size).map(|x| self.output(nodes[(x >> lb) as usize], (x & ((1 << lb) - 1)) as usize)).collect()
