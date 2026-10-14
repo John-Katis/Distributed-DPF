@@ -26,7 +26,7 @@ Shared code it uses from `dpf-common` (`crates/common`):
 | `prg.rs`   | `offline_prg`: Davies–Meyer AES with public `keyL` (left child) and `keyR` (right child) |
 | `gc.rs`    | Obliv-C Yao: free-XOR + half-gates; shared inputs as in `ocFromShared_impl` (1 OT per bit); reveal as in `yao{Genr,Eval}RevealOblivBits` |
 | `ot/`      | Obliv-C OT: Naor–Pinkas base OT over secp256r1 + semi-honest IKNP with 80 base OTs (`OT_KEY_BITS`) |
-| `net.rs`   | in-process two-party network (two threads, `mpsc`), counting bytes and flights |
+| `net.rs`   | in-process two-party network (two threads, `mpsc`), counting bytes and rounds |
 
 As in Floram, party 0 (Floram's party 1) is the garbler and OT sender, and it
 chooses the public PRG keys. Payloads are XOR-shared blocks. The domain size N

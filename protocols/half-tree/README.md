@@ -14,7 +14,7 @@ party.
 * Setup: `Session::setup` picks `Δ_b` with `lsb(Δ_b) = b`, runs base OTs for a
   `CotPair`, and tosses one coin for the hash key `S` and the seed of the
   per-run root re-randomiser W (the F_Rand compression of §5.2).
-* `Session::gen`: n + 3 flights. These are the COT columns, n−1 levels,
+* `Session::gen`: n + 3 rounds. These are the COT columns, n−1 levels,
   `(μ, d)`, `(HCW, LCW)` and `CW_{n+1}`.
 * `HtKey::eval_point`, `HtKey::eval_full` (about 1.5N hash calls).
 * `deal` / `gen_reference`: trusted dealer. `deal` is the bit-exact oracle in the

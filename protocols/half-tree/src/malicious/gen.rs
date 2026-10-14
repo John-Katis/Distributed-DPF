@@ -7,10 +7,10 @@
 //! invariant that on-path nodes differ by Δ and off-path nodes are equal:
 //!
 //! 1. Root share `Δ_b ⊕ W`, with W from one F_coin call per run (Fig. 5 step 1).
-//! 2. For every level (one flight each):
+//! 2. For every level (one round each):
 //!    `CW_b = ⊕_j H(X^j_b) ⊕ Δ_b ⊕ α_{i,b}·Δ_b ⊕ K_b[α_{i,1−b}] ⊕ M_b[α_{i,b}]`,
 //!    which reconstructs to `H-difference ⊕ ᾱ_i·Δ` and needs no 2PC.
-//! 3. Leaf word: `CW^{(n)}_b = ⊕_j H_1(X^j_b) ⊕ (β_b ∥ M_b[β])` (one flight).
+//! 3. Leaf word: `CW^{(n)}_b = ⊕_j H_1(X^j_b) ⊕ (β_b ∥ M_b[β])` (one round).
 //! 4. Outputs `u = unit(α)` and `v = β·unit(α)` as SPDZ sharings (the MAC of
 //!    `u(x)` is the leaf itself).
 //! 5. Consistency: with random `⟨r⟩` and public χ,

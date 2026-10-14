@@ -13,7 +13,9 @@
 //! * `gen_ms_p*` and `total_ms` cover preprocessing and the online phase.
 //! * `gen_bytes` is all traffic on all links: P0↔P1 in both directions, plus
 //!   P2's dealt correlations in 3P.
-//! * `flights` counts P0's and P1's flights on all links.
+//! * `rounds` is the larger of P0's and P1's preprocessing plus online
+//!   rounds. In 3P the P0–P1 link starts at depth 0, so P2's dealing round is
+//!   included.
 //! * `cots` is 2P only.
 //! * The online phase alone is two words each way in one flight; it is printed
 //!   as a `#` comment line.
@@ -49,7 +51,6 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
     let run = last.unwrap();
     let [o0, o1] = &run.outs;
     let link = o0.pre_stats.total_bytes() + o0.online_stats.total_bytes();
-    let helper_flights = run.helper.map_or(0, |h| h.flights);
     print_gen(
         o,
         &GenRow {
@@ -61,18 +62,18 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
             setup_bytes: o0.setup_stats.total_bytes(),
             gen_bytes: link + o0.helper_bytes + o1.helper_bytes,
             depth: o0.key.depth(),
-            flights: o0.pre_stats.flights + o0.online_stats.flights + o1.pre_stats.flights + o1.online_stats.flights + helper_flights,
+            rounds: (o0.pre_stats.rounds + o0.online_stats.rounds).max(o1.pre_stats.rounds + o1.online_stats.rounds),
             and_gates: 0,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),
         },
     );
     println!(
-        "# online,{},{},bytes_both_dirs={},flights={},median_ms={:.3}",
+        "# online,{},{},bytes_both_dirs={},rounds={},median_ms={:.3}",
         o.variant,
         o.size,
         o0.online_stats.total_bytes(),
-        o0.online_stats.flights + o1.online_stats.flights,
+        o0.online_stats.rounds.max(o1.online_stats.rounds),
         median(onl).as_secs_f64() * 1e3
     );
 }

@@ -40,7 +40,7 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
             setup_bytes: o0.setup_stats.total_bytes(),
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
-            flights: o0.gen_stats.flights + o1.gen_stats.flights,
+            rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
             and_gates: o0.and_gates,
             cots: 0,
             key_bytes: o0.key.size_bytes(),

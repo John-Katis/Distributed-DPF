@@ -15,14 +15,14 @@
 //!    `M_b[α_{i,b}] = K_{1−b}[α_{i,b}] ⊕ α_{i,b}·Δ_{1−b}`. With chosen-choice IKNP
 //!    the masked-choice message `g_b` of Fig. 11 is folded into the extension.
 //! 2. Root share `Δ_b ⊕ W`.
-//! 3. Levels `1..n−1` (one flight each):
+//! 3. Levels `1..n−1` (one round each):
 //!    `⟨CW_i⟩_b = ⊕_j H(X^j_b) ⊕ Δ_b ⊕ α_{i,b}·Δ_b ⊕ K_b[α_{i,1−b}] ⊕ M_b[α_{i,b}]`,
 //!    which reconstructs to `⊕_j H(X^j_0) ⊕ H(X^j_1) ⊕ ᾱ_i·Δ`.
-//! 4. Level n (two flights): `HCW = hb(Xsum_{ᾱ_n})` is selected obliviously with
+//! 4. Level n (two rounds): `HCW = hb(Xsum_{ᾱ_n})` is selected obliviously with
 //!    the level-n COT and the `(μ_b, d_b)` message; `LCW_σ` is linear.
-//! 5. `CW_{n+1} = ⊕_j Convert(s^j_0) ⊕ Convert(s^j_1) ⊕ β` (one flight).
+//! 5. `CW_{n+1} = ⊕_j Convert(s^j_0) ⊕ Convert(s^j_1) ⊕ β` (one round).
 //!
-//! That is n + 3 flights after setup, as in the paper.
+//! That is n + 3 rounds after setup, as in the paper.
 
 use super::key::HtKey;
 use crate::tree::{hb, Convert, FullEval, HtLocal};

@@ -1,24 +1,38 @@
 //! In-process two- and three-party networks with byte and round counting.
 //!
 //! Each party runs on its own thread and talks over a pair of `mpsc` channels.
-//! Nothing touches a socket. `CommStats` has the shape of the one in the
-//! verifiable-dOPRF `network` crate, specialised to two parties.
+//! Nothing touches a socket, and nothing is delayed: network cost is added
+//! analytically from the counters ([`link_time`]).
+//!
+//! # Rounds
+//!
+//! A round is one one-way network latency (Duoram's "sequential messages").
+//! Messages that can be in flight at the same time share a round, so a
+//! simultaneous exchange (both parties send their CW share, then both
+//! receive) is one round, while a request and its reply are two.
+//!
+//! Every message carries a depth stamp. A party's clock is the largest stamp
+//! it has received, a message it sends is stamped clock + 1, and a party's
+//! round count is the largest stamp it has sent or received. The protocol's
+//! round count is the maximum over the parties. In a three-party protocol a
+//! party's links share one clock, so a message relayed through a party
+//! counts as two rounds.
 
 use crate::block::{blocks_from_bytes, blocks_to_bytes, pack_bits, unpack_bits, Block};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Communication counters for one party.
-///
-/// A *flight* is a run of consecutive sends with no receive in between. Adding
-/// both parties' flights gives the number of one-way message flights in the
-/// protocol, and a round trip is two flights.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommStats {
     pub bytes_sent: usize,
     pub bytes_recv: usize,
     pub messages_sent: usize,
-    pub flights: usize,
+    /// Largest round stamp this party has sent or received (see the module
+    /// docs). After [`since`](Self::since), the rounds within that span.
+    pub rounds: usize,
 }
 
 impl CommStats {
@@ -33,25 +47,29 @@ impl CommStats {
             bytes_sent: self.bytes_sent - earlier.bytes_sent,
             bytes_recv: self.bytes_recv - earlier.bytes_recv,
             messages_sent: self.messages_sent - earlier.messages_sent,
-            flights: self.flights - earlier.flights,
+            rounds: self.rounds - earlier.rounds,
         }
     }
-
-    /// Wall-clock estimate over a real link: `T_comp + rounds·RTT + 8·bytes/BW`,
-    /// with rounds = flights/2 (the model used in the dOPRF repo).
-    pub fn link_time(&self, comp: Duration, total_flights: usize, rtt: Duration, bits_per_sec: f64) -> Duration {
-        let rounds = total_flights.div_ceil(2) as u32;
-        comp + rtt * rounds + Duration::from_secs_f64(8.0 * self.total_bytes() as f64 / bits_per_sec)
-    }
 }
+
+/// Wall-clock estimate over a real link:
+/// `comp + rounds·latency + 8·bytes/bandwidth`, with `latency` one-way and
+/// `bytes` the traffic in both directions.
+pub fn link_time(comp: Duration, rounds: usize, bytes: usize, latency: Duration, bits_per_sec: f64) -> Duration {
+    comp + latency * rounds as u32 + Duration::from_secs_f64(8.0 * bytes as f64 / bits_per_sec)
+}
+
+/// A message and its round stamp.
+type Msg = (usize, Vec<u8>);
 
 /// One party's end of the two-party link.
 pub struct Channel {
     party: usize,
-    tx: Sender<Vec<u8>>,
-    rx: Receiver<Vec<u8>>,
+    tx: Sender<Msg>,
+    rx: Receiver<Msg>,
     stats: CommStats,
-    last_was_send: bool,
+    /// Largest stamp received by this party, shared by all of its links.
+    clock: Arc<AtomicUsize>,
 }
 
 impl Channel {
@@ -66,19 +84,18 @@ impl Channel {
     }
 
     pub fn send(&mut self, msg: Vec<u8>) {
-        if !self.last_was_send {
-            self.stats.flights += 1;
-            self.last_was_send = true;
-        }
+        let stamp = self.clock.load(Ordering::Relaxed) + 1;
+        self.stats.rounds = self.stats.rounds.max(stamp);
         self.stats.bytes_sent += msg.len();
         self.stats.messages_sent += 1;
-        self.tx.send(msg).expect("peer hung up");
+        self.tx.send((stamp, msg)).expect("peer hung up");
     }
 
     pub fn recv(&mut self) -> Vec<u8> {
-        let msg = self.rx.recv().expect("peer hung up");
+        let (stamp, msg) = self.rx.recv().expect("peer hung up");
+        self.clock.fetch_max(stamp, Ordering::Relaxed);
+        self.stats.rounds = self.stats.rounds.max(stamp);
         self.stats.bytes_recv += msg.len();
-        self.last_was_send = false;
         msg
     }
 
@@ -120,7 +137,7 @@ impl Channel {
 pub fn channel_pair() -> (Channel, Channel) {
     let (tx0, rx1) = channel();
     let (tx1, rx0) = channel();
-    let mk = |party, tx, rx| Channel { party, tx, rx, stats: CommStats::default(), last_was_send: false };
+    let mk = |party, tx, rx| Channel { party, tx, rx, stats: CommStats::default(), clock: Arc::default() };
     (mk(0, tx0, rx0), mk(1, tx1, rx1))
 }
 
@@ -167,7 +184,7 @@ impl Peers {
         self.links[j].as_ref().expect("no link to self").stats()
     }
 
-    /// Counters summed over both links.
+    /// Counters summed over both links (rounds: the larger of the two).
     pub fn stats(&self) -> CommStats {
         let mut s = CommStats::default();
         for l in self.links.iter().flatten() {
@@ -175,7 +192,7 @@ impl Peers {
             s.bytes_sent += t.bytes_sent;
             s.bytes_recv += t.bytes_recv;
             s.messages_sent += t.messages_sent;
-            s.flights += t.flights;
+            s.rounds = s.rounds.max(t.rounds);
         }
         s
     }
@@ -193,8 +210,12 @@ where
     F2: FnOnce(&mut Peers) -> R2 + Send,
 {
     let (c01, c10) = channel_pair();
-    let (c02, c20) = channel_pair();
-    let (c12, c21) = channel_pair();
+    let (mut c02, c20) = channel_pair();
+    let (mut c12, mut c21) = channel_pair();
+    // One clock per party, shared by its two links.
+    c02.clock = c01.clock.clone();
+    c12.clock = c10.clock.clone();
+    c21.clock = c20.clock.clone();
     let mut p0 = Peers { party: 0, links: [None, Some(c01), Some(c02)] };
     let mut p1 = Peers { party: 1, links: [Some(c10), None, Some(c12)] };
     let mut p2 = Peers { party: 2, links: [Some(c20), Some(c21), None] };
@@ -233,9 +254,10 @@ mod tests {
                 p.stats_with(0)
             },
         );
+        // 0 → 1 and 0 → 2 (round 1), 1 → 2 relays (round 2), 2 → 0 (round 3).
         assert_eq!(a, vec![7]);
-        assert_eq!(b, CommStats { bytes_sent: 1, bytes_recv: 1, messages_sent: 1, flights: 1 });
-        assert_eq!(c, CommStats { bytes_sent: 1, bytes_recv: 2, messages_sent: 1, flights: 1 });
+        assert_eq!(b, CommStats { bytes_sent: 1, bytes_recv: 1, messages_sent: 1, rounds: 2 });
+        assert_eq!(c, CommStats { bytes_sent: 1, bytes_recv: 2, messages_sent: 1, rounds: 3 });
     }
 
     #[test]
@@ -255,7 +277,20 @@ mod tests {
                 c.stats()
             },
         );
-        assert_eq!(s0, CommStats { bytes_sent: 4, bytes_recv: 10, messages_sent: 2, flights: 1 });
-        assert_eq!(s1, CommStats { bytes_sent: 10, bytes_recv: 4, messages_sent: 1, flights: 1 });
+        // A request and its reply: two rounds.
+        assert_eq!(s0, CommStats { bytes_sent: 4, bytes_recv: 10, messages_sent: 2, rounds: 2 });
+        assert_eq!(s1, CommStats { bytes_sent: 10, bytes_recv: 4, messages_sent: 1, rounds: 2 });
+    }
+
+    #[test]
+    fn simultaneous_exchange_is_one_round() {
+        let exchange = |c: &mut Channel| {
+            for i in 0..3u8 {
+                c.send(vec![i]);
+                assert_eq!(c.recv(), vec![i]);
+            }
+            c.stats().rounds
+        };
+        assert_eq!(run_two_party(exchange, exchange), (3, 3));
     }
 }

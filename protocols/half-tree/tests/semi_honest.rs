@@ -92,15 +92,13 @@ fn zero_payload_gives_zero_everywhere() {
 }
 
 #[test]
-fn flights_are_n_plus_3() {
+fn rounds_are_n_plus_3() {
     let n = 1u64 << 10;
     let run = run_gen(n, 128, 5, &[Block(1)], 3);
     let [o0, o1] = &run.outs;
-    // COT columns, n-1 levels, (μ,d), CW_n, CW_{n+1}: n+3 flights. Party 0 sent
-    // the last setup sync message, so the counter merges its first gen flight
-    // into setup.
-    assert_eq!(o0.gen_stats.flights, 10 + 2);
-    assert_eq!(o1.gen_stats.flights, 10 + 3);
+    // COT columns, n-1 levels, (μ,d), CW_n, CW_{n+1}: each is a simultaneous
+    // exchange, so one round each.
+    assert_eq!((o0.gen_stats.rounds, o1.gen_stats.rounds), (10 + 3, 10 + 3));
 }
 
 #[test]
