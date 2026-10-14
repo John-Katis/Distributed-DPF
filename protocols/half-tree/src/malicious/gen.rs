@@ -147,8 +147,9 @@ impl MalSession {
         let cw: Vec<Block> = mine.iter().zip(&theirs).map(|(a, b)| *a ^ *b).collect();
         let (cw_v, cw_m) = (cw[..bm].to_vec(), cw[bm..].to_vec());
 
-        // 4. Outputs.
-        let full = leaf_outputs(&self.hash, &leaves[..n_size as usize], &cw_v, &cw_m);
+        // 4. Outputs at all 2^n positions, padding included: Fig. 5 checks
+        // every one of them.
+        let mut full = leaf_outputs(&self.hash, leaves, &cw_v, &cw_m);
 
         // 5. Random linear combination, masked by ⟨r⟩, opened for the batch check.
         let r = self.mac.rand_gf(ch, 1)?[0];
@@ -169,6 +170,7 @@ impl MalSession {
             }
         }
         self.mac.open(ch, &[a]);
+        full.truncate(n_size as usize);
 
         let key = MalKey { party: ch.party(), n_size, hash: self.hash.clone(), root, cws, cw_v, cw_m };
         Ok(MalGenOutput { key, full })

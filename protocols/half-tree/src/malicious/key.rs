@@ -38,13 +38,21 @@ pub struct MalFull {
 }
 
 impl MalFull {
+    /// Keeps only the outputs for `x < n` (drops the padding positions).
+    pub(crate) fn truncate(&mut self, n: usize) {
+        self.n = n;
+        self.u.truncate(n);
+        for col in &mut self.v {
+            col.truncate(n);
+        }
+    }
+
     pub fn v_at(&self, x: usize) -> Vec<AuthGf> {
         self.v.iter().map(|c| c[x]).collect()
     }
 }
 
-/// Turns leaves into `(u, v)` with the leaf correction word, one output per
-/// leaf passed in.
+/// Turns leaves into `(u, v)` with the leaf correction word.
 pub(crate) fn leaf_outputs(hash: &CcrHash, leaves: &[Block], cw_v: &[Block], cw_m: &[Block]) -> MalFull {
     let n = leaves.len();
     let u = leaves.iter().map(|x| AuthGf { x: Block(x.lsb() as u128), m: *x }).collect();
@@ -129,6 +137,8 @@ impl MalKey {
             local.correlated_sum();
             local.apply_correlated(*cw);
         }
-        leaf_outputs(&self.hash, &local.nodes()[..self.n_size as usize], &self.cw_v, &self.cw_m)
+        let mut full = leaf_outputs(&self.hash, local.nodes(), &self.cw_v, &self.cw_m);
+        full.truncate(self.n_size as usize);
+        full
     }
 }
