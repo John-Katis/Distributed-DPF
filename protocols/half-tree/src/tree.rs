@@ -16,6 +16,7 @@
 
 use dpf_common::block::{depth_for, Block};
 use dpf_common::hash::{convert_hash, CcrHash};
+use dpf_common::stream::{walk, TreeMode};
 
 /// Clears the t-bit: `hb(X) ∥ 0`.
 #[inline]
@@ -232,5 +233,202 @@ impl HtLocal {
             })
             .collect();
         FullEval { n: self.n_size as usize, bm: self.conv.bm, cols }
+    }
+}
+
+/// The per-level interface that Gen drives. [`HtLocal`] stores every level;
+/// [`HtStream`] regenerates them ([`dpf_common::stream`]).
+pub trait HtTree: Sized {
+    /// The semi-honest tree: correlated levels `1..n−1`, then the last level.
+    fn start(h: CcrHash, n_size: u64, conv: Convert, root: Block, mode: TreeMode) -> Self;
+    /// The malicious tree: every level correlated.
+    fn start_all_correlated(h: CcrHash, n_size: u64, root: Block, mode: TreeMode) -> Self;
+    fn correlated_sum(&mut self) -> Block;
+    fn apply_correlated(&mut self, cw: Block);
+    fn last_sums(&mut self) -> (Block, Block);
+    fn apply_last(&mut self, hcw: Block, lcw: [bool; 2]);
+    fn finalize(&mut self) -> Vec<Block>;
+    /// The full-domain output, if the tree keeps one.
+    fn output(self, cw_out: &[Block]) -> Option<FullEval>;
+    /// All `2^n` leaves, padding included, in order and in batches.
+    fn visit_leaves(&self, visit: impl FnMut(u64, &[Block]));
+}
+
+impl HtTree for HtLocal {
+    fn start(h: CcrHash, n_size: u64, conv: Convert, root: Block, _: TreeMode) -> Self {
+        HtLocal::start(h, n_size, conv, root)
+    }
+    fn start_all_correlated(h: CcrHash, n_size: u64, root: Block, _: TreeMode) -> Self {
+        HtLocal::start_all_correlated(h, n_size, root)
+    }
+    fn correlated_sum(&mut self) -> Block {
+        HtLocal::correlated_sum(self)
+    }
+    fn apply_correlated(&mut self, cw: Block) {
+        HtLocal::apply_correlated(self, cw)
+    }
+    fn last_sums(&mut self) -> (Block, Block) {
+        HtLocal::last_sums(self)
+    }
+    fn apply_last(&mut self, hcw: Block, lcw: [bool; 2]) {
+        HtLocal::apply_last(self, hcw, lcw)
+    }
+    fn finalize(&mut self) -> Vec<Block> {
+        HtLocal::finalize(self)
+    }
+    fn output(self, cw_out: &[Block]) -> Option<FullEval> {
+        Some(HtLocal::output(self, cw_out))
+    }
+    fn visit_leaves(&self, mut visit: impl FnMut(u64, &[Block])) {
+        assert_eq!(self.level, self.depth);
+        visit(0, &self.nodes);
+    }
+}
+
+/// The same tree as [`HtLocal`], holding only the root and the correction
+/// words so far. Every sum is recomputed by a batched walk from the root; there
+/// is no full-domain output.
+pub struct HtStream {
+    h: CcrHash,
+    depth: usize,
+    conv: Convert,
+    corr_levels: usize,
+    batch: usize,
+    root: Block,
+    cws: Vec<Block>,
+    /// `(hb(HCW), LCW)` of the last level, once applied.
+    last: Option<(Block, [bool; 2])>,
+}
+
+impl HtStream {
+    /// A streaming tree over known correction words (for key evaluation).
+    /// `last = None` is the all-correlated tree of the malicious variant.
+    pub fn with_cws(h: CcrHash, n_size: u64, conv: Convert, root: Block, cws: Vec<Block>, last: Option<(Block, [bool; 2])>, batch: usize) -> Self {
+        let depth = depth_for(n_size);
+        let corr_levels = if last.is_some() { depth - 1 } else { depth };
+        assert_eq!(cws.len(), corr_levels);
+        HtStream { h, depth, conv, corr_levels, batch, root, cws, last: last.map(|(c, l)| (hb(c), l)) }
+    }
+
+    /// Corrected children at level `level` (1-based): `apply_correlated` or
+    /// `apply_last` on the parents.
+    fn expand(&self, level: usize, parents: &[Block], out: &mut Vec<Block>) {
+        let p = parents.len();
+        out.resize(2 * p, Block::ZERO);
+        if level <= self.corr_levels {
+            let cw = self.cws[level - 1];
+            let mut hs = vec![Block::ZERO; p];
+            self.h.h_many(parents, &mut hs);
+            for (j, (x, hx)) in parents.iter().zip(&hs).enumerate() {
+                let l = *hx ^ cw.and_bit(x.lsb());
+                out[2 * j] = l;
+                out[2 * j + 1] = l ^ *x;
+            }
+        } else {
+            let (hcw, lcw) = self.last.expect("last level applied");
+            let corr = [Block(hcw.0 | lcw[0] as u128), Block(hcw.0 | lcw[1] as u128)];
+            let (mut q0, mut q1) = (vec![Block::ZERO; p], vec![Block::ZERO; p]);
+            self.h.h_many_tweak(parents, Block::ZERO, &mut q0);
+            self.h.h_many_tweak(parents, Block(1), &mut q1);
+            for (j, x) in parents.iter().enumerate() {
+                out[2 * j] = q0[j] ^ corr[0].and_bit(x.lsb());
+                out[2 * j + 1] = q1[j] ^ corr[1].and_bit(x.lsb());
+            }
+        }
+    }
+
+    /// Visits the corrected nodes of `level`.
+    fn walk_level(&self, level: usize, visit: impl FnMut(u64, &[Block])) {
+        walk(self.root, level, self.batch, |l, p, o| self.expand(l, p, o), visit);
+    }
+
+    /// The level whose nodes are known, i.e. the number of applied levels.
+    fn level(&self) -> usize {
+        self.cws.len() + self.last.is_some() as usize
+    }
+
+    /// Output shares `Convert(leaf_x) ⊕ t_x·CW_{n+1}` for `x < n_size`, in
+    /// batches: `visit(x0, cols)` with `cols[k][i]` = block k of point `x0 + i`.
+    pub fn outputs(&self, n_size: u64, cw_out: &[Block], mut visit: impl FnMut(u64, &[Vec<Block>])) {
+        self.visit_leaves(|x0, leaves| {
+            if x0 >= n_size {
+                return;
+            }
+            let leaves = &leaves[..leaves.len().min((n_size - x0) as usize)];
+            let cols: Vec<Vec<Block>> = (0..self.conv.bm)
+                .map(|k| {
+                    let mut col = self.conv.column(leaves, k);
+                    for (y, l) in col.iter_mut().zip(leaves) {
+                        *y ^= cw_out[k].and_bit(l.lsb());
+                    }
+                    col
+                })
+                .collect();
+            visit(x0, &cols);
+        });
+    }
+}
+
+impl HtTree for HtStream {
+    fn start(h: CcrHash, n_size: u64, conv: Convert, root: Block, mode: TreeMode) -> Self {
+        let depth = depth_for(n_size);
+        HtStream { h, depth, conv, corr_levels: depth - 1, batch: mode.batch(), root, cws: Vec::new(), last: None }
+    }
+
+    fn start_all_correlated(h: CcrHash, n_size: u64, root: Block, mode: TreeMode) -> Self {
+        let depth = depth_for(n_size);
+        HtStream { h, depth, conv: Convert::new(128), corr_levels: depth, batch: mode.batch(), root, cws: Vec::new(), last: None }
+    }
+
+    fn correlated_sum(&mut self) -> Block {
+        assert!(self.cws.len() < self.corr_levels, "next level is not correlated");
+        let (mut acc, mut hs) = (Block::ZERO, Vec::new());
+        self.walk_level(self.cws.len(), |_, nodes| {
+            hs.resize(nodes.len(), Block::ZERO);
+            self.h.h_many(nodes, &mut hs);
+            acc = hs.iter().fold(acc, |a, b| a ^ *b);
+        });
+        acc
+    }
+
+    fn apply_correlated(&mut self, cw: Block) {
+        self.cws.push(cw);
+    }
+
+    fn last_sums(&mut self) -> (Block, Block) {
+        assert_eq!(self.cws.len() + 1, self.depth);
+        assert_eq!(self.corr_levels + 1, self.depth);
+        let (mut s0, mut s1, mut q) = (Block::ZERO, Block::ZERO, Vec::new());
+        self.walk_level(self.cws.len(), |_, nodes| {
+            q.resize(nodes.len(), Block::ZERO);
+            self.h.h_many_tweak(nodes, Block::ZERO, &mut q);
+            s0 = q.iter().fold(s0, |a, b| a ^ *b);
+            self.h.h_many_tweak(nodes, Block(1), &mut q);
+            s1 = q.iter().fold(s1, |a, b| a ^ *b);
+        });
+        (s0, s1)
+    }
+
+    fn apply_last(&mut self, hcw: Block, lcw: [bool; 2]) {
+        self.last = Some((hb(hcw), lcw));
+    }
+
+    fn finalize(&mut self) -> Vec<Block> {
+        let mut acc = vec![Block::ZERO; self.conv.bm];
+        self.visit_leaves(|_, leaves| {
+            for (k, a) in acc.iter_mut().enumerate() {
+                *a = self.conv.column(leaves, k).iter().fold(*a, |x, y| x ^ *y);
+            }
+        });
+        acc
+    }
+
+    fn output(self, _: &[Block]) -> Option<FullEval> {
+        None
+    }
+
+    fn visit_leaves(&self, visit: impl FnMut(u64, &[Block])) {
+        assert_eq!(self.level(), self.depth);
+        self.walk_level(self.depth, visit);
     }
 }

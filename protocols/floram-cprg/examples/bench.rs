@@ -56,6 +56,9 @@ fn main() {
         if o.runs("gen") {
             bench_gen(o, &mut rng);
         }
+        if !(o.runs("eval") || o.runs("full")) {
+            return;
+        }
         let beta = random_beta(&mut rng, o.out_bits);
         let keys = gen_reference_keys(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, [rng.gen(), rng.gen()], o.tree_mode());
         if o.runs("eval") {

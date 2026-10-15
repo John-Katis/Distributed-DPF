@@ -44,7 +44,7 @@ fn honest_runs_give_valid_authenticated_unit_vectors() {
                 let run = run_mal_gen(n, alpha, &beta, seed, [None, None], None);
                 let [r0, r1] = run.outs.map(|r| r.expect("honest run aborted"));
                 let deltas = [r0.delta, r1.delta];
-                let fulls = [r0.out.full, r1.out.full];
+                let fulls = [r0.out.full.unwrap(), r1.out.full.unwrap()];
                 check_full(&fulls, deltas, n, alpha, &beta);
                 check_keys(&[r0.out.key, r1.out.key], &fulls);
             }
@@ -89,7 +89,7 @@ fn tampered_correction_words_abort() {
 fn output_shares_hide_beta() {
     let run = run_mal_gen(64, 9, &[Block(77)], 1, [None, None], None);
     let r0 = run.outs[0].as_ref().unwrap();
-    let v: &AuthGf = &r0.out.full.v[0][9];
+    let v: &AuthGf = &r0.out.full.as_ref().unwrap().v[0][9];
     assert_ne!(v.x, Block(77));
 }
 
@@ -101,7 +101,7 @@ fn ferret_backed_runs_are_valid_and_catch_tampering() {
         let beta = vec![Block::random(&mut rng)];
         let run = run_mal_gen(n, alpha, &beta, 77 + n, [None, None], Some(FerretConfig::TOY));
         let [r0, r1] = run.outs.map(|r| r.expect("honest Ferret run aborted"));
-        let fulls = [r0.out.full, r1.out.full];
+        let fulls = [r0.out.full.unwrap(), r1.out.full.unwrap()];
         check_full(&fulls, [r0.delta, r1.delta], n, alpha, &beta);
     }
     let fault = Some(Fault { level: 2, err: Block(1 << 40) });

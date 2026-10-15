@@ -4,5 +4,5 @@
 pub mod gen;
 pub mod key;
 
-pub use gen::{deal, gen, gen_reference, GenOutput, Session};
+pub use gen::{deal, deal_keys, gen, gen_mode, gen_reference, gen_reference_keys, GenOutput, Session};
 pub use key::HtKey;

@@ -17,12 +17,14 @@
 //! Options and CSV columns are those of `dpf_common::bench`. Setup (base OTs,
 //! COT/MAC-key initialisation, coin tosses) is reported apart from generation;
 //! COT extension is part of generation. `eval` and `full` use dealer keys.
+//! With `--stream`, Gen and the dealer use the streaming tree and `full` folds
+//! the outputs instead of storing them.
 
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
 use dpf_common::block::{blocks_for_bits, depth_for};
 use dpf_common::ot::FerretConfig;
 use dpf_common::testing::random_beta;
-use half_tree::{malicious, run_gen, run_mal_gen, semi_honest, Block};
+use half_tree::{malicious, run_gen_mode, run_mal_gen_mode, semi_honest, Block, TreeMode};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
@@ -32,7 +34,7 @@ fn gen_ht(o: &Opts, rng: &mut ChaCha20Rng) {
     let mut last = None;
     for _ in 0..o.reps {
         let beta = random_beta(rng, o.out_bits);
-        let run = run_gen(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen());
+        let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen(), o.tree_mode());
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
         g0.push(run.outs[0].gen_time);
         g1.push(run.outs[1].gen_time);
@@ -66,7 +68,7 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng, ferret: Option<FerretConfig>) {
     let mut last = None;
     for _ in 0..o.reps {
         let beta: Vec<Block> = (0..bm).map(|_| Block::random(rng)).collect();
-        let run = run_mal_gen(o.size, rng.gen_range(0..o.size), &beta, rng.gen(), [None, None], ferret);
+        let run = run_mal_gen_mode(o.size, rng.gen_range(0..o.size), &beta, rng.gen(), [None, None], ferret, o.tree_mode());
         let [r0, r1] = run.outs.map(|r| r.expect("honest run aborted"));
         setup.push(r0.setup_time.max(r1.setup_time));
         g0.push(r0.gen_time);
@@ -98,14 +100,17 @@ fn main() {
     let opts = Opts::parse(&["ht", "mal", "mal-ferret"], 128, &[32, 127, 128, 256, 512]);
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
-        let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
         match o.variant.as_str() {
             "ht" => {
                 if o.runs("gen") {
                     gen_ht(o, &mut rng);
                 }
+                if !(o.runs("eval") || o.runs("full")) {
+                    return;
+                }
+                let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
                 let beta = random_beta(&mut rng, o.out_bits);
-                let (keys, _) = semi_honest::gen_reference(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen());
+                let keys = semi_honest::gen_reference_keys(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen(), o.tree_mode());
                 let k = &keys[0];
                 if o.runs("eval") {
                     let mut out = vec![Block::ZERO; k.bm()];
@@ -115,8 +120,15 @@ fn main() {
                     });
                 }
                 if o.runs("full") {
-                    bench_full(o, k.bm(), || {
-                        black_box(k.eval_full());
+                    bench_full(o, k.bm(), || match o.tree_mode() {
+                        TreeMode::Stored => {
+                            black_box(k.eval_full());
+                        }
+                        TreeMode::Stream { batch } => {
+                            let mut acc = Block::ZERO;
+                            k.eval_full_stream(batch, |_, cols| acc = cols.iter().flatten().fold(acc, |a, b| a ^ *b));
+                            black_box(acc);
+                        }
                     });
                 }
             }
@@ -124,9 +136,13 @@ fn main() {
                 if o.runs("gen") {
                     gen_mal(o, &mut rng, (v == "mal-ferret").then_some(FerretConfig::B13));
                 }
+                if !(o.runs("eval") || o.runs("full")) {
+                    return;
+                }
+                let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
                 let bm = blocks_for_bits(o.out_bits);
                 let beta: Vec<Block> = (0..bm).map(|_| Block::random(&mut rng)).collect();
-                let (keys, _) = malicious::gen_reference(o.size, rng.gen_range(0..o.size), &beta, rng.gen());
+                let (keys, _) = malicious::gen_reference_mode(o.size, rng.gen_range(0..o.size), &beta, rng.gen(), o.tree_mode());
                 let k = &keys[0];
                 if o.runs("eval") {
                     bench_eval(o, bm, &xs, |x| {
@@ -134,8 +150,17 @@ fn main() {
                     });
                 }
                 if o.runs("full") {
-                    bench_full(o, bm, || {
-                        black_box(k.eval_full());
+                    bench_full(o, bm, || match o.tree_mode() {
+                        TreeMode::Stored => {
+                            black_box(k.eval_full());
+                        }
+                        TreeMode::Stream { batch } => {
+                            let mut acc = Block::ZERO;
+                            k.eval_full_stream(batch, |_, part| {
+                                acc = part.v.iter().flatten().chain(&part.u).fold(acc, |a, s| a ^ s.x ^ s.m);
+                            });
+                            black_box(acc);
+                        }
                     });
                 }
             }

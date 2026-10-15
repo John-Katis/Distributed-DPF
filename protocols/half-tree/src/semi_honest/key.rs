@@ -2,7 +2,7 @@
 //! hash key `S`, `n−1` correlated correction words, the last-level word
 //! `(HCW, LCW_0, LCW_1)` and the output word `CW_{n+1}`.
 
-use crate::tree::{hb, Convert, FullEval, HtLocal};
+use crate::tree::{hb, Convert, FullEval, HtLocal, HtStream};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::hash::CcrHash;
 
@@ -87,5 +87,13 @@ impl HtKey {
         local.apply_last(hb(self.hcw), self.lcw);
         local.finalize();
         local.output(&self.cw_out)
+    }
+
+    /// [`eval_full`](Self::eval_full) without holding the domain: a batched
+    /// walk ([`dpf_common::stream`]) that calls `visit(x0, cols)` with
+    /// `cols[k][i]` = block k of this party's share at `x0 + i`, for all x < N.
+    pub fn eval_full_stream(&self, batch: usize, visit: impl FnMut(u64, &[Vec<Block>])) {
+        HtStream::with_cws(self.hash.clone(), self.n_size, self.conv, self.root, self.cws.clone(), Some((self.hcw, self.lcw)), batch)
+            .outputs(self.n_size, &self.cw_out, visit);
     }
 }

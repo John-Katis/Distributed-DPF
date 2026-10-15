@@ -5,5 +5,5 @@
 pub mod gen;
 pub mod key;
 
-pub use gen::{gen_reference, run_mal, Fault, MalGenOutput, MalRun, MalSession};
+pub use gen::{gen_reference, gen_reference_mode, run_mal, run_mal_mode, Fault, MalGenOutput, MalRun, MalSession};
 pub use key::{MalFull, MalKey};

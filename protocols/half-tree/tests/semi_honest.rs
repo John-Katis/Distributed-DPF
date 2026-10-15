@@ -43,15 +43,15 @@ fn two_party_gen_matches_cleartext_function() {
                 let [o0, o1] = run.outs;
                 assert_ne!(o0.key.eval_point(alpha), beta, "a single share equals beta");
                 let keys = [o0.key.clone(), o1.key.clone()];
-                check_against_cleartext(&keys, &[o0.full.clone(), o1.full.clone()], n, alpha, &beta);
+                check_against_cleartext(&keys, &[o0.full.clone().unwrap(), o1.full.clone().unwrap()], n, alpha, &beta);
 
                 // Bit-exact against the dealer on the protocol's roots and hash key.
                 let (rk, rf) = deal(&keys[0].hash, [keys[0].root, keys[1].root], n, out_bits, alpha, &beta);
                 for (k, r) in keys.iter().zip(&rk) {
                     assert_eq!(k.public_part(), r.public_part());
                 }
-                assert_eq!(o0.full, rf[0]);
-                assert_eq!(o1.full, rf[1]);
+                assert_eq!(o0.full.as_ref(), Some(&rf[0]));
+                assert_eq!(o1.full.as_ref(), Some(&rf[1]));
             }
         }
     }
@@ -77,7 +77,7 @@ fn every_alpha_small_domain() {
         let beta = vec![Block(0xdead_beef_0000 + alpha as u128)];
         let run = run_gen(n, 64, alpha, &beta, 1000 + alpha);
         let [o0, o1] = run.outs;
-        check_against_cleartext(&[o0.key, o1.key], &[o0.full, o1.full], n, alpha, &beta);
+        check_against_cleartext(&[o0.key, o1.key], &[o0.full.unwrap(), o1.full.unwrap()], n, alpha, &beta);
     }
 }
 

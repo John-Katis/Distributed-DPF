@@ -25,12 +25,13 @@
 //! That is n + 3 rounds after setup, as in the paper.
 
 use super::key::HtKey;
-use crate::tree::{hb, Convert, FullEval, HtLocal};
+use crate::tree::{hb, Convert, FullEval, HtLocal, HtStream, HtTree};
 use dpf_common::block::{bits_msb_first, depth_for, xor_blocks, Block};
 use dpf_common::coin::coin_blocks;
 use dpf_common::hash::{CcrHash, CtrPrg};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::ot::CotPair;
+use dpf_common::stream::TreeMode;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
@@ -79,6 +80,19 @@ impl Session {
     /// shares of `α < N` and `β` (`ceil(out_bits/128)` blocks; `out_bits ≤ 127`
     /// uses the PRG-free Convert).
     pub fn gen(&mut self, ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block]) -> GenOutput {
+        self.gen_mode(ch, n_size, out_bits, alpha_share, beta_share, TreeMode::Stored)
+    }
+
+    /// [`gen`](Self::gen) with the tree held as `mode` says. Both modes send
+    /// the same messages; [`TreeMode::Stream`] returns no full-domain output.
+    pub fn gen_mode(&mut self, ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], mode: TreeMode) -> GenOutput {
+        match mode {
+            TreeMode::Stored => self.gen_with::<HtLocal>(ch, n_size, out_bits, alpha_share, beta_share, mode),
+            TreeMode::Stream { .. } => self.gen_with::<HtStream>(ch, n_size, out_bits, alpha_share, beta_share, mode),
+        }
+    }
+
+    fn gen_with<T: HtTree>(&mut self, ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], mode: TreeMode) -> GenOutput {
         let t = Instant::now();
         let before = ch.stats();
         let b = self.party;
@@ -96,7 +110,7 @@ impl Session {
         // 2. Root.
         let w = Block(self.w_stream.next_words(1)[0]);
         let root = delta ^ w;
-        let mut local = HtLocal::start(self.hash.clone(), n_size, conv, root);
+        let mut local = T::start(self.hash.clone(), n_size, conv, root, mode);
 
         // 3. Correlated levels.
         let mut cws = Vec::with_capacity(n - 1);
@@ -154,8 +168,9 @@ impl Session {
 /// Everything one party gets out of a generation.
 pub struct GenOutput {
     pub key: HtKey,
-    /// Full-domain output, a by-product of generation.
-    pub full: FullEval,
+    /// Full-domain output, a by-product of generation. `None` with the
+    /// streaming tree.
+    pub full: Option<FullEval>,
     pub setup_stats: CommStats,
     pub setup_time: Duration,
     /// Traffic for this generation, COT extension included.
@@ -169,14 +184,32 @@ pub struct GenOutput {
 
 /// Session setup plus one generation, with Floram's `gen` signature.
 pub fn gen(ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], seed: [u8; 32]) -> GenOutput {
+    gen_mode(ch, n_size, out_bits, alpha_share, beta_share, seed, TreeMode::Stored)
+}
+
+/// [`gen`] with the tree held as `mode` says.
+pub fn gen_mode(ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], seed: [u8; 32], mode: TreeMode) -> GenOutput {
     let mut s = Session::setup(ch, seed);
-    s.gen(ch, n_size, out_bits, alpha_share, beta_share)
+    s.gen_mode(ch, n_size, out_bits, alpha_share, beta_share, mode)
 }
 
 /// Trusted-dealer DPF.Gen (Fig. 8) for given root shares and hash key. Used as
 /// the bit-exact oracle for [`Session::gen`]: the protocol's keys must equal
 /// `deal` applied to the roots and `S` it produced.
 pub fn deal(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits: usize, alpha: u64, beta: &[Block]) -> ([HtKey; 2], [FullEval; 2]) {
+    let (keys, [f0, f1]) = deal_with::<HtLocal>(hash, roots, n_size, out_bits, alpha, beta, TreeMode::Stored);
+    (keys, [f0.expect("stored tree"), f1.expect("stored tree")])
+}
+
+/// The keys of [`deal`], with the tree held as `mode` says.
+pub fn deal_keys(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], mode: TreeMode) -> [HtKey; 2] {
+    match mode {
+        TreeMode::Stored => deal_with::<HtLocal>(hash, roots, n_size, out_bits, alpha, beta, mode).0,
+        TreeMode::Stream { .. } => deal_with::<HtStream>(hash, roots, n_size, out_bits, alpha, beta, mode).0,
+    }
+}
+
+fn deal_with<T: HtTree>(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], mode: TreeMode) -> ([HtKey; 2], [Option<FullEval>; 2]) {
     assert!(alpha < n_size);
     let conv = Convert::new(out_bits);
     assert_eq!(beta.len(), conv.bm);
@@ -184,8 +217,8 @@ pub fn deal(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits: usize, alp
     assert!(delta.lsb(), "root shares must differ in the lsb");
     let n = depth_for(n_size);
     let a = bits_msb_first(alpha, n);
-    let mut l0 = HtLocal::start(hash.clone(), n_size, conv, roots[0]);
-    let mut l1 = HtLocal::start(hash.clone(), n_size, conv, roots[1]);
+    let mut l0 = T::start(hash.clone(), n_size, conv, roots[0], mode);
+    let mut l1 = T::start(hash.clone(), n_size, conv, roots[1], mode);
     let mut cws = Vec::with_capacity(n - 1);
     for &ai in &a[..n - 1] {
         let cw = l0.correlated_sum() ^ l1.correlated_sum() ^ delta.and_bit(!ai);
@@ -220,9 +253,19 @@ pub fn deal(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits: usize, alp
 /// Trusted-dealer generation from a seed: random `Δ` with lsb 1, random roots
 /// and hash key.
 pub fn gen_reference(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seed: [u8; 32]) -> ([HtKey; 2], [FullEval; 2]) {
+    let (hash, roots) = reference_setup(seed);
+    deal(&hash, roots, n_size, out_bits, alpha, beta)
+}
+
+/// The keys of [`gen_reference`], with the tree held as `mode` says.
+pub fn gen_reference_keys(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seed: [u8; 32], mode: TreeMode) -> [HtKey; 2] {
+    let (hash, roots) = reference_setup(seed);
+    deal_keys(&hash, roots, n_size, out_bits, alpha, beta, mode)
+}
+
+fn reference_setup(seed: [u8; 32]) -> (CcrHash, [Block; 2]) {
     let mut rng = ChaCha20Rng::from_seed(seed);
     let delta = Block(rng.gen::<u128>() | 1);
     let r0 = Block::random(&mut rng);
-    let hash = CcrHash::new(Block::random(&mut rng));
-    deal(&hash, [r0, r0 ^ delta], n_size, out_bits, alpha, beta)
+    (CcrHash::new(Block::random(&mut rng)), [r0, r0 ^ delta])
 }

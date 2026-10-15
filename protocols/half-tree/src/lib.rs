@@ -16,6 +16,7 @@ pub mod tree;
 pub use dpf_common::{block, net};
 
 pub use block::Block;
+pub use dpf_common::stream::TreeMode;
 pub use tree::{Convert, FullEval};
 
 use rand::{Rng, SeedableRng};
@@ -40,6 +41,11 @@ pub struct TwoPartyRun {
 
 /// Shares α and β and runs [`semi_honest::gen`] for both parties on two threads.
 pub fn run_gen(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seed: u64) -> TwoPartyRun {
+    run_gen_mode(n_size, out_bits, alpha, beta, seed, TreeMode::Stored)
+}
+
+/// [`run_gen`] with the tree held as `mode` says.
+pub fn run_gen_mode(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seed: u64, mode: TreeMode) -> TwoPartyRun {
     assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
@@ -47,12 +53,12 @@ pub fn run_gen(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seed: u
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();
-            let o = semi_honest::gen(c, n_size, out_bits, a[0], &b[0], seeds[0]);
+            let o = semi_honest::gen_mode(c, n_size, out_bits, a[0], &b[0], seeds[0], mode);
             (o, t.elapsed())
         },
         |c| {
             let t = Instant::now();
-            let o = semi_honest::gen(c, n_size, out_bits, a[1], &b[1], seeds[1]);
+            let o = semi_honest::gen_mode(c, n_size, out_bits, a[1], &b[1], seeds[1], mode);
             (o, t.elapsed())
         },
     );
@@ -76,6 +82,19 @@ pub fn run_mal_gen(
     faults: [Option<malicious::Fault>; 2],
     ferret: Option<dpf_common::ot::FerretConfig>,
 ) -> MalTwoPartyRun {
+    run_mal_gen_mode(n_size, alpha, beta, seed, faults, ferret, TreeMode::Stored)
+}
+
+/// [`run_mal_gen`] with the tree held as `mode` says.
+pub fn run_mal_gen_mode(
+    n_size: u64,
+    alpha: u64,
+    beta: &[Block],
+    seed: u64,
+    faults: [Option<malicious::Fault>; 2],
+    ferret: Option<dpf_common::ot::FerretConfig>,
+    mode: TreeMode,
+) -> MalTwoPartyRun {
     assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
@@ -83,12 +102,12 @@ pub fn run_mal_gen(
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();
-            let o = malicious::run_mal(c, n_size, a[0], &b[0], seeds[0], faults[0], ferret);
+            let o = malicious::run_mal_mode(c, n_size, a[0], &b[0], seeds[0], faults[0], ferret, mode);
             (o, t.elapsed())
         },
         |c| {
             let t = Instant::now();
-            let o = malicious::run_mal(c, n_size, a[1], &b[1], seeds[1], faults[1], ferret);
+            let o = malicious::run_mal_mode(c, n_size, a[1], &b[1], seeds[1], faults[1], ferret, mode);
             (o, t.elapsed())
         },
     );

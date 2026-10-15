@@ -23,7 +23,7 @@
 //! with the rest of a larger protocol; [`run_mal`] runs it at the end.
 
 use super::key::{leaf_outputs, leaf_sums, MalFull, MalKey};
-use crate::tree::HtLocal;
+use crate::tree::{HtLocal, HtStream, HtTree};
 use dpf_common::block::{bits_msb_first, blocks_from_bytes, blocks_to_bytes, depth_for, Block};
 use dpf_common::coin::{coin_block, Abort};
 use dpf_common::gf128;
@@ -31,6 +31,7 @@ use dpf_common::hash::CcrHash;
 use dpf_common::mac::binary::{AuthBit, AuthGf, MacParty};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::ot::FerretConfig;
+use dpf_common::stream::TreeMode;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
@@ -53,7 +54,8 @@ pub struct MalSession {
 /// One party's output of [`MalSession::gen`].
 pub struct MalGenOutput {
     pub key: MalKey,
-    pub full: MalFull,
+    /// All outputs `x < N`; `None` with the streaming tree.
+    pub full: Option<MalFull>,
 }
 
 impl MalSession {
@@ -110,6 +112,36 @@ impl MalSession {
         beta: &[AuthGf],
         fault: Option<Fault>,
     ) -> Result<MalGenOutput, Abort> {
+        self.gen_mode(ch, n_size, alpha, beta, fault, TreeMode::Stored)
+    }
+
+    /// [`gen`](Self::gen) with the tree held as `mode` says. Both modes send
+    /// the same messages; [`TreeMode::Stream`] returns no full-domain output.
+    #[doc(hidden)]
+    pub fn gen_mode(
+        &mut self,
+        ch: &mut Channel,
+        n_size: u64,
+        alpha: &[AuthBit],
+        beta: &[AuthGf],
+        fault: Option<Fault>,
+        mode: TreeMode,
+    ) -> Result<MalGenOutput, Abort> {
+        match mode {
+            TreeMode::Stored => self.gen_with::<HtLocal>(ch, n_size, alpha, beta, fault, mode),
+            TreeMode::Stream { .. } => self.gen_with::<HtStream>(ch, n_size, alpha, beta, fault, mode),
+        }
+    }
+
+    fn gen_with<T: HtTree>(
+        &mut self,
+        ch: &mut Channel,
+        n_size: u64,
+        alpha: &[AuthBit],
+        beta: &[AuthGf],
+        fault: Option<Fault>,
+        mode: TreeMode,
+    ) -> Result<MalGenOutput, Abort> {
         let n = depth_for(n_size);
         assert_eq!(alpha.len(), n, "need one authenticated bit per level");
         let bm = beta.len();
@@ -123,7 +155,7 @@ impl MalSession {
         // 1–2. Root and correlated levels.
         let w = coin_block(ch, self.mac.rng())?;
         let root = delta ^ w;
-        let mut local = HtLocal::start_all_correlated(self.hash.clone(), n_size, root);
+        let mut local = T::start_all_correlated(self.hash.clone(), n_size, root, mode);
         let mut cws = Vec::with_capacity(n);
         for (i, a) in alpha.iter().enumerate() {
             let mine = local.correlated_sum() ^ delta ^ delta.and_bit(a.x) ^ a.k ^ a.m ^ err(i);
@@ -134,8 +166,7 @@ impl MalSession {
         }
 
         // 3. Leaf word.
-        let leaves = local.nodes();
-        let (sv, sm) = leaf_sums(&self.hash, leaves, bm);
+        let (sv, sm) = tree_leaf_sums(&self.hash, &local, bm);
         let mut mine: Vec<Block> = sv.iter().zip(beta).map(|(s, b)| *s ^ b.x).collect();
         mine.extend(sm.iter().zip(beta).map(|(s, b)| *s ^ b.m));
         mine[0] ^= err(n);
@@ -147,30 +178,47 @@ impl MalSession {
         let cw: Vec<Block> = mine.iter().zip(&theirs).map(|(a, b)| *a ^ *b).collect();
         let (cw_v, cw_m) = (cw[..bm].to_vec(), cw[bm..].to_vec());
 
-        // 4. Outputs at all 2^n positions, padding included: Fig. 5 checks
-        // every one of them.
-        let mut full = leaf_outputs(&self.hash, leaves, &cw_v, &cw_m);
-
-        // 5. Random linear combination, masked by ⟨r⟩, opened for the batch check.
+        // 4–5. Outputs at all 2^n positions, padding included: Fig. 5 checks
+        // every one of them. Their random linear combination, masked by ⟨r⟩,
+        // is opened for the batch check: `u(x)` is weighted by `χ^x` and
+        // `v_k(x)` by `χ^{(k+1)·2^n + x}`, i.e. all u first, then each column.
         let r = self.mac.rand_gf(ch, 1)?[0];
         let chi = self.mac.coins(ch, 1)?[0];
-        let mut c = gf128::ONE;
         let mut a = r;
-        let mut acc = |s: &AuthGf, c: &mut Block| {
-            a.x ^= gf128::mul(*c, s.x);
-            a.m ^= gf128::mul(*c, s.m);
-            *c = gf128::mul(*c, chi);
-        };
-        for s in &full.u {
-            acc(s, &mut c);
+        let mut full = (mode == TreeMode::Stored).then(|| MalFull { n: 0, u: Vec::new(), v: vec![Vec::new(); bm] });
+        let chi_level = (0..n).fold(chi, |c, _| gf128::mul(c, c));
+        let mut cu = gf128::ONE;
+        let mut cv: Vec<Block> = Vec::with_capacity(bm);
+        for _ in 0..bm {
+            cv.push(gf128::mul(*cv.last().unwrap_or(&gf128::ONE), chi_level));
         }
-        for col in &full.v {
-            for s in col {
-                acc(s, &mut c);
+        local.visit_leaves(|_, leaves| {
+            let part = leaf_outputs(&self.hash, leaves, &cw_v, &cw_m);
+            let mut acc = |s: &AuthGf, c: &mut Block| {
+                a.x ^= gf128::mul(*c, s.x);
+                a.m ^= gf128::mul(*c, s.m);
+                *c = gf128::mul(*c, chi);
+            };
+            for s in &part.u {
+                acc(s, &mut cu);
             }
-        }
+            for (col, c) in part.v.iter().zip(cv.iter_mut()) {
+                for s in col {
+                    acc(s, c);
+                }
+            }
+            if let Some(f) = full.as_mut() {
+                f.n += part.n;
+                f.u.extend(part.u);
+                for (dst, src) in f.v.iter_mut().zip(part.v) {
+                    dst.extend(src);
+                }
+            }
+        });
         self.mac.open(ch, &[a]);
-        full.truncate(n_size as usize);
+        if let Some(f) = full.as_mut() {
+            f.truncate(n_size as usize);
+        }
 
         let key = MalKey { party: ch.party(), n_size, hash: self.hash.clone(), root, cws, cw_v, cw_m };
         Ok(MalGenOutput { key, full })
@@ -201,12 +249,27 @@ pub fn run_mal(
     fault: Option<Fault>,
     ferret: Option<FerretConfig>,
 ) -> Result<MalRun, Abort> {
+    run_mal_mode(ch, n_size, alpha_share, beta_share, seed, fault, ferret, TreeMode::Stored)
+}
+
+/// [`run_mal`] with the tree held as `mode` says.
+#[allow(clippy::too_many_arguments)]
+pub fn run_mal_mode(
+    ch: &mut Channel,
+    n_size: u64,
+    alpha_share: u64,
+    beta_share: &[Block],
+    seed: [u8; 32],
+    fault: Option<Fault>,
+    ferret: Option<FerretConfig>,
+    mode: TreeMode,
+) -> Result<MalRun, Abort> {
     let mut s = MalSession::setup_with(ch, seed, ferret)?;
     let t = Instant::now();
     let before = ch.stats();
     let cots_before = s.mac.cot.produced;
     let (a, b) = s.share_inputs(ch, n_size, alpha_share, beta_share)?;
-    let out = s.gen_with_fault(ch, n_size, &a, &b, fault)?;
+    let out = s.gen_mode(ch, n_size, &a, &b, fault, mode)?;
     s.mac.check(ch)?;
     Ok(MalRun {
         out,
@@ -222,6 +285,18 @@ pub fn run_mal(
 /// Trusted-dealer key generation for the eval benchmarks and tests. Returns the
 /// keys and the MAC keys `[Δ_0, Δ_1]`.
 pub fn gen_reference(n_size: u64, alpha: u64, beta: &[Block], seed: [u8; 32]) -> ([MalKey; 2], [Block; 2]) {
+    gen_reference_mode(n_size, alpha, beta, seed, TreeMode::Stored)
+}
+
+/// [`gen_reference`] with the tree held as `mode` says.
+pub fn gen_reference_mode(n_size: u64, alpha: u64, beta: &[Block], seed: [u8; 32], mode: TreeMode) -> ([MalKey; 2], [Block; 2]) {
+    match mode {
+        TreeMode::Stored => reference_with::<HtLocal>(n_size, alpha, beta, seed, mode),
+        TreeMode::Stream { .. } => reference_with::<HtStream>(n_size, alpha, beta, seed, mode),
+    }
+}
+
+fn reference_with<T: HtTree>(n_size: u64, alpha: u64, beta: &[Block], seed: [u8; 32], mode: TreeMode) -> ([MalKey; 2], [Block; 2]) {
     use dpf_common::mac::binary::dealer;
     assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::from_seed(seed);
@@ -231,8 +306,8 @@ pub fn gen_reference(n_size: u64, alpha: u64, beta: &[Block], seed: [u8; 32]) ->
     let roots = [deltas[0] ^ w, deltas[1] ^ w];
     let hash = CcrHash::new(Block::random(&mut rng));
     let n = depth_for(n_size);
-    let mut l0 = HtLocal::start_all_correlated(hash.clone(), n_size, roots[0]);
-    let mut l1 = HtLocal::start_all_correlated(hash.clone(), n_size, roots[1]);
+    let mut l0 = T::start_all_correlated(hash.clone(), n_size, roots[0], mode);
+    let mut l1 = T::start_all_correlated(hash.clone(), n_size, roots[1], mode);
     let mut cws = Vec::with_capacity(n);
     for ai in bits_msb_first(alpha, n) {
         let cw = l0.correlated_sum() ^ l1.correlated_sum() ^ delta.and_bit(!ai);
@@ -241,8 +316,8 @@ pub fn gen_reference(n_size: u64, alpha: u64, beta: &[Block], seed: [u8; 32]) ->
         cws.push(cw);
     }
     let bm = beta.len();
-    let (v0, m0) = leaf_sums(&hash, l0.nodes(), bm);
-    let (v1, m1) = leaf_sums(&hash, l1.nodes(), bm);
+    let (v0, m0) = tree_leaf_sums(&hash, &l0, bm);
+    let (v1, m1) = tree_leaf_sums(&hash, &l1, bm);
     let cw_v: Vec<Block> = (0..bm).map(|k| v0[k] ^ v1[k] ^ beta[k]).collect();
     let cw_m: Vec<Block> = (0..bm).map(|k| m0[k] ^ m1[k] ^ gf128::mul(beta[k], delta)).collect();
     let mk = |party: usize| MalKey {
@@ -255,4 +330,17 @@ pub fn gen_reference(n_size: u64, alpha: u64, beta: &[Block], seed: [u8; 32]) ->
         cw_m: cw_m.clone(),
     };
     ([mk(0), mk(1)], deltas)
+}
+
+/// [`leaf_sums`] over all leaves of a tree, batch by batch.
+fn tree_leaf_sums<T: HtTree>(hash: &CcrHash, tree: &T, bm: usize) -> (Vec<Block>, Vec<Block>) {
+    let (mut v, mut m) = (vec![Block::ZERO; bm], vec![Block::ZERO; bm]);
+    tree.visit_leaves(|_, leaves| {
+        let (pv, pm) = leaf_sums(hash, leaves, bm);
+        for k in 0..bm {
+            v[k] ^= pv[k];
+            m[k] ^= pm[k];
+        }
+    });
+    (v, m)
 }

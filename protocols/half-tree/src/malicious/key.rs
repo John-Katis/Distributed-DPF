@@ -8,7 +8,7 @@
 //! * `v_k(x) = (H(X_x ⊕ 2k) ⊕ t·CW_v[k], H(X_x ⊕ 2k+1) ⊕ t·CW_M[k])`: a share
 //!   of `[x = α]·β_k` with its MAC (`H_1` of the paper, widened to `bm` blocks).
 
-use crate::tree::HtLocal;
+use crate::tree::{Convert, HtLocal, HtStream, HtTree};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::hash::CcrHash;
 use dpf_common::mac::binary::AuthGf;
@@ -140,5 +140,20 @@ impl MalKey {
         let mut full = leaf_outputs(&self.hash, local.nodes(), &self.cw_v, &self.cw_m);
         full.truncate(self.n_size as usize);
         full
+    }
+
+    /// [`eval_full`](Self::eval_full) without holding the domain: a batched
+    /// walk ([`dpf_common::stream`]) that calls `visit(x0, part)` with the
+    /// outputs of the points `x0 .. x0 + part.n`, for all x < N.
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &MalFull)) {
+        let tree = HtStream::with_cws(self.hash.clone(), self.n_size, Convert::new(128), self.root, self.cws.clone(), None, batch);
+        tree.visit_leaves(|x0, leaves| {
+            if x0 >= self.n_size {
+                return;
+            }
+            let mut part = leaf_outputs(&self.hash, leaves, &self.cw_v, &self.cw_m);
+            part.truncate(part.n.min((self.n_size - x0) as usize));
+            visit(x0, &part);
+        });
     }
 }
