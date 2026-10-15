@@ -25,11 +25,12 @@
 
 use crate::du_atallah::{compute_cw, deal as p2_deal, receive_dealt, Helper};
 use crate::key::DuoramKey;
-use crate::tree::{correct, expand_many, lanes, CorrectionWord};
+use crate::tree::{CorrectionWord, DuoramTree, StoredTree, StreamTree};
 use dpf_common::arith::mask;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::net::{Channel, CommStats, Peers};
 use dpf_common::ot::CotPair;
+use dpf_common::stream::TreeMode;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
@@ -88,6 +89,19 @@ fn exchange_u64s(ch: &mut Channel, mine: &[u64]) -> Vec<u64> {
 
 /// Steps 1–5 for this party, over the link to the other party.
 pub fn preprocess(ch: &mut Channel, helper: &mut Helper, n_size: u64, rng: &mut ChaCha20Rng) -> Preprocessed {
+    preprocess_mode(ch, helper, n_size, rng, TreeMode::Stored)
+}
+
+/// [`preprocess`] with the tree held as `mode` says. Both modes send the same
+/// messages.
+pub fn preprocess_mode(ch: &mut Channel, helper: &mut Helper, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed {
+    match mode {
+        TreeMode::Stored => preprocess_with::<StoredTree>(ch, helper, n_size, rng, mode),
+        TreeMode::Stream { .. } => preprocess_with::<StreamTree>(ch, helper, n_size, rng, mode),
+    }
+}
+
+fn preprocess_with<T: DuoramTree>(ch: &mut Channel, helper: &mut Helper, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed {
     let b = ch.party();
     let n = depth_for(n_size);
     let r_bits = rng.gen::<u64>() & mask(n);
@@ -95,34 +109,22 @@ pub fn preprocess(ch: &mut Channel, helper: &mut Helper, n_size: u64, rng: &mut 
 
     // Steps 1–2.
     let root = Block((rng.gen::<u128>() & !1) | b as u128);
-    let mut nodes = vec![root];
-    let mut kids = Vec::new();
+    let mut tree = T::new(root, mode);
     let mut cws = Vec::with_capacity(n);
     for (i, cr) in corr.iter().enumerate() {
-        expand_many(&nodes, &mut kids);
-        let (mut l, mut r) = (Block::ZERO, Block::ZERO);
-        for k in kids.chunks(2) {
-            l ^= k[0];
-            r ^= k[1];
-        }
+        let (l, r) = tree.level_sums();
         let c = (r_bits >> (n - 1 - i)) & 1 == 1;
         let one = b == 1;
         // The CW is opened without its lsb, the flag bit: lsb(CW) would equal
         // the off-path flag CW and so reveal r_i whenever the two differ.
         let (s, t) = compute_cw(ch, cr, l.with_lsb(false), r.with_lsb(false), c, [l.lsb() ^ c ^ one, r.lsb() ^ c]);
         let cw = CorrectionWord { s, t };
-        nodes = kids.iter().enumerate().map(|(k, &x)| correct(x, nodes[k / 2].lsb(), &cw, k & 1 == 1)).collect();
+        tree.correct(cw);
         cws.push(cw);
     }
 
     // Steps 3–4: sums over the leaves.
-    let (mut gamma, mut gamma2, mut pm) = (0u64, 0u64, 0u64);
-    for leaf in &nodes {
-        let (v, v2) = lanes(*leaf);
-        gamma = gamma.wrapping_add(v);
-        gamma2 = gamma2.wrapping_add(v2);
-        pm = pm.wrapping_add(leaf.lsb() as u64);
-    }
+    let (gamma, gamma2, pm) = tree.leaf_sums();
     let (gamma, gamma2, pm) = (signed(b, gamma), signed(b, gamma2), signed(b, pm));
 
     // Steps 4–5: one batch of products. Party 0 supplies the left operands.
@@ -182,6 +184,11 @@ fn finish(
 
 /// 2P-Duoram: P0 and P1 alone, correlations from IKNP OT.
 pub fn gen_2p(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32]) -> GenOutput {
+    gen_2p_mode(ch, n_size, bits, alpha_share, beta_share, seed, TreeMode::Stored)
+}
+
+/// [`gen_2p`] with the tree held as `mode` says.
+pub fn gen_2p_mode(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32], mode: TreeMode) -> GenOutput {
     let t_setup = Instant::now();
     let mut rng = ChaCha20Rng::from_seed(seed);
     let delta = Block::random(&mut rng);
@@ -191,7 +198,7 @@ pub fn gen_2p(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta
     let setup_time = t_setup.elapsed();
     let (key, pre_stats, online_stats, pre_time, online_time) = finish(
         ch,
-        |ch| preprocess(ch, &mut Helper::Ot(&mut cot), n_size, &mut rng),
+        |ch| preprocess_mode(ch, &mut Helper::Ot(&mut cot), n_size, &mut rng, mode),
         |ch| ch.stats(),
         bits,
         alpha_share,
@@ -203,6 +210,11 @@ pub fn gen_2p(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta
 /// 3P-Duoram, party P0 or P1: correlations dealt by P2. P2's link is only
 /// used for its one message (`helper_bytes`); `pre_stats` is the P0–P1 link.
 pub fn gen_3p(peers: &mut Peers, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32]) -> GenOutput {
+    gen_3p_mode(peers, n_size, bits, alpha_share, beta_share, seed, TreeMode::Stored)
+}
+
+/// [`gen_3p`] with the tree held as `mode` says.
+pub fn gen_3p_mode(peers: &mut Peers, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32], mode: TreeMode) -> GenOutput {
     let b = peers.party();
     assert!(b < 2, "P2 runs gen_3p_helper");
     let mut rng = ChaCha20Rng::from_seed(seed);
@@ -213,7 +225,7 @@ pub fn gen_3p(peers: &mut Peers, n_size: u64, bits: usize, alpha_share: u64, bet
     let recv_time = t0.elapsed();
     let (key, pre_stats, online_stats, pre_time, online_time) = finish(
         peers.to(1 - b),
-        |ch| preprocess(ch, &mut helper, n_size, &mut rng),
+        |ch| preprocess_mode(ch, &mut helper, n_size, &mut rng, mode),
         |ch| ch.stats(),
         bits,
         alpha_share,
@@ -242,33 +254,41 @@ pub fn gen_3p_helper(peers: &mut Peers, n_size: u64, seed: [u8; 32]) -> CommStat
 /// Trusted-dealer generation with the same roots, target and blind `ρ`: the
 /// cleartext version of preprocessing plus online phase.
 pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, r: u64, rho: u64) -> [DuoramKey; 2] {
+    deal_mode(roots, n_size, bits, alpha, beta, r, rho, TreeMode::Stored)
+}
+
+/// [`deal`] with the tree held as `mode` says.
+#[allow(clippy::too_many_arguments)]
+pub fn deal_mode(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, r: u64, rho: u64, mode: TreeMode) -> [DuoramKey; 2] {
+    match mode {
+        TreeMode::Stored => deal_with::<StoredTree>(roots, n_size, bits, alpha, beta, r, rho, mode),
+        TreeMode::Stream { .. } => deal_with::<StreamTree>(roots, n_size, bits, alpha, beta, r, rho, mode),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn deal_with<T: DuoramTree>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, r: u64, rho: u64, mode: TreeMode) -> [DuoramKey; 2] {
     assert!(alpha < n_size);
     assert!(!roots[0].lsb() && roots[1].lsb(), "the root of party b has flag b");
     let n = depth_for(n_size);
     assert!(r <= mask(n));
-    let mut nodes = [vec![roots[0]], vec![roots[1]]];
-    let mut kids = [Vec::new(), Vec::new()];
+    let mut trees = [T::new(roots[0], mode), T::new(roots[1], mode)];
     let mut cws = Vec::with_capacity(n);
     for i in 0..n {
-        let (mut l, mut rr) = (Block::ZERO, Block::ZERO);
-        for p in 0..2 {
-            expand_many(&nodes[p], &mut kids[p]);
-            for k in kids[p].chunks(2) {
-                l ^= k[0];
-                rr ^= k[1];
-            }
-        }
+        let (l0, r0) = trees[0].level_sums();
+        let (l1, r1) = trees[1].level_sums();
+        let (l, rr) = (l0 ^ l1, r0 ^ r1);
         let c = (r >> (n - 1 - i)) & 1 == 1;
         let cw = CorrectionWord { s: if c { l } else { rr }.with_lsb(false), t: [l.lsb() ^ c ^ true, rr.lsb() ^ c] };
-        for p in 0..2 {
-            nodes[p] = kids[p].iter().enumerate().map(|(k, &x)| correct(x, nodes[p][k / 2].lsb(), &cw, k & 1 == 1)).collect();
+        for t in &mut trees {
+            t.correct(cw);
         }
         cws.push(cw);
     }
-    let sum = |p: usize, f: &dyn Fn(Block) -> u64| signed(p, nodes[p].iter().fold(0u64, |a, x| a.wrapping_add(f(*x))));
-    let gamma = sum(0, &|x| lanes(x).0).wrapping_add(sum(1, &|x| lanes(x).0));
-    let gamma2 = sum(0, &|x| lanes(x).1).wrapping_add(sum(1, &|x| lanes(x).1));
-    let pm = sum(0, &|x| x.lsb() as u64).wrapping_add(sum(1, &|x| x.lsb() as u64));
+    let (s0, s1) = (trees[0].leaf_sums(), trees[1].leaf_sums());
+    let gamma = signed(0, s0.0).wrapping_add(signed(1, s1.0));
+    let gamma2 = signed(0, s0.1).wrapping_add(signed(1, s1.1));
+    let pm = signed(0, s0.2).wrapping_add(signed(1, s1.2));
     assert!(pm == 1 || pm == u64::MAX, "pm = ±1");
     let mk = |party: usize| DuoramKey {
         party,
@@ -286,8 +306,13 @@ pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, 
 
 /// Trusted-dealer keys from a seed.
 pub fn gen_reference(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: [u8; 32]) -> [DuoramKey; 2] {
+    gen_reference_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
+}
+
+/// [`gen_reference`] with the tree held as `mode` says.
+pub fn gen_reference_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: [u8; 32], mode: TreeMode) -> [DuoramKey; 2] {
     let mut rng = ChaCha20Rng::from_seed(seed);
     let roots = [Block(rng.gen::<u128>() & !1), Block(rng.gen::<u128>() | 1)];
     let r = rng.gen::<u64>() & mask(depth_for(n_size));
-    deal(roots, n_size, bits, alpha, beta, r, rng.gen())
+    deal_mode(roots, n_size, bits, alpha, beta, r, rng.gen(), mode)
 }

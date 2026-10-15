@@ -17,7 +17,7 @@
 //! into additive shares (equal off-path pairs cancel), as in
 //! `convert_shares`.
 
-use crate::tree::{correct, expand_many, expand_one, lanes, CorrectionWord};
+use crate::tree::{correct, expand_many, expand_one, lanes, CorrectionWord, StreamTree};
 use dpf_common::arith::mask;
 use dpf_common::block::{depth_for, Block};
 
@@ -106,5 +106,21 @@ impl DuoramKey {
     pub fn eval_full(&self) -> Vec<u64> {
         let leaves = self.leaves();
         (0..self.n_size).map(|x| self.output(leaves[self.unshift(x) as usize])).collect()
+    }
+
+    /// [`eval_full`](Self::eval_full) without holding the domain: a batched
+    /// walk ([`dpf_common::stream`]) over the unshifted tree that calls
+    /// `visit(x, y)` with this party's share `y` at every `x < N`. The points
+    /// arrive in the order of their unshifted index `x − shift mod 2^n`.
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, u64)) {
+        let m = mask(self.depth());
+        StreamTree::with_cws(self.root, self.cws.clone(), batch).visit_level(self.depth(), |xp0, leaves| {
+            for (i, leaf) in leaves.iter().enumerate() {
+                let x = (xp0 + i as u64).wrapping_add(self.shift) & m;
+                if x < self.n_size {
+                    visit(x, self.output(*leaf));
+                }
+            }
+        });
     }
 }

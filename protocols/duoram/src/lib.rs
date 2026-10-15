@@ -21,7 +21,8 @@ pub mod gen;
 pub mod key;
 pub mod tree;
 
-pub use gen::{deal, gen_2p, gen_3p, gen_3p_helper, gen_reference, GenOutput};
+pub use dpf_common::stream::TreeMode;
+pub use gen::{deal, deal_mode, gen_2p, gen_2p_mode, gen_3p, gen_3p_helper, gen_3p_mode, gen_reference, gen_reference_mode, GenOutput};
 pub use key::DuoramKey;
 
 use dpf_common::arith::mask;
@@ -49,17 +50,22 @@ fn shares(n_size: u64, bits: usize, alpha: u64, beta: u64, rng: &mut ChaCha20Rng
 
 /// Additively shares α (mod 2^n) and β (mod 2^bits) and runs 2P-Duoram.
 pub fn run_gen_2p(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64) -> Run {
+    run_gen_2p_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
+}
+
+/// [`run_gen_2p`] with the tree held as `mode` says.
+pub fn run_gen_2p_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64, mode: TreeMode) -> Run {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let (a, b) = shares(n_size, bits, alpha, beta, &mut rng);
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();
-            (gen_2p(c, n_size, bits, a[0], b[0], seeds[0]), t.elapsed())
+            (gen_2p_mode(c, n_size, bits, a[0], b[0], seeds[0], mode), t.elapsed())
         },
         |c| {
             let t = Instant::now();
-            (gen_2p(c, n_size, bits, a[1], b[1], seeds[1]), t.elapsed())
+            (gen_2p_mode(c, n_size, bits, a[1], b[1], seeds[1], mode), t.elapsed())
         },
     );
     Run { outs: [r0.0, r1.0], times: [r0.1, r1.1], helper: None, alpha_shares: a }
@@ -67,17 +73,22 @@ pub fn run_gen_2p(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64) ->
 
 /// Additively shares α and β and runs 3P-Duoram with the helper P2.
 pub fn run_gen_3p(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64) -> Run {
+    run_gen_3p_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
+}
+
+/// [`run_gen_3p`] with the tree held as `mode` says.
+pub fn run_gen_3p_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64, mode: TreeMode) -> Run {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 3] = [rng.gen(), rng.gen(), rng.gen()];
     let (a, b) = shares(n_size, bits, alpha, beta, &mut rng);
     let (r0, r1, h) = dpf_common::net::run_three_party(
         |p| {
             let t = Instant::now();
-            (gen_3p(p, n_size, bits, a[0], b[0], seeds[0]), t.elapsed())
+            (gen_3p_mode(p, n_size, bits, a[0], b[0], seeds[0], mode), t.elapsed())
         },
         |p| {
             let t = Instant::now();
-            (gen_3p(p, n_size, bits, a[1], b[1], seeds[1]), t.elapsed())
+            (gen_3p_mode(p, n_size, bits, a[1], b[1], seeds[1], mode), t.elapsed())
         },
         |p| gen_3p_helper(p, n_size, seeds[2]),
     );

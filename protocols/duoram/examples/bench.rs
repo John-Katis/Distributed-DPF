@@ -20,11 +20,12 @@
 //! * The online phase alone is two words each way in one round; it is printed
 //!   as a `#` comment line.
 //!
-//! `eval` and `full` use dealer keys.
+//! `eval` and `full` use dealer keys. With `--stream`, preprocessing and the
+//! dealer use the streaming tree and `full` folds the outputs.
 
 use dpf_common::arith::mask;
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
-use duoram::{gen_reference, run_gen_2p, run_gen_3p};
+use duoram::{gen_reference_mode, run_gen_2p_mode, run_gen_3p_mode, TreeMode};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
@@ -36,9 +37,9 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
         let beta = rng.gen::<u64>() & mask(o.out_bits);
         let (alpha, seed) = (rng.gen_range(0..o.size), rng.gen());
         let run = if o.variant == "3p" {
-            run_gen_3p(o.size, o.out_bits, alpha, beta, seed)
+            run_gen_3p_mode(o.size, o.out_bits, alpha, beta, seed, o.tree_mode())
         } else {
-            run_gen_2p(o.size, o.out_bits, alpha, beta, seed)
+            run_gen_2p_mode(o.size, o.out_bits, alpha, beta, seed, o.tree_mode())
         };
         let [r0, r1] = &run.outs;
         setup.push(r0.setup_time.max(r1.setup_time));
@@ -70,7 +71,7 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
     );
     println!(
         "# online,{},{},bytes_both_dirs={},rounds={},median_ms={:.3}",
-        o.variant,
+        o.label(),
         o.size,
         o0.online_stats.total_bytes(),
         o0.online_stats.rounds.max(o1.online_stats.rounds),
@@ -83,7 +84,6 @@ fn main() {
     assert!((1..=64).contains(&opts.out_bits) && opts.out_list.iter().all(|b| (1..=64).contains(b)), "out-bits must be 1..=64");
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
-        let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
         match o.variant.as_str() {
             // Both variants produce the same key; they differ only in how the
             // preprocessing gets its correlations.
@@ -91,8 +91,12 @@ fn main() {
                 if o.runs("gen") {
                     bench_gen(o, &mut rng);
                 }
+                if !(o.runs("eval") || o.runs("full")) {
+                    return;
+                }
+                let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
                 let beta = rng.gen::<u64>() & mask(o.out_bits);
-                let keys = gen_reference(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
+                let keys = gen_reference_mode(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen(), o.tree_mode());
                 let k = &keys[0];
                 if o.runs("eval") {
                     bench_eval(o, 1, &xs, |x| {
@@ -100,8 +104,15 @@ fn main() {
                     });
                 }
                 if o.runs("full") {
-                    bench_full(o, 1, || {
-                        black_box(k.eval_full());
+                    bench_full(o, 1, || match o.tree_mode() {
+                        TreeMode::Stored => {
+                            black_box(k.eval_full());
+                        }
+                        TreeMode::Stream { batch } => {
+                            let mut acc = 0u64;
+                            k.eval_full_stream(batch, |_, y| acc = acc.wrapping_add(y));
+                            black_box(acc);
+                        }
                     });
                 }
             }

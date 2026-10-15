@@ -25,6 +25,7 @@ use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::Aes128;
 use dpf_common::block::Block;
+use dpf_common::stream::{walk, TreeMode};
 use std::sync::OnceLock;
 
 const PRG_KEY: [u8; 16] = *b"duoram/dpf-prg!!";
@@ -86,6 +87,114 @@ pub fn correct(child: Block, t_parent: bool, cw: &CorrectionWord, side: bool) ->
 #[inline]
 pub fn lanes(leaf: Block) -> (u64, u64) {
     ((leaf.0 >> 1) as u64, (leaf.0 >> 65) as u64)
+}
+
+/// The per-level interface that preprocessing drives. [`StoredTree`] keeps
+/// every level (the reference code); [`StreamTree`] regenerates them
+/// ([`dpf_common::stream`]).
+pub trait DuoramTree: Sized {
+    fn new(root: Block, mode: TreeMode) -> Self;
+    /// Expands the current level: `(L, R)`, the XOR of all uncorrected left
+    /// and right children.
+    fn level_sums(&mut self) -> (Block, Block);
+    /// Corrects the children expanded by [`level_sums`](Self::level_sums).
+    fn correct(&mut self, cw: CorrectionWord);
+    /// Over all `2^n` leaves: `(Σ lane0, Σ lane1, Σ t)` mod 2^64.
+    fn leaf_sums(&self) -> (u64, u64, u64);
+}
+
+/// `(Σ lane0, Σ lane1, Σ t)` of some leaves.
+fn sums_of(leaves: &[Block]) -> (u64, u64, u64) {
+    leaves.iter().fold((0u64, 0u64, 0u64), |(g, g2, pm), leaf| {
+        let (v, v2) = lanes(*leaf);
+        (g.wrapping_add(v), g2.wrapping_add(v2), pm.wrapping_add(leaf.lsb() as u64))
+    })
+}
+
+/// The tree as `create_dpfs` holds it: every node of the current level.
+pub struct StoredTree {
+    nodes: Vec<Block>,
+    kids: Vec<Block>,
+}
+
+impl DuoramTree for StoredTree {
+    fn new(root: Block, _: TreeMode) -> Self {
+        StoredTree { nodes: vec![root], kids: Vec::new() }
+    }
+
+    fn level_sums(&mut self) -> (Block, Block) {
+        expand_many(&self.nodes, &mut self.kids);
+        let (mut l, mut r) = (Block::ZERO, Block::ZERO);
+        for k in self.kids.chunks(2) {
+            l ^= k[0];
+            r ^= k[1];
+        }
+        (l, r)
+    }
+
+    fn correct(&mut self, cw: CorrectionWord) {
+        self.nodes = self.kids.iter().enumerate().map(|(k, &x)| correct(x, self.nodes[k / 2].lsb(), &cw, k & 1 == 1)).collect();
+    }
+
+    fn leaf_sums(&self) -> (u64, u64, u64) {
+        sums_of(&self.nodes)
+    }
+}
+
+/// The same tree holding only the root and the correction words so far.
+pub struct StreamTree {
+    root: Block,
+    batch: usize,
+    cws: Vec<CorrectionWord>,
+}
+
+impl StreamTree {
+    /// A streaming tree over known correction words (for key evaluation).
+    pub fn with_cws(root: Block, cws: Vec<CorrectionWord>, batch: usize) -> Self {
+        StreamTree { root, batch, cws }
+    }
+
+    /// Visits the nodes of `level ≤ cws.len()` in order and batches.
+    pub fn visit_level(&self, level: usize, visit: impl FnMut(u64, &[Block])) {
+        let expand = |l: usize, parents: &[Block], out: &mut Vec<Block>| {
+            expand_many(parents, out);
+            for (k, x) in out.iter_mut().enumerate() {
+                *x = correct(*x, parents[k / 2].lsb(), &self.cws[l - 1], k & 1 == 1);
+            }
+        };
+        walk(self.root, level, self.batch, expand, visit);
+    }
+}
+
+impl DuoramTree for StreamTree {
+    fn new(root: Block, mode: TreeMode) -> Self {
+        StreamTree::with_cws(root, Vec::new(), mode.batch())
+    }
+
+    fn level_sums(&mut self) -> (Block, Block) {
+        let (mut l, mut r, mut kids) = (Block::ZERO, Block::ZERO, Vec::new());
+        self.visit_level(self.cws.len(), |_, nodes| {
+            expand_many(nodes, &mut kids);
+            for k in kids.chunks(2) {
+                l ^= k[0];
+                r ^= k[1];
+            }
+        });
+        (l, r)
+    }
+
+    fn correct(&mut self, cw: CorrectionWord) {
+        self.cws.push(cw);
+    }
+
+    fn leaf_sums(&self) -> (u64, u64, u64) {
+        let mut acc = (0u64, 0u64, 0u64);
+        self.visit_level(self.cws.len(), |_, leaves| {
+            let (g, g2, pm) = sums_of(leaves);
+            acc = (acc.0.wrapping_add(g), acc.1.wrapping_add(g2), acc.2.wrapping_add(pm));
+        });
+        acc
+    }
 }
 
 #[cfg(test)]
