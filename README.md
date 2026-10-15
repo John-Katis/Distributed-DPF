@@ -48,6 +48,7 @@ REFERENCES.md        papers and techniques this code implements
 | `arith`   | Z_2^ℓ helpers and SIRNN's COT-based arithmetic MUX |
 | `bool2pc` | F_AND / F_OR on XOR-shared bits from CrypTFlow2 bit triples, COT-based block MUX |
 | `bench`   | shared CLI and CSV schema for every `examples/bench*.rs` |
+| `stream`  | batched depth-first tree walk for the streaming tree mode (`TreeMode`) |
 | `gc`      | half-gates garbled circuits over XOR-shared inputs (`GcParty`, `Garbler`, `Evaluator`) |
 | `testing` | cleartext point function `point_fn` and `random_beta`, for tests and benchmarks |
 
@@ -80,6 +81,7 @@ cargo run --release -p fssnn --example bench-fssnn -- all --in-bits 16 --out-bit
 cargo run --release -p duoram --example bench-duoram -- all --variant 2p --in-bits 16 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 3p --in-bits 16 --out-bits 64
 scripts/bench_all.sh --max-in-bits 20         # all six, CSV into results/
+scripts/bench_all.sh gen --stream --max-in-bits 32   # streaming tree, results/*-stream.csv
 ```
 
 All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`); the
@@ -87,3 +89,26 @@ first two columns are `mode,variant`. `--out-bits` sets the payload width for
 every protocol, with each one's own group: `F_2^m` (any m) for floram-cprg
 and half-tree (default 128), `Z_2^ℓ` with ℓ ≤ 64 for floram-arith and duoram
 (default 64), and only 1 for fssnn (`Z_2`).
+
+### Streaming tree mode (`--stream`)
+
+By default every protocol holds its tree as the papers and reference code do:
+one whole level at a time, so a party needs a few × 2^n × 16 bytes and the
+sweep runs out of memory around n = 27–28. With `--stream` the tree-based
+protocols (floram-cprg, half-tree, floram-arith, duoram) keep only the root
+and the correction words opened so far. Whenever Gen needs a level's sum, a
+batched depth-first walk from the root regenerates that level, XORs it into a
+running accumulator and drops it. FssNN's Gen only follows α's path, so for
+FssNN only the full-domain eval streams.
+
+- Memory is about `batch · n` blocks (default batch 2^16, `--batch-log b`).
+- Gen does about 2× the PRG work, because each level re-expands the levels
+  above it. Full-domain eval streams in one pass at no extra cost and folds the
+  outputs into a checksum instead of returning a 2^n vector.
+- The messages, bytes and rounds are identical to the stored mode (each crate's
+  `tests/stream.rs` checks this), so only the timing columns differ.
+- The variant column reads `<variant>+stream`.
+
+The stored code paths are unchanged and remain the default. In code, the
+`*_mode` entry points take a `dpf_common::stream::TreeMode`, and keys have an
+`eval_full_stream` next to `eval_full`.

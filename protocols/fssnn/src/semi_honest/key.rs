@@ -3,6 +3,7 @@
 
 use crate::tree::{child, conv, expand, CorrectionWord};
 use dpf_common::block::{depth_for, Block};
+use dpf_common::stream::walk;
 
 #[derive(Clone, Debug)]
 pub struct FssKey {
@@ -60,5 +61,29 @@ impl FssKey {
             nodes = next;
         }
         nodes[..self.n_size as usize].iter().map(|&v| self.output(v)).collect()
+    }
+
+    /// [`eval_full`](Self::eval_full) without holding the domain: a batched
+    /// walk ([`dpf_common::stream`]) that calls `visit(x0, ys)` with this
+    /// party's shares at `x0 .. x0 + ys.len()`, for all x < N.
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[bool])) {
+        let expand_level = |l: usize, parents: &[Block], out: &mut Vec<Block>| {
+            let cw = &self.cws[l - 1];
+            for &v in parents {
+                let [a, b] = expand(v);
+                let (cl, cr) = if v.lsb() { (cw.s ^ Block(cw.t[0] as u128), cw.s ^ Block(cw.t[1] as u128)) } else { (Block::ZERO, Block::ZERO) };
+                out.push(a ^ cl);
+                out.push(b ^ cr);
+            }
+        };
+        let mut ys = Vec::new();
+        walk(self.root, self.cws.len(), batch, expand_level, |x0, leaves| {
+            if x0 >= self.n_size {
+                return;
+            }
+            ys.clear();
+            ys.extend(leaves[..leaves.len().min((self.n_size - x0) as usize)].iter().map(|&v| self.output(v)));
+            visit(x0, &ys);
+        });
     }
 }

@@ -20,6 +20,16 @@ fn check(keys: &[FssKey; 2], n: u64, alpha: u64, beta: bool) {
         assert_eq!(p[0] ^ p[1], want, "eval_point at x={x}: {ctx}");
         assert_eq!((ev[0][x as usize], ev[1][x as usize]), (p[0], p[1]), "eval_full != eval_point at x={x}: {ctx}");
     }
+    for batch in [4, 64] {
+        for (k, e) in keys.iter().zip(&ev) {
+            let mut got = Vec::new();
+            k.eval_full_stream(batch, |x0, ys| {
+                assert_eq!(x0 as usize, got.len());
+                got.extend_from_slice(ys);
+            });
+            assert_eq!(&got, e, "eval_full_stream != eval_full: {ctx} batch={batch}");
+        }
+    }
 }
 
 #[test]

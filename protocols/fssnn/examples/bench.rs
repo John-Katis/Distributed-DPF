@@ -14,6 +14,7 @@
 //! counts the random OTs behind them. `eval` and `full` use dealer keys.
 
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
+use dpf_common::stream::TreeMode;
 use fssnn::run_gen;
 use fssnn::semi_honest;
 use rand::{Rng, SeedableRng};
@@ -57,12 +58,15 @@ fn main() {
     assert!(opts.out_bits == 1 && opts.out_list.iter().all(|&b| b == 1), "FssNN's output group is Z2: --out-bits 1");
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
-        let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
         match o.variant.as_str() {
             "fssnn" => {
                 if o.runs("gen") {
                     gen_sh(o, &mut rng);
                 }
+                if !(o.runs("eval") || o.runs("full")) {
+                    return;
+                }
+                let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
                 let keys = semi_honest::gen_reference(o.size, rng.gen_range(0..o.size), true, rng.gen());
                 let k = &keys[0];
                 if o.runs("eval") {
@@ -71,8 +75,15 @@ fn main() {
                     });
                 }
                 if o.runs("full") {
-                    bench_full(o, 1, || {
-                        black_box(k.eval_full());
+                    bench_full(o, 1, || match o.tree_mode() {
+                        TreeMode::Stored => {
+                            black_box(k.eval_full());
+                        }
+                        TreeMode::Stream { batch } => {
+                            let mut acc = false;
+                            k.eval_full_stream(batch, |_, ys| acc = ys.iter().fold(acc, |a, y| a ^ y));
+                            black_box(acc);
+                        }
                     });
                 }
             }
