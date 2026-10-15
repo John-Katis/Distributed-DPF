@@ -20,7 +20,7 @@
 //! With `--stream`, Gen and the dealer use the streaming tree and `full` folds
 //! the outputs instead of storing them.
 
-use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
+use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::block::{blocks_for_bits, depth_for};
 use dpf_common::ot::FerretConfig;
 use dpf_common::testing::random_beta;
@@ -43,18 +43,21 @@ fn gen_ht(o: &Opts, rng: &mut ChaCha20Rng) {
     }
     let run = last.unwrap();
     let [o0, o1] = &run.outs;
+    let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.gen_stats, o1.gen_stats]);
     print_gen(
         o,
         &GenRow {
             bm: o0.key.bm(),
+            sent,
+            rounds,
+            total: median(total),
             setup: median(setup),
             gen_p0: median(g0),
             gen_p1: median(g1),
-            total: median(total),
             setup_bytes: o0.setup_stats.total_bytes(),
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
-            rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
+            gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
             and_gates: 0,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),
@@ -77,18 +80,21 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng, ferret: Option<FerretConfig>) {
         last = Some((r0, r1));
     }
     let (r0, r1) = last.unwrap();
+    let (sent, rounds) = whole_gen([r0.setup_stats, r1.setup_stats], [r0.gen_stats, r1.gen_stats]);
     print_gen(
         o,
         &GenRow {
             bm,
+            sent,
+            rounds,
+            total: median(total),
             setup: median(setup),
             gen_p0: median(g0),
             gen_p1: median(g1),
-            total: median(total),
             setup_bytes: r0.setup_stats.total_bytes(),
             gen_bytes: r0.gen_stats.total_bytes(),
             depth: depth_for(o.size),
-            rounds: r0.gen_stats.rounds.max(r1.gen_stats.rounds),
+            gen_rounds: r0.gen_stats.rounds.max(r1.gen_stats.rounds),
             and_gates: 0,
             cots: r0.cots,
             key_bytes: r0.out.key.size_bytes(),

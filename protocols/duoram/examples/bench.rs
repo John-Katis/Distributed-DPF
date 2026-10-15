@@ -10,12 +10,15 @@
 //! `--out-bits w` (1..=64, default 64) is the payload ring Z_2^w. Options and
 //! CSV columns are those of `dpf_common::bench`. For `gen`:
 //!
-//! * `gen_ms_p*` and `total_ms` cover preprocessing and the online phase.
+//! * `comp_ms` covers setup, preprocessing and the online phase;
+//!   `gen_ms_p*` only preprocessing and the online phase.
+//! * `comm_p0`/`comm_p1` are what P0 and P1 send over setup, preprocessing
+//!   and online; `comm_p2` is the correlations P2 deals in 3P.
 //! * `gen_bytes` is all traffic on all links: P0↔P1 in both directions, plus
 //!   P2's dealt correlations in 3P.
-//! * `rounds` is the larger of P0's and P1's preprocessing plus online
-//!   rounds. In 3P the P0–P1 link starts at depth 0, so P2's dealing round is
-//!   included.
+//! * `gen_rounds` is the larger of P0's and P1's preprocessing plus online
+//!   rounds, and `rounds` adds setup. In 3P the P0–P1 link starts at depth 0,
+//!   so P2's dealing round is included.
 //! * `cots` is 2P only.
 //! * The online phase alone is two words each way in one round; it is printed
 //!   as a `#` comment line.
@@ -24,7 +27,7 @@
 //! dealer use the streaming tree and `full` folds the outputs.
 
 use dpf_common::arith::mask;
-use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
+use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use duoram::{gen_reference_mode, run_gen_2p_mode, run_gen_3p_mode, TreeMode};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -52,18 +55,22 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
     let run = last.unwrap();
     let [o0, o1] = &run.outs;
     let link = o0.pre_stats.total_bytes() + o0.online_stats.total_bytes();
+    let (mut sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0, o1].map(|r| r.pre_stats + r.online_stats));
+    sent[2] = o0.helper_bytes + o1.helper_bytes;
     print_gen(
         o,
         &GenRow {
             bm: 1,
+            sent,
+            rounds,
+            total: median(total),
             setup: median(setup),
             gen_p0: median(g0),
             gen_p1: median(g1),
-            total: median(total),
             setup_bytes: o0.setup_stats.total_bytes(),
             gen_bytes: link + o0.helper_bytes + o1.helper_bytes,
             depth: o0.key.depth(),
-            rounds: (o0.pre_stats.rounds + o0.online_stats.rounds).max(o1.pre_stats.rounds + o1.online_stats.rounds),
+            gen_rounds: (o0.pre_stats.rounds + o0.online_stats.rounds).max(o1.pre_stats.rounds + o1.online_stats.rounds),
             and_gates: 0,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),

@@ -9,7 +9,7 @@
 //! the trusted-dealer `gen_reference`. With `--stream`, Gen and the dealer use
 //! the streaming tree and `full` folds the outputs instead of storing them.
 
-use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
+use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::testing::random_beta;
 use floram_cprg::{gen_reference_keys, run_gen_mode, Block, TreeMode};
 use rand::{Rng, SeedableRng};
@@ -30,18 +30,21 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
     }
     let run = last.unwrap();
     let [o0, o1] = &run.outs;
+    let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.gen_stats, o1.gen_stats]);
     print_gen(
         o,
         &GenRow {
             bm: o0.key.bm,
+            sent,
+            rounds,
+            total: median(total),
             setup: median(setup),
             gen_p0: median(gen0),
             gen_p1: median(gen1),
-            total: median(total),
             setup_bytes: o0.setup_stats.total_bytes(),
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
-            rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
+            gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
             and_gates: o0.and_gates,
             cots: 0,
             key_bytes: o0.key.size_bytes(),

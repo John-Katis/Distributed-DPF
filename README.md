@@ -90,6 +90,25 @@ every protocol, with each one's own group: `F_2^m` (any m) for floram-cprg
 and half-tree (default 128), `Z_2^ℓ` with ℓ ≤ 64 for floram-arith and duoram
 (default 64), and only 1 for fssnn (`Z_2`).
 
+Every row reports the same metrics, for Gen and for evaluation alike:
+
+| column | meaning |
+|---|---|
+| `comm_p0`, `comm_p1`, `comm_p2` | bytes each party sends (`comm_p2`: Duoram-3P's helper, else 0) |
+| `comm_total` | all traffic, their sum |
+| `rounds` | one-way latencies, a simultaneous exchange counting once; max over the parties = the protocol's total |
+| `comp_ms` | wall time from the start to the end of the operation (Gen: slower party, setup included) |
+| `lan_net_ms`, `wan_net_ms` | `rounds·latency + 8·comm_total/bandwidth` |
+| `lan_total_ms`, `wan_total_ms` | `comp_ms` + that network time |
+
+The simulated networks are LAN = 1 Gbit/s with 10 ms per round and WAN =
+100 Mbit/s with 100 ms per round (`--lan ms,mbps`, `--wan ms,mbps` override
+them). Nothing is delayed for real: network time is added analytically from
+the counted bytes and rounds. DPF evaluation is local, so `eval` (one point)
+and `full` (whole domain) rows have zero communication and rounds. The `gen`
+row then breaks Gen down: `setup_ms`/`setup_bytes` (base OTs, keys) and
+`gen_ms_p*`/`gen_bytes`/`gen_rounds` for generation proper.
+
 ### Streaming tree mode (`--stream`)
 
 By default every protocol holds its tree as the papers and reference code do:

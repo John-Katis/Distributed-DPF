@@ -2,7 +2,7 @@
 //!
 //! Each party runs on its own thread and talks over a pair of `mpsc` channels.
 //! Nothing touches a socket, and nothing is delayed: network cost is added
-//! analytically from the counters ([`link_time`]).
+//! analytically from the counters ([`net_time`]).
 //!
 //! # Rounds
 //!
@@ -52,11 +52,24 @@ impl CommStats {
     }
 }
 
-/// Wall-clock estimate over a real link:
-/// `comp + rounds·latency + 8·bytes/bandwidth`, with `latency` one-way and
-/// `bytes` the traffic in both directions.
-pub fn link_time(comp: Duration, rounds: usize, bytes: usize, latency: Duration, bits_per_sec: f64) -> Duration {
-    comp + latency * rounds as u32 + Duration::from_secs_f64(8.0 * bytes as f64 / bits_per_sec)
+/// Counters of two consecutive spans of one party.
+impl std::ops::Add for CommStats {
+    type Output = CommStats;
+
+    fn add(self, later: CommStats) -> CommStats {
+        CommStats {
+            bytes_sent: self.bytes_sent + later.bytes_sent,
+            bytes_recv: self.bytes_recv + later.bytes_recv,
+            messages_sent: self.messages_sent + later.messages_sent,
+            rounds: self.rounds + later.rounds,
+        }
+    }
+}
+
+/// Network time over a real link: `rounds·latency + 8·bytes/bandwidth`, with
+/// `latency` one-way and `bytes` the traffic in both directions.
+pub fn net_time(rounds: usize, bytes: usize, latency: Duration, bits_per_sec: f64) -> Duration {
+    latency * rounds as u32 + Duration::from_secs_f64(8.0 * bytes as f64 / bits_per_sec)
 }
 
 /// A message and its round stamp.

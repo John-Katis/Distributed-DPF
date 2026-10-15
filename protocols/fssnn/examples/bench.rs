@@ -13,7 +13,7 @@
 //! generation; the PRG correlations are part of generation, and `cots` also
 //! counts the random OTs behind them. `eval` and `full` use dealer keys.
 
-use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
+use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::stream::TreeMode;
 use fssnn::run_gen;
 use fssnn::semi_honest;
@@ -34,18 +34,21 @@ fn gen_sh(o: &Opts, rng: &mut ChaCha20Rng) {
     }
     let run = last.unwrap();
     let [o0, o1] = &run.outs;
+    let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.gen_stats, o1.gen_stats]);
     print_gen(
         o,
         &GenRow {
             bm: 1,
+            sent,
+            rounds,
+            total: median(total),
             setup: median(setup),
             gen_p0: median(g0),
             gen_p1: median(g1),
-            total: median(total),
             setup_bytes: o0.setup_stats.total_bytes(),
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
-            rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
+            gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
             and_gates: o0.and_gates,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),
