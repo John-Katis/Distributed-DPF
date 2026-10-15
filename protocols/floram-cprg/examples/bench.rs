@@ -6,11 +6,12 @@
 //!
 //! Options and CSV columns are those of `dpf_common::bench`. Setup (PRG keys +
 //! base OTs) is reported apart from generation. `eval` and `full` use keys from
-//! the trusted-dealer `gen_reference`.
+//! the trusted-dealer `gen_reference`. With `--stream`, Gen and the dealer use
+//! the streaming tree and `full` folds the outputs instead of storing them.
 
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, GenRow, Opts};
 use dpf_common::testing::random_beta;
-use floram_cprg::{gen_reference, run_gen, Block};
+use floram_cprg::{gen_reference_keys, run_gen_mode, Block, TreeMode};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
@@ -20,7 +21,7 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
     let mut last = None;
     for r in 0..o.reps {
         let beta = random_beta(rng, o.out_bits);
-        let run = run_gen(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen::<u64>() ^ r as u64);
+        let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen::<u64>() ^ r as u64, o.tree_mode());
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
         gen0.push(run.outs[0].gen_time);
         gen1.push(run.outs[1].gen_time);
@@ -56,7 +57,7 @@ fn main() {
             bench_gen(o, &mut rng);
         }
         let beta = random_beta(&mut rng, o.out_bits);
-        let (keys, _) = gen_reference(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, [rng.gen(), rng.gen()]);
+        let keys = gen_reference_keys(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, [rng.gen(), rng.gen()], o.tree_mode());
         if o.runs("eval") {
             let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
             let mut out = vec![Block::ZERO; keys[0].bm];
@@ -66,8 +67,17 @@ fn main() {
             });
         }
         if o.runs("full") {
-            bench_full(o, keys[0].bm, || {
-                black_box(keys[0].eval_full());
+            bench_full(o, keys[0].bm, || match o.tree_mode() {
+                TreeMode::Stored => {
+                    black_box(keys[0].eval_full());
+                }
+                TreeMode::Stream { batch } => {
+                    let mut acc = Block::ZERO;
+                    keys[0].eval_full_stream(batch, |_, cols| {
+                        acc = cols.iter().flatten().fold(acc, |a, b| a ^ *b);
+                    });
+                    black_box(acc);
+                }
             });
         }
     });

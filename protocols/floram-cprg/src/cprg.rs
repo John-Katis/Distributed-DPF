@@ -28,6 +28,7 @@ use dpf_common::block::{bits_msb_first, blocks_for_bits, depth_for, xor_blocks, 
 use dpf_common::gc::{Evaluator, GcParty, Garbler, Wire};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::prg::Prg;
+use dpf_common::stream::{walk, TreeMode};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
@@ -208,6 +209,128 @@ impl CprgLocal {
     }
 }
 
+/// The per-level interface that Gen drives. [`CprgLocal`] stores every level
+/// (Floram's code); [`CprgStream`] regenerates them ([`dpf_common::stream`]).
+pub trait CprgTree: Sized {
+    /// Expands the root; returns the tree and the level-1 accumulators.
+    fn start(prg: Prg, n_size: u64, out_bits: usize, root: Block, mode: TreeMode) -> (Self, (Block, Block));
+    /// Applies the current level's correction word; returns the next level's
+    /// accumulators, or `None` after the leaf level.
+    fn step(&mut self, z: Block, tau_l: bool, tau_r: bool) -> Option<(Block, Block)>;
+    /// The XOR of every payload column over all `2^n` leaves.
+    fn finalize(&mut self) -> Vec<Block>;
+    /// The full-domain output, if the tree keeps one.
+    fn output(self, gamma: &[Block]) -> Option<FullEval>;
+}
+
+impl CprgTree for CprgLocal {
+    fn start(prg: Prg, n_size: u64, out_bits: usize, root: Block, _: TreeMode) -> (Self, (Block, Block)) {
+        CprgLocal::start(prg, n_size, out_bits, root)
+    }
+    fn step(&mut self, z: Block, tau_l: bool, tau_r: bool) -> Option<(Block, Block)> {
+        CprgLocal::step(self, z, tau_l, tau_r)
+    }
+    fn finalize(&mut self) -> Vec<Block> {
+        CprgLocal::finalize(self)
+    }
+    fn output(self, gamma: &[Block]) -> Option<FullEval> {
+        Some(CprgLocal::output(self, gamma))
+    }
+}
+
+/// The same tree as [`CprgLocal`], holding only the root and the correction
+/// words so far. Every accumulator is recomputed by a batched walk from the
+/// root; there is no full-domain output.
+pub struct CprgStream {
+    prg: Prg,
+    depth: usize,
+    out_bits: usize,
+    batch: usize,
+    root: Block,
+    cws: Vec<CorrectionWord>,
+}
+
+/// Corrected children at level `level` (1-based) of `parents`, whose lsb is
+/// their t-bit: `step` applied to `expand_many`.
+fn expand_corrected(prg: &Prg, cws: &[CorrectionWord], level: usize, parents: &[Block], out: &mut Vec<Block>) {
+    let cw = cws[level - 1];
+    out.clear();
+    out.resize(2 * parents.len(), Block::ZERO);
+    prg.expand_many(parents, out);
+    for (c, node) in out.iter_mut().enumerate() {
+        let tp = parents[c / 2].lsb();
+        let tau = if c & 1 == 0 { cw.tau_l } else { cw.tau_r };
+        let tc = node.lsb() ^ (tp & tau);
+        *node = (*node ^ cw.z.and_bit(tp)).with_lsb(tc);
+    }
+}
+
+impl CprgStream {
+    /// A streaming tree over known correction words (for key evaluation).
+    pub fn with_cws(prg: Prg, n_size: u64, out_bits: usize, root: Block, cws: Vec<CorrectionWord>, batch: usize) -> Self {
+        CprgStream { prg, depth: depth_for(n_size), out_bits, batch, root, cws }
+    }
+
+    /// Visits the corrected nodes of level `depth ≤ cws.len()`.
+    fn walk_level(&self, depth: usize, visit: impl FnMut(u64, &[Block])) {
+        walk(self.root, depth, self.batch, |l, p, o| expand_corrected(&self.prg, &self.cws, l, p, o), visit);
+    }
+
+    /// Output shares `leaf(x) ⊕ t(x)·γ` for `x < n_size`, in batches:
+    /// `visit(x0, cols)` with `cols[k][i]` the block k of point `x0 + i`.
+    pub fn outputs(&self, n_size: u64, gamma: &[Block], mut visit: impl FnMut(u64, &[Vec<Block>])) {
+        assert_eq!(self.cws.len(), self.depth);
+        self.walk_level(self.depth, |x0, leaves| {
+            if x0 >= n_size {
+                return;
+            }
+            let leaves = &leaves[..leaves.len().min((n_size - x0) as usize)];
+            let mut cols = leaf_columns(&self.prg, leaves, self.out_bits);
+            for (col, g) in cols.iter_mut().zip(gamma) {
+                for (y, l) in col.iter_mut().zip(leaves) {
+                    *y ^= g.and_bit(l.lsb());
+                }
+            }
+            visit(x0, &cols);
+        });
+    }
+}
+
+impl CprgTree for CprgStream {
+    fn start(prg: Prg, n_size: u64, out_bits: usize, root: Block, mode: TreeMode) -> (Self, (Block, Block)) {
+        let acc = expand_level(&prg, &[root], &mut Vec::new());
+        let depth = depth_for(n_size);
+        (CprgStream { prg, depth, out_bits, batch: mode.batch(), root, cws: Vec::with_capacity(depth) }, acc)
+    }
+
+    fn step(&mut self, z: Block, tau_l: bool, tau_r: bool) -> Option<(Block, Block)> {
+        self.cws.push(CorrectionWord { z, tau_l, tau_r });
+        if self.cws.len() == self.depth {
+            return None;
+        }
+        let (mut acc, mut kids) = ((Block::ZERO, Block::ZERO), Vec::new());
+        self.walk_level(self.cws.len(), |_, nodes| {
+            let (l, r) = expand_level(&self.prg, nodes, &mut kids);
+            acc = (acc.0 ^ l, acc.1 ^ r);
+        });
+        Some(acc)
+    }
+
+    fn finalize(&mut self) -> Vec<Block> {
+        let mut acc = vec![Block::ZERO; blocks_for_bits(self.out_bits)];
+        self.walk_level(self.depth, |_, leaves| {
+            for (a, col) in acc.iter_mut().zip(leaf_columns(&self.prg, leaves, self.out_bits)) {
+                *a = col.iter().fold(*a, |x, y| x ^ *y);
+            }
+        });
+        acc
+    }
+
+    fn output(self, _: &[Block]) -> Option<FullEval> {
+        None
+    }
+}
+
 /// The two RNG streams of a party: one for its tree (PRG keys, root) and one for
 /// the 2PC machinery. Splitting them lets the reference driver reproduce the tree
 /// bit for bit without running the 2PC.
@@ -229,8 +352,9 @@ fn sample_root(rng: &mut ChaCha20Rng, party: usize) -> Block {
 pub struct GenOutput {
     pub key: DpfKey,
     /// Full-domain output, computed as a by-product of generation (Floram's
-    /// `blockvector`/`bitvector`, already combined with γ).
-    pub full: FullEval,
+    /// `blockvector`/`bitvector`, already combined with γ). `None` with the
+    /// streaming tree.
+    pub full: Option<FullEval>,
     /// Traffic for setup: PRG-key transfer and base OTs.
     pub setup_stats: CommStats,
     /// Traffic for the generation proper.
@@ -267,7 +391,7 @@ pub fn level_circuit<P: GcParty>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn gen_with<P: GcParty>(
+fn gen_with<P: GcParty, T: CprgTree>(
     p: &mut P,
     ch: &mut Channel,
     prg: Prg,
@@ -276,11 +400,12 @@ fn gen_with<P: GcParty>(
     root: Block,
     alpha_share: u64,
     beta_share: &[Block],
-) -> (DpfKey, FullEval) {
+    mode: TreeMode,
+) -> (DpfKey, Option<FullEval>) {
     let depth = depth_for(n_size);
     let alpha = p.input_shared(ch, &bits_msb_first(alpha_share, depth));
 
-    let (mut local, mut acc) = CprgLocal::start(prg.clone(), n_size, out_bits, root);
+    let (mut local, mut acc) = T::start(prg.clone(), n_size, out_bits, root, mode);
     let mut cws = Vec::with_capacity(depth);
     for &alpha_j in &alpha {
         let cw = level_circuit(p, ch, alpha_j, acc);
@@ -303,6 +428,25 @@ fn gen_with<P: GcParty>(
     (key, full)
 }
 
+/// [`gen_with`] on the tree type that `mode` selects.
+#[allow(clippy::too_many_arguments)]
+fn gen_tree<P: GcParty>(
+    p: &mut P,
+    ch: &mut Channel,
+    prg: Prg,
+    n_size: u64,
+    out_bits: usize,
+    root: Block,
+    alpha_share: u64,
+    beta_share: &[Block],
+    mode: TreeMode,
+) -> (DpfKey, Option<FullEval>) {
+    match mode {
+        TreeMode::Stored => gen_with::<P, CprgLocal>(p, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode),
+        TreeMode::Stream { .. } => gen_with::<P, CprgStream>(p, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode),
+    }
+}
+
 /// Runs this party's side of distributed DPF generation.
 ///
 /// * `n_size` is the domain size N ≥ 2 and need not be a power of two.
@@ -317,6 +461,20 @@ pub fn gen(
     alpha_share: u64,
     beta_share: &[Block],
     seed: [u8; 32],
+) -> GenOutput {
+    gen_mode(ch, n_size, out_bits, alpha_share, beta_share, seed, TreeMode::Stored)
+}
+
+/// [`gen`] with the tree held as `mode` says. Both modes send the same
+/// messages; [`TreeMode::Stream`] returns no full-domain output.
+pub fn gen_mode(
+    ch: &mut Channel,
+    n_size: u64,
+    out_bits: usize,
+    alpha_share: u64,
+    beta_share: &[Block],
+    seed: [u8; 32],
+    mode: TreeMode,
 ) -> GenOutput {
     let party = ch.party();
     let t_setup = Instant::now();
@@ -352,12 +510,12 @@ pub fn gen(
     let (key, full, setup_stats, and_gates) = if party == 0 {
         let mut g = Garbler::setup(ch, &mut rng_proto);
         let s = mark(ch);
-        let (k, f) = gen_with(&mut g, ch, prg, n_size, out_bits, root, alpha_share, beta_share);
+        let (k, f) = gen_tree(&mut g, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode);
         (k, f, s, g.and_count())
     } else {
         let mut e = Evaluator::setup(ch, &mut rng_proto);
         let s = mark(ch);
-        let (k, f) = gen_with(&mut e, ch, prg, n_size, out_bits, root, alpha_share, beta_share);
+        let (k, f) = gen_tree(&mut e, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode);
         (k, f, s, e.and_count())
     };
     let gen_time = t_gen.elapsed();
@@ -377,6 +535,26 @@ pub fn gen_reference(
     beta: &[Block],
     seeds: [[u8; 32]; 2],
 ) -> ([DpfKey; 2], [FullEval; 2]) {
+    let (keys, [f0, f1]) = reference_with::<CprgLocal>(n_size, out_bits, alpha, beta, seeds, TreeMode::Stored);
+    (keys, [f0.expect("stored tree"), f1.expect("stored tree")])
+}
+
+/// The keys of [`gen_reference`], with the tree held as `mode` says.
+pub fn gen_reference_keys(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seeds: [[u8; 32]; 2], mode: TreeMode) -> [DpfKey; 2] {
+    match mode {
+        TreeMode::Stored => reference_with::<CprgLocal>(n_size, out_bits, alpha, beta, seeds, mode).0,
+        TreeMode::Stream { .. } => reference_with::<CprgStream>(n_size, out_bits, alpha, beta, seeds, mode).0,
+    }
+}
+
+fn reference_with<T: CprgTree>(
+    n_size: u64,
+    out_bits: usize,
+    alpha: u64,
+    beta: &[Block],
+    seeds: [[u8; 32]; 2],
+    mode: TreeMode,
+) -> ([DpfKey; 2], [Option<FullEval>; 2]) {
     assert!(alpha < n_size);
     let bm = blocks_for_bits(out_bits);
     assert_eq!(beta.len(), bm);
@@ -386,8 +564,8 @@ pub fn gen_reference(
     let prg = Prg::new(Block::random(&mut r0), Block::random(&mut r0));
     let roots = [sample_root(&mut r0, 0), sample_root(&mut r1, 1)];
 
-    let (mut l0, mut a0) = CprgLocal::start(prg.clone(), n_size, out_bits, roots[0]);
-    let (mut l1, mut a1) = CprgLocal::start(prg.clone(), n_size, out_bits, roots[1]);
+    let (mut l0, mut a0) = T::start(prg.clone(), n_size, out_bits, roots[0], mode);
+    let (mut l1, mut a1) = T::start(prg.clone(), n_size, out_bits, roots[1], mode);
     let mut cws = Vec::with_capacity(depth);
     for (j, &aj) in bits_msb_first(alpha, depth).iter().enumerate() {
         let dl = a0.0 ^ a1.0;

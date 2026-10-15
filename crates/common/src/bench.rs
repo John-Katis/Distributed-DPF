@@ -15,6 +15,9 @@
 //!   --out-list a,b,..  out-bits used by the sweep (default 32,128,256,512)
 //!   --latency-ms l     one-way network latency for `net_ms` (default 0)
 //!   --mbps b           bandwidth for `net_ms` in Mbit/s (default 1000)
+//!   --stream           streaming tree ([`crate::stream`]): O(batch·n) memory,
+//!                      ~2× Gen compute, same messages; variant gets `+stream`
+//!   --batch-log b      nodes per streaming batch, 2^b (default 16)
 //! ```
 //!
 //! Each row starts with `mode,variant`. Bytes are summed over both directions.
@@ -23,6 +26,7 @@
 //! link: the slower party's generation time plus `rounds·latency` plus
 //! `gen_bytes` at the bandwidth ([`crate::net::link_time`]).
 
+use crate::stream::TreeMode;
 use std::time::Duration;
 
 /// Column names, printed once as `#` comments.
@@ -44,6 +48,8 @@ pub struct Opts {
     pub out_list: Vec<usize>,
     pub latency_ms: f64,
     pub mbps: f64,
+    pub stream: bool,
+    pub batch_log: u32,
 }
 
 impl Opts {
@@ -62,6 +68,8 @@ impl Opts {
             out_list: default_out_list.to_vec(),
             latency_ms: 0.0,
             mbps: 1000.0,
+            stream: false,
+            batch_log: 16,
         };
         let args: Vec<String> = std::env::args().skip(1).collect();
         let mut i = 0;
@@ -74,18 +82,20 @@ impl Opts {
                     assert!(variants.contains(&o.variant.as_str()), "variant must be one of {variants:?}");
                     i += 1;
                 }
-                "--in-bits" => { o.size = 1u64 << val(i).parse::<u32>().unwrap(); i += 1; }
+                "--in-bits" => { o.size = 1u64 << in_bits(val(i)); i += 1; }
                 "--size" => { o.size = val(i).parse().unwrap(); i += 1; }
                 "--out-bits" => { o.out_bits = val(i).parse().unwrap(); i += 1; }
                 "--reps" => { o.reps = val(i).parse().unwrap(); i += 1; }
                 "--points" => { o.points = val(i).parse().unwrap(); i += 1; }
-                "--max-in-bits" => { o.max_in_bits = val(i).parse().unwrap(); i += 1; }
+                "--max-in-bits" => { o.max_in_bits = in_bits(val(i)); i += 1; }
                 "--out-list" => { o.out_list = val(i).split(',').map(|x| x.parse().unwrap()).collect(); i += 1; }
                 "--latency-ms" => { o.latency_ms = val(i).parse().unwrap(); i += 1; }
                 "--mbps" => { o.mbps = val(i).parse().unwrap(); i += 1; }
                 "--sweep" => o.sweep = true,
+                "--stream" => o.stream = true,
+                "--batch-log" => { o.batch_log = val(i).parse().unwrap(); i += 1; }
                 "-h" | "--help" => {
-                    eprintln!("usage: bench <gen|eval|full|all> [--variant {}] [--in-bits n | --size N] [--out-bits m] [--reps R] [--points P] [--sweep [--max-in-bits n] [--out-list a,b]] [--latency-ms l] [--mbps b]", variants.join("|"));
+                    eprintln!("usage: bench <gen|eval|full|all> [--variant {}] [--in-bits n | --size N] [--out-bits m] [--reps R] [--points P] [--sweep [--max-in-bits n] [--out-list a,b]] [--latency-ms l] [--mbps b] [--stream [--batch-log b]]", variants.join("|"));
                     std::process::exit(0);
                 }
                 other => panic!("unknown argument {other}"),
@@ -94,7 +104,26 @@ impl Opts {
         }
         assert!(o.size >= 2 && o.reps >= 1);
         assert!(o.latency_ms >= 0.0 && o.mbps > 0.0);
+        assert!((1..=30).contains(&o.batch_log), "--batch-log must be in 1..=30");
         o
+    }
+
+    /// The tree mode selected by `--stream` / `--batch-log`.
+    pub fn tree_mode(&self) -> TreeMode {
+        if self.stream {
+            TreeMode::Stream { batch: 1 << self.batch_log }
+        } else {
+            TreeMode::Stored
+        }
+    }
+
+    /// The variant as printed in the CSV: `+stream` marks the streaming tree.
+    pub fn label(&self) -> String {
+        if self.stream {
+            format!("{}+stream", self.variant)
+        } else {
+            self.variant.clone()
+        }
     }
 
     /// Calls `f` once, or for every (in-bits, out-bits) pair of the sweep.
@@ -155,7 +184,7 @@ pub fn print_gen(o: &Opts, r: &GenRow) {
     let net = crate::net::link_time(r.gen_p0.max(r.gen_p1), r.rounds, r.gen_bytes, latency, o.mbps * 1e6);
     println!(
         "gen,{},{},{:.2},{},{},{},{:.3},{:.3},{:.3},{:.3},{},{},{:.0},{},{},{},{},{:.3}",
-        o.variant,
+        o.label(),
         o.size,
         o.in_bits(),
         o.out_bits,
@@ -188,7 +217,7 @@ pub fn bench_eval(o: &Opts, bm: usize, xs: &[u64], mut eval: impl FnMut(u64)) {
         times.push(t.elapsed());
     }
     let per = median(times).as_secs_f64() * 1e9 / xs.len() as f64;
-    println!("eval,{},{},{:.2},{},{},{},{},{:.1}", o.variant, o.size, o.in_bits(), o.out_bits, bm, o.reps, xs.len(), per);
+    println!("eval,{},{},{:.2},{},{},{},{},{:.1}", o.label(), o.size, o.in_bits(), o.out_bits, bm, o.reps, xs.len(), per);
 }
 
 /// Times a full-domain evaluation `reps` times and prints the median.
@@ -202,7 +231,7 @@ pub fn bench_full(o: &Opts, bm: usize, mut full: impl FnMut()) {
     let m = median(times);
     println!(
         "full,{},{},{:.2},{},{},{},{:.3},{:.2}",
-        o.variant,
+        o.label(),
         o.size,
         o.in_bits(),
         o.out_bits,
@@ -211,4 +240,11 @@ pub fn bench_full(o: &Opts, bm: usize, mut full: impl FnMut()) {
         ms(m),
         m.as_secs_f64() * 1e9 / o.size as f64
     );
+}
+
+/// Parses an input length; the domain size `2^n` must fit in a `u64`.
+fn in_bits(v: &str) -> u32 {
+    let n: u32 = v.parse().expect("input bits must be an integer");
+    assert!((1..=63).contains(&n), "input bits must be in 1..=63 (the domain size 2^n is a u64)");
+    n
 }

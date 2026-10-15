@@ -6,7 +6,7 @@
 //! the full-domain output during Gen. We keep it so the output can be checked
 //! and evaluated at single points.
 
-use crate::cprg::{leaf_words, CprgLocal, FullEval};
+use crate::cprg::{leaf_words, CprgLocal, CprgStream, FullEval};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::prg::Prg;
 
@@ -88,5 +88,12 @@ impl DpfKey {
         }
         local.finalize();
         local.output(&self.gamma)
+    }
+
+    /// [`eval_full`](Self::eval_full) without holding the domain: a batched
+    /// walk ([`dpf_common::stream`]) that calls `visit(x0, cols)` with
+    /// `cols[k][i]` = block k of this party's share at `x0 + i`, for all x < N.
+    pub fn eval_full_stream(&self, batch: usize, visit: impl FnMut(u64, &[Vec<Block>])) {
+        CprgStream::with_cws(self.prg.clone(), self.n_size, self.out_bits, self.root, self.cws.clone(), batch).outputs(self.n_size, &self.gamma, visit);
     }
 }

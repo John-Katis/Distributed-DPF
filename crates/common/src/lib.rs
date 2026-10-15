@@ -15,6 +15,7 @@
 //! * [`gc`]: semi-honest half-gates garbled circuits over shared inputs.
 //! * [`testing`]: cleartext oracles for protocol tests and benchmarks.
 //! * [`bench`]: shared CLI and CSV rows for the protocols' benchmarks.
+//! * [`stream`]: batched depth-first walk for the streaming tree mode.
 
 pub mod arith;
 pub mod bench;
@@ -28,6 +29,7 @@ pub mod mac;
 pub mod net;
 pub mod ot;
 pub mod prg;
+pub mod stream;
 pub mod testing;
 
 pub use block::Block;

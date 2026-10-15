@@ -56,7 +56,7 @@ fn two_party_gen_matches_cleartext_function() {
                 assert_eq!(at, beta, "f(alpha) != beta");
                 assert_ne!(o0.key.eval_point(alpha), beta, "a single share equals beta");
 
-                check_against_cleartext(&[o0.key.clone(), o1.key.clone()], &[o0.full.clone(), o1.full.clone()], n, alpha, &beta);
+                check_against_cleartext(&[o0.key.clone(), o1.key.clone()], &[o0.full.clone().unwrap(), o1.full.clone().unwrap()], n, alpha, &beta);
 
                 // Bit-exact against the plaintext reference driver with the same seeds.
                 let (rk, rf) = gen_reference(n, out_bits, alpha, &beta, run.seeds);
@@ -65,8 +65,8 @@ fn two_party_gen_matches_cleartext_function() {
                     assert_eq!(k.cws, r.cws);
                     assert_eq!(k.gamma, r.gamma);
                 }
-                assert_eq!(o0.full, rf[0]);
-                assert_eq!(o1.full, rf[1]);
+                assert_eq!(o0.full.as_ref(), Some(&rf[0]));
+                assert_eq!(o1.full.as_ref(), Some(&rf[1]));
             }
         }
     }
@@ -104,7 +104,7 @@ fn every_alpha_small_domain() {
         let beta = vec![Block(0xdead_beef_0000 + alpha as u128)];
         let run = run_gen(n, 64, alpha, &beta, 1000 + alpha);
         let [o0, o1] = run.outs;
-        check_against_cleartext(&[o0.key, o1.key], &[o0.full, o1.full], n, alpha, &beta);
+        check_against_cleartext(&[o0.key, o1.key], &[o0.full.unwrap(), o1.full.unwrap()], n, alpha, &beta);
     }
 }
 
