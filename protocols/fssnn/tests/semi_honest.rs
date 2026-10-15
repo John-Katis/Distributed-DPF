@@ -3,17 +3,16 @@
 use dpf_common::block::Block;
 use fssnn::run_gen;
 use fssnn::semi_honest::{deal, gen_reference, FssKey};
-use fssnn::tree::levels_for;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
-/// Below, at and above the early-termination cut (n = 6), and non-powers of two.
+/// Powers of two and non-powers of two (padded to 2^n).
 const SIZES: &[u64] = &[2, 3, 5, 33, 64, 65, 127, 1000, 1024, (1 << 12) + 3];
 
 fn check(keys: &[FssKey; 2], n: u64, alpha: u64, beta: bool) {
     let ctx = format!("N={n} alpha={alpha} beta={beta}");
     assert_eq!(keys[0].public_part(), keys[1].public_part(), "{ctx}");
-    assert_eq!(keys[0].cws.len(), levels_for(keys[0].depth()), "{ctx}");
+    assert_eq!(keys[0].cws.len(), keys[0].depth(), "{ctx}");
     let ev = [keys[0].eval_full(), keys[1].eval_full()];
     for x in 0..n {
         let want = beta && x == alpha;
@@ -45,7 +44,7 @@ fn two_party_gen_matches_cleartext_function() {
                 seed += 1;
                 let run = run_gen(n, alpha, beta, seed);
                 let [o0, o1] = run.outs;
-                assert_eq!(o0.prg_calls, 2 * levels_for(o0.key.depth()));
+                assert_eq!(o0.prg_calls, 2 * o0.key.depth());
                 let keys = [o0.key, o1.key];
                 check(&keys, n, alpha, beta);
                 // Same keys as the dealer on the same roots.

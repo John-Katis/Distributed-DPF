@@ -15,11 +15,12 @@ BitXA) are not implemented.
    127-bit seed and the state bit in bit 0 (λ = 127, as in the paper).
    `G : {0,1}^127 → {0,1}^256` is the DGH+21 LPN-PRG, and
    `CW^(i) = s_CW ∥ t^L_CW ∥ t^R_CW`.
-2. **Early termination** (§3.3.2): only `υ = max(0, n − 6)` levels carry a CW.
-   A node at depth υ covers 2^{n−υ} ≤ 64 inputs. The output for low bits `j`
-   is bit `j` of its seed, corrected by `t` times bit `j` of the final word
-   `Conv(s_0) ⊕ Conv(s_1) ⊕ β·e_{α_low}`. In bits, the key is
-   `128 + υ(λ + 2) + 64`.
+2. **Full tree, no early termination:** all n levels carry a CW and Eval
+   expands all 2^n leaves, as in the other protocols. FssNN's early
+   termination (§3.3.2, taken from BGI16) would apply to every DPF here, so it
+   is left out of all of them. A leaf's output is `Conv(s)` (seed bit 1),
+   corrected by `t` times the final bit `Conv(s_0) ⊕ Conv(s_1) ⊕ β`. In bits,
+   the key is `128 + n(λ + 2) + 1`.
 3. **Distributed Gen** (Alg. 5, `src/semi_honest/gen.rs`): the on-path nodes of *both*
    trees stay XOR-shared. Each level does:
    - F_SecPRG on both shared seeds (step 4);
@@ -28,8 +29,7 @@ BitXA) are not implemented.
    - opening of `(s_CW, t^L_CW, t^R_CW)` in one round;
    - one F_AND per tree for `t^(i−1)·t^Keep_CW`.
 
-   The final word needs an AND tree for the shared one-hot of α's low bits,
-   then one opening.
+   The final bit is linear in the shares and needs only one opening.
 4. **F_SecPRG** (PRG in `src/lpn_prg.rs`, its 2PC in `src/semi_honest/sec_prg.rs`): DGH+21 Construction 3.4 with the Table 3
    parameters (n, m, t) = (128, 512, 256), evaluated gate by gate as in §5.1.
    Lin₂, then Convert(2,3) (open 128 bits), then Lin₃, then Convert(3,2) (open
@@ -41,7 +41,7 @@ BitXA) are not implemented.
    - (3,2)-correlations (Protocol 5.4) come from KK13 1-of-3 OTs of 2-bit
      strings.
 
-   All 2υ calls are preprocessed in one batch at the start of Gen.
+   All 2n calls are preprocessed in one batch at the start of Gen.
 
 | Functionality | Instantiation | Module |
 |---|---|---|
@@ -55,7 +55,7 @@ Notes and deviations:
   DGH+21 Protocol 5.4, `x̃_i + j` should be `x̃_1 + j`, and the receiver must
   unmask `r_c ⊕ z_c`.
 - **Root sharing:** ΠShare of the roots is the trivial sharing `(s, 0)`.
-- **Leaf conversion:** `Conv(s)` reads the leaf seed's bits 1..=64 directly,
+- **Leaf conversion:** `Conv(s)` reads the leaf seed's bit 1 directly,
   with no extra PRG call.
 - **Discard bits:** they are sent uncompressed (1 bit per OT). DGH+21 suggests
   entropy coding them down to about 1.377 bits per correlation.

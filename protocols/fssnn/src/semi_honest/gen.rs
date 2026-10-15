@@ -18,18 +18,18 @@
 //!    `t_j^(i) = t_j^Keep ⊕ t_j^(i−1)·t^Keep_CW` (one F_AND per tree, since
 //!    `t^Keep_CW` is public but selected by the shared α_i).
 //!
-//! After `υ` levels the final word `Conv(s_0) ⊕ Conv(s_1) ⊕ β·e_{α_low}` is
-//! opened, with the shared one-hot vector of the low `n − υ` bits of α built
-//! by an AND tree. FssNN's DCF output bit `v` and its early-termination word
-//! (which packs the `v^L_CW` of the cut levels) become this BGI16-style final
-//! word for the DPF.
+//! After all n levels the final bit `Conv(s_0) ⊕ Conv(s_1) ⊕ β` is opened;
+//! it is linear in the shares, so it costs no AND. FssNN's DCF output bit `v`
+//! becomes this BGI16-style final bit for the DPF. FssNN's early termination
+//! (§3.3.2) is not used, so the full tree is expanded as in the other
+//! protocols.
 //!
-//! Correlations for all `2υ` PRG evaluations are generated up front from
+//! Correlations for all `2n` PRG evaluations are generated up front from
 //! OT (DGH+21 §5.5), so no dealer is involved anywhere.
 
 use super::key::FssKey;
 use super::sec_prg::{eval_shared, preprocess, Kk};
-use crate::tree::{child, conv, expand, levels_for, CorrectionWord, PACK_BITS};
+use crate::tree::{child, conv, expand, CorrectionWord};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::bool2pc::{mux_block, BoolParty};
 use dpf_common::net::{Channel, CommStats};
@@ -43,7 +43,7 @@ pub struct GenOutput {
     pub key: FssKey,
     pub setup_stats: CommStats,
     pub gen_stats: CommStats,
-    /// F_AND invocations (state bits, one-hot vector).
+    /// F_AND invocations (state bits).
     pub and_gates: usize,
     /// COTs used (MUXes and the Z3 OTs of the PRG correlations, both directions).
     pub cots: usize,
@@ -53,23 +53,12 @@ pub struct GenOutput {
     pub gen_time: Duration,
 }
 
-/// Opens XOR-shared 64-bit words.
-fn open_u64(ch: &mut Channel, x: u64) -> u64 {
-    ch.send(x.to_le_bytes().to_vec());
-    x ^ u64::from_le_bytes(ch.recv().try_into().expect("8-byte share"))
-}
-
-/// XOR shares of `β·e_k` for `k ∈ [2^l]`, `k` = the low `l` bits of α, as a
-/// 64-bit mask.
-fn one_hot(bp: &mut BoolParty, ch: &mut Channel, alpha_low: u64, l: usize, beta: bool) -> u64 {
-    let mut v = vec![bp.constant(true)];
-    for k in (0..l).rev() {
-        let a = (alpha_low >> k) & 1 == 1;
-        let pa = bp.and_many(ch, &v.iter().map(|&p| (p, a)).collect::<Vec<_>>());
-        v = v.iter().zip(&pa).flat_map(|(&p, &q)| [p ^ q, q]).collect();
-    }
-    let e = bp.and_many(ch, &v.iter().map(|&p| (p, beta)).collect::<Vec<_>>());
-    e.iter().enumerate().fold(0, |m, (k, &b)| m | (b as u64) << k)
+/// Opens an XOR-shared bit.
+fn open_bit(ch: &mut Channel, x: bool) -> bool {
+    ch.send(vec![x as u8]);
+    let theirs = ch.recv();
+    assert_eq!(theirs.len(), 1, "malformed bit share");
+    x ^ (theirs[0] & 1 == 1)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -86,15 +75,14 @@ fn gen_with(
 ) -> (FssKey, usize) {
     let b = ch.party();
     let n = depth_for(n_size);
-    let ups = levels_for(n);
     let mut tweak = 0;
-    let corr = preprocess(ch, cot, kk, 2 * ups, &mut tweak, rng);
+    let corr = preprocess(ch, cot, kk, 2 * n, &mut tweak, rng);
 
     // Step 2: ⟨s_j^(0)⟩, own root, zero share of the peer's.
     let mut node = [Block::ZERO; 2];
     node[b] = root;
-    let mut cws = Vec::with_capacity(ups);
-    for i in 0..ups {
+    let mut cws = Vec::with_capacity(n);
+    for i in 0..n {
         let a = (alpha_share >> (n - 1 - i)) & 1 == 1;
         // Step 4.
         let y = eval_shared(ch, &corr[2 * i..2 * i + 2], &[node[0].0 & !1, node[1].0 & !1]);
@@ -122,11 +110,8 @@ fn gen_with(
         cws.push(cw);
     }
 
-    let lb = n - ups;
-    debug_assert!(lb <= PACK_BITS);
-    let e = one_hot(bp, ch, alpha_share & ((1 << lb) - 1), lb, beta_share);
-    let fcw = open_u64(ch, conv(node[0]) ^ conv(node[1]) ^ e);
-    (FssKey { party: b, n_size, root, cws, fcw }, 2 * ups)
+    let fcw = open_bit(ch, conv(node[0]) ^ conv(node[1]) ^ beta_share);
+    (FssKey { party: b, n_size, root, cws, fcw }, 2 * n)
 }
 
 /// A root with `t = party` (Alg. 4 line 2).
@@ -169,10 +154,9 @@ pub fn deal(roots: [Block; 2], n_size: u64, alpha: u64, beta: bool) -> [FssKey; 
     assert!(alpha < n_size);
     assert!(!roots[0].lsb() && roots[1].lsb(), "t_b^(0) = b");
     let n = depth_for(n_size);
-    let ups = levels_for(n);
     let mut node = roots;
-    let mut cws = Vec::with_capacity(ups);
-    for i in 0..ups {
+    let mut cws = Vec::with_capacity(n);
+    for i in 0..n {
         let a = (alpha >> (n - 1 - i)) & 1 == 1;
         let (g0, g1) = (expand(node[0]), expand(node[1]));
         let lose = !a as usize;
@@ -182,8 +166,7 @@ pub fn deal(roots: [Block; 2], n_size: u64, alpha: u64, beta: bool) -> [FssKey; 
         cws.push(cw);
     }
     assert!(node[0].lsb() ^ node[1].lsb(), "α-node state bits must differ");
-    let low = alpha & ((1 << (n - ups)) - 1);
-    let fcw = conv(node[0]) ^ conv(node[1]) ^ ((beta as u64) << low);
+    let fcw = conv(node[0]) ^ conv(node[1]) ^ beta;
     let mk = |party: usize| FssKey { party, n_size, root: roots[party], cws: cws.clone(), fcw };
     [mk(0), mk(1)]
 }

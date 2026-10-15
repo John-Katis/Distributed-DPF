@@ -5,11 +5,12 @@
 //! FssNN builds a key-reduced DCF with output group Z2 and generates its keys
 //! without a dealer by evaluating the PRG in 2PC (Alg. 5, F_SecPRG via the
 //! MPC-friendly PRG of DGH+21). This crate keeps that key generation and the
-//! tree (Alg. 4, early termination) but drops the comparison bit, so the
-//! result is a DPF over Z2 that can be compared with the other protocols:
+//! tree (Alg. 4) but drops the comparison bit, so the result is a DPF over Z2
+//! that can be compared with the other protocols. Like them, it expands the
+//! full 2^n tree; FssNN's early termination (§3.3.2) is not used.
 //!
 //! * [`lpn_prg`]: the DGH+21 LPN-PRG (public matrices, cleartext evaluation).
-//! * [`tree`]: the tree of Alg. 4 without `v`, with early termination.
+//! * [`tree`]: the tree of Alg. 4 without `v`.
 //! * [`semi_honest`]: Alg. 5 for the DPF ([`semi_honest::gen`]), the
 //!   cleartext Gen ([`semi_honest::deal`]), the semi-honest 2PC of the PRG
 //!   ([`semi_honest::sec_prg`]) and the key ([`semi_honest::FssKey`]).
