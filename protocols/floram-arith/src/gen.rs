@@ -166,8 +166,6 @@ pub fn gen_mode(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, be
     let delta = Block::random(&mut rng);
     let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
     let mut bp = BoolParty::setup(ch, &mut rng);
-    // The triples of BitDec (3 F_AND per bit) and CCMP (1) are input-independent.
-    bp.pregenerate(ch, 3 * depth_for(n_size) + 1);
     ch.sync();
     let setup_stats = ch.stats();
     let setup_time = t_setup.elapsed();
@@ -176,7 +174,6 @@ pub fn gen_mode(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, be
         TreeMode::Stored => gen_with::<Tree>(mode, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
         TreeMode::Stream { .. } => gen_with::<TreeStream>(mode, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
     };
-    debug_assert_eq!(bp.pooled(), 0, "every pregenerated triple is used");
     GenOutput {
         key,
         full,

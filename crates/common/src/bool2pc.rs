@@ -6,10 +6,7 @@
 //!   KKOT of 2-bit messages yields a pair of correlated triples (`_8KKOT`,
 //!   CrypTFlow2 App. A.2). As in the reference `and_wrapper`, every AND uses
 //!   the first triple of its own pair, so no two ANDs share a triple
-//!   component. Triples come from a pool filled by
-//!   [`BoolParty::pregenerate`] when there is one, otherwise they are made
-//!   on demand (two more messages). Online: open `x ⊕ a`, `y ⊕ b` (2 bits,
-//!   one round).
+//!   component. Online: open `x ⊕ a`, `y ⊕ b` (2 bits, one round).
 //! * F_OR: `x ∨ y = 1 ⊕ ((1 ⊕ x) ∧ (1 ⊕ y))`.
 //! * F_MUX^{B,λ}: `z = x ⊕ c·(x ⊕ y)` on λ-bit blocks, with the product from
 //!   two parallel correlated OTs (`multiplexer2` / `multiplexer`).
@@ -26,7 +23,6 @@ use crate::ot::CotPair;
 use crate::coin::Abort;
 use rand::{CryptoRng, Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use std::collections::VecDeque;
 
 enum Kkot {
     Sender(KkotSender),
@@ -38,8 +34,6 @@ pub struct BoolParty {
     party: usize,
     kkot: Kkot,
     rng: ChaCha20Rng,
-    /// Triples made ahead of time, used first by F_AND.
-    pool: VecDeque<(bool, bool, bool)>,
     /// F_AND invocations so far.
     pub ands: usize,
 }
@@ -53,7 +47,7 @@ impl BoolParty {
         } else {
             Kkot::Receiver(KkotReceiver::setup(ch, rng))
         };
-        BoolParty { party, kkot, rng: ChaCha20Rng::from_rng(rng).unwrap(), pool: VecDeque::new(), ands: 0 }
+        BoolParty { party, kkot, rng: ChaCha20Rng::from_rng(rng).unwrap(), ands: 0 }
     }
 
     pub fn party(&self) -> usize {
@@ -64,27 +58,6 @@ impl BoolParty {
     #[inline]
     pub fn constant(&self, c: bool) -> bool {
         c && self.party == 1
-    }
-
-    /// Makes `m` triples now, in one KKOT batch, for later F_AND calls.
-    pub fn pregenerate(&mut self, ch: &mut Channel, m: usize) {
-        let t = self.triples(ch, m);
-        self.pool.extend(t);
-    }
-
-    /// Triples made ahead of time and not used yet.
-    pub fn pooled(&self) -> usize {
-        self.pool.len()
-    }
-
-    /// `m` triples: from the pool first, the rest made now.
-    fn take_triples(&mut self, ch: &mut Channel, m: usize) -> Vec<(bool, bool, bool)> {
-        let k = m.min(self.pool.len());
-        let mut t: Vec<_> = self.pool.drain(..k).collect();
-        if k < m {
-            t.extend(self.triples(ch, m - k));
-        }
-        t
     }
 
     /// `m` bit triples `(a, b, c)` with `c = a ∧ b`, each the first of a
@@ -123,7 +96,7 @@ impl BoolParty {
     /// F_AND on each pair of XOR-shared bits, all in one round after the
     /// triple generation.
     pub fn and_many(&mut self, ch: &mut Channel, pairs: &[(bool, bool)]) -> Vec<bool> {
-        let t = self.take_triples(ch, pairs.len());
+        let t = self.triples(ch, pairs.len());
         self.ands += pairs.len();
         let ef: Vec<bool> = pairs.iter().zip(&t).flat_map(|(&(x, y), &(a, b, _))| [x ^ a, y ^ b]).collect();
         ch.send_bits(&ef);
