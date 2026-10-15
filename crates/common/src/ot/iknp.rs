@@ -36,26 +36,36 @@ pub(crate) fn transpose(cols: &[Vec<u128>], m: usize) -> Vec<u128> {
     rows
 }
 
-/// Serialises columns of `m` bits each, sending only the ⌈m/8⌉ bytes that
-/// carry those bits (the rest of the last word is never used).
+/// Serialises columns of `m` bits each into exactly the bits they carry:
+/// every column's ⌊m/8⌋ whole bytes, then the remaining `m mod 8` bits of all
+/// columns packed together. A batch of one OT thus costs `ncols` bits, not
+/// `ncols` bytes.
 pub(crate) fn words_to_bytes(cols: &[Vec<u128>], m: usize) -> Vec<u8> {
-    let nb = m.div_ceil(8);
-    cols.iter().flat_map(|c| c.iter().flat_map(|w| w.to_le_bytes()).take(nb)).collect()
+    let (full, tail) = (m / 8, m % 8);
+    let mut out: Vec<u8> = cols.iter().flat_map(|c| c.iter().flat_map(|w| w.to_le_bytes()).take(full)).collect();
+    let mut tail_bits = Vec::with_capacity(cols.len() * tail);
+    for c in cols {
+        let byte = c.get(full / 16).map_or(0, |w| (w >> (8 * (full % 16))) as u8);
+        tail_bits.extend((0..tail).map(|k| (byte >> k) & 1 == 1));
+    }
+    out.extend(crate::block::pack_bits(&tail_bits));
+    out
 }
 
 /// Inverse of [`words_to_bytes`]: `ncols` columns of `m` bits, zero-padded to
 /// whole 128-bit words.
 pub(crate) fn bytes_to_cols(u: &[u8], ncols: usize, m: usize) -> Vec<Vec<u128>> {
-    let nb = m.div_ceil(8);
+    let (full, tail) = (m / 8, m % 8);
     let words = m.div_ceil(128);
-    assert_eq!(u.len(), ncols * nb, "unexpected OT-extension column length");
-    if nb == 0 {
-        return vec![Vec::new(); ncols];
-    }
-    u.chunks_exact(nb)
-        .map(|c| {
+    assert_eq!(u.len(), ncols * full + (ncols * tail).div_ceil(8), "unexpected OT-extension column length");
+    let tail_bits = crate::block::unpack_bits(&u[ncols * full..], ncols * tail);
+    (0..ncols)
+        .map(|i| {
             let mut buf = vec![0u8; words * 16];
-            buf[..nb].copy_from_slice(&c[..nb]);
+            buf[..full].copy_from_slice(&u[i * full..(i + 1) * full]);
+            if tail > 0 {
+                buf[full] = (0..tail).fold(0u8, |b, k| b | (tail_bits[i * tail + k] as u8) << k);
+            }
             buf.chunks_exact(16).map(|w| u128::from_le_bytes(w.try_into().unwrap())).collect()
         })
         .collect()

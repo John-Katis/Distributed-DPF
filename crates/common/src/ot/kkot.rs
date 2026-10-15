@@ -58,6 +58,19 @@ fn rows256(cols: &[Vec<u128>], m: usize) -> Vec<[u128; 2]> {
     lo.into_iter().zip(hi).map(|(a, b)| [a, b]).collect()
 }
 
+/// Packs `l`-bit values back to back, `⌈len·l/8⌉` bytes in all.
+fn pack_values(v: &[u8], l: usize) -> Vec<u8> {
+    let bits: Vec<bool> = v.iter().flat_map(|&x| (0..l).map(move |k| (x >> k) & 1 == 1)).collect();
+    crate::block::pack_bits(&bits)
+}
+
+/// Inverse of [`pack_values`].
+fn unpack_values(bytes: &[u8], count: usize, l: usize) -> Vec<u8> {
+    assert_eq!(bytes.len(), (count * l).div_ceil(8), "unexpected KKOT message length");
+    let bits = crate::block::unpack_bits(bytes, count * l);
+    bits.chunks(l).map(|c| c.iter().enumerate().fold(0u8, |x, (k, &b)| x | (b as u8) << k)).collect()
+}
+
 fn check_params(n: usize, l: usize) {
     assert!((2..=KK_CODE_BITS).contains(&n), "1-out-of-N needs 2 ≤ N ≤ 256");
     assert!((1..=8).contains(&l), "messages are 1..=8 bits");
@@ -110,7 +123,7 @@ impl KkotSender {
                 out.push(msg[x] ^ ccrf([q[0] ^ masks[x][0], q[1] ^ masks[x][1]], l));
             }
         }
-        ch.send(out);
+        ch.send(pack_values(&out, l));
     }
 }
 
@@ -145,8 +158,7 @@ impl KkotReceiver {
         }
         ch.send(words_to_bytes(&us, m));
         let rows = rows256(&ts, m);
-        let y = ch.recv();
-        assert_eq!(y.len(), m * n, "unexpected KKOT message length");
+        let y = unpack_values(&ch.recv(), m * n, l);
         (0..m).map(|j| y[j * n + choices[j] as usize] ^ ccrf(rows[j], l)).collect()
     }
 }

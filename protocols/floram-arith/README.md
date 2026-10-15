@@ -34,6 +34,13 @@ The 2PC building blocks are those of the paper's App. A:
 | F_MUX^{A,ℓ} | SIRNN's COT MUX, 2(λ+ℓ) bits | `dpf_common::arith::mux` |
 | OT | Naor–Pinkas base OTs, IKNP COT, KK13 1-of-N OT | `dpf_common::ot` |
 
+Communication per level, both parties together: 206 B. That is three F_AND
+at 36 B each (a 1-of-8 KKOT₂ for the bit triple, 256 + 16 bits, plus 2 bits
+each way online), the block MUX at 64 B (two λ-bit COTs) and the reveal of
+`(σ, τ_0, τ_1)` at 2 × 17 B. Bit-triple generation is counted inside Gen,
+while the paper's App. A prices F_AND at 2 bits "given the bit triplets", so
+its 18λℓ + 5λ + 13ℓ + 2 bits (§IV-A) is not directly comparable.
+
 Differences from the reference code:
 - **Convert:** it takes the ℓ leaf bits above the control bit (the `s` of
   `s∥t`). The reference includes the control bit. Then
