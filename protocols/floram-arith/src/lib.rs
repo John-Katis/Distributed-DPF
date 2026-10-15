@@ -14,7 +14,8 @@ pub mod gen;
 pub mod key;
 pub mod tree;
 
-pub use gen::{deal, gen, gen_reference, GenOutput};
+pub use dpf_common::stream::TreeMode;
+pub use gen::{deal, deal_mode, gen, gen_mode, gen_reference, gen_reference_mode, GenOutput};
 pub use key::ArithKey;
 pub use tree::CorrectionWord;
 
@@ -34,6 +35,11 @@ pub struct TwoPartyRun {
 /// Additively shares α (mod 2^n) and β (mod 2^bits) and runs [`gen`] for both
 /// parties.
 pub fn run_gen(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64) -> TwoPartyRun {
+    run_gen_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
+}
+
+/// [`run_gen`] with the tree held as `mode` says.
+pub fn run_gen_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64, mode: TreeMode) -> TwoPartyRun {
     assert!(alpha < n_size);
     let n = dpf_common::block::depth_for(n_size);
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
@@ -47,12 +53,12 @@ pub fn run_gen(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64) -> Tw
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();
-            let o = gen(c, n_size, bits, a0, b0, seeds[0]);
+            let o = gen_mode(c, n_size, bits, a0, b0, seeds[0], mode);
             (o, t.elapsed())
         },
         |c| {
             let t = Instant::now();
-            let o = gen(c, n_size, bits, a1, b1, seeds[1]);
+            let o = gen_mode(c, n_size, bits, a1, b1, seeds[1], mode);
             (o, t.elapsed())
         },
     );

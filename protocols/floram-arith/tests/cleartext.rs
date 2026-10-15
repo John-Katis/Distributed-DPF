@@ -38,7 +38,7 @@ fn two_party_gen_matches_cleartext_function() {
                 let run = run_gen(n, bits, alpha, beta, seed);
                 let [o0, o1] = run.outs;
                 let keys = [o0.key, o1.key];
-                check(&keys, Some(&[o0.full, o1.full]), n, alpha, beta);
+                check(&keys, Some(&[o0.full.unwrap(), o1.full.unwrap()]), n, alpha, beta);
                 let d = deal([keys[0].root, keys[1].root], n, bits, alpha, beta);
                 assert_eq!(d[0].public_part(), keys[0].public_part(), "protocol differs from dealer");
             }
@@ -56,7 +56,7 @@ fn every_alpha_with_wrapping_shares() {
             let run = run_gen(n, 32, alpha, 0xdead_0000 + alpha, 100 * alpha + s);
             wrapped += (run.alpha_shares[0] + run.alpha_shares[1] >= 16) as u32;
             let [o0, o1] = run.outs;
-            check(&[o0.key, o1.key], Some(&[o0.full, o1.full]), n, alpha, 0xdead_0000 + alpha);
+            check(&[o0.key, o1.key], Some(&[o0.full.unwrap(), o1.full.unwrap()]), n, alpha, 0xdead_0000 + alpha);
         }
     }
     assert!(wrapped > 0, "no case exercised a carry out of the top bit");

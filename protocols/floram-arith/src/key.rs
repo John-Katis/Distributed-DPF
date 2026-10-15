@@ -5,7 +5,7 @@
 //! y_b(x) = (−1)^b · (Convert(s_b(x)) + t_b(x)·W_CW)  mod 2^ℓ
 //! ```
 
-use crate::tree::{expand, CorrectionWord, Tree};
+use crate::tree::{expand, CorrectionWord, Tree, TreeStream};
 use dpf_common::arith::{convert, mask, signed};
 use dpf_common::block::{depth_for, Block};
 
@@ -71,5 +71,22 @@ impl ArithKey {
 
     pub fn ring_mask(&self) -> u64 {
         mask(self.bits)
+    }
+
+    /// [`eval_full`](Self::eval_full) without holding the domain: a batched
+    /// walk ([`dpf_common::stream`]) that calls `visit(x0, ys)` with this
+    /// party's shares at `x0 .. x0 + ys.len()`, for all x < N.
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[u64])) {
+        let tree = TreeStream::with_cws(self.n_size, self.root, self.party == 1, self.cws.clone(), batch);
+        let mut ys = Vec::new();
+        tree.visit_leaves(|x0, leaves| {
+            if x0 >= self.n_size {
+                return;
+            }
+            let leaves = &leaves[..leaves.len().min((self.n_size - x0) as usize)];
+            ys.clear();
+            ys.extend(leaves.iter().map(|s| self.output(*s, s.lsb())));
+            visit(x0, &ys);
+        });
     }
 }
