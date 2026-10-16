@@ -135,6 +135,17 @@ impl Channel {
         v
     }
 
+    /// Sends an `out_bits`-bit payload (`ceil(out_bits/128)` blocks whose bits
+    /// from `out_bits` on are zero) in `ceil(out_bits/8)` bytes.
+    pub fn send_payload(&mut self, v: &[Block], out_bits: usize) {
+        self.send(crate::block::payload_to_bytes(v, out_bits));
+    }
+
+    /// Receives what [`send_payload`](Self::send_payload) sent.
+    pub fn recv_payload(&mut self, out_bits: usize) -> Vec<Block> {
+        crate::block::payload_from_bytes(&self.recv(), out_bits)
+    }
+
     pub fn send_bits(&mut self, bits: &[bool]) {
         self.send(pack_bits(bits));
     }

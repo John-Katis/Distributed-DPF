@@ -146,9 +146,12 @@ impl Session {
         local.apply_last(hcw, lcw);
 
         // 5. Output correction word.
-        let mine = xor_blocks(&local.finalize(), beta_share);
-        ch.send_blocks(&mine);
-        let cw_out = xor_blocks(&mine, &ch.recv_blocks(conv.bm));
+        //    The leaf sum is `out_bits` wide and β ∈ F_2^out_bits, so the share
+        //    is reduced to `out_bits` and opened in `ceil(out_bits/8)` bytes.
+        let mut mine = xor_blocks(&local.finalize(), beta_share);
+        dpf_common::block::mask_to_bits(&mut mine, out_bits);
+        ch.send_payload(&mine, out_bits);
+        let cw_out = xor_blocks(&mine, &ch.recv_payload(out_bits));
 
         let full = local.output(&cw_out);
         let key = HtKey { party: b, n_size, conv, hash: self.hash.clone(), root, cws, hcw, lcw, cw_out };

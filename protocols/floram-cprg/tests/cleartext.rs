@@ -130,3 +130,20 @@ fn public_key_parts_do_not_leak() {
     }
     assert!((12..=52).contains(&lsb_hits), "lsb(β) predictable: {lsb_hits}/{trials}");
 }
+
+/// The output correction word is opened in `ceil(out_bits/8)` bytes: 8 at
+/// 64 bits, 16 at 127 and 128, 25 at 200.
+#[test]
+fn output_cw_traffic_follows_out_bits() {
+    let mut rng = ChaCha20Rng::seed_from_u64(5);
+    let sent = |out_bits: usize, rng: &mut ChaCha20Rng| {
+        let beta = random_beta(rng, out_bits);
+        let run = run_gen(1000, out_bits, 3, &beta, 7);
+        [run.outs[0].gen_stats.bytes_sent, run.outs[1].gen_stats.bytes_sent]
+    };
+    let s64 = sent(64, &mut rng);
+    for (bits, extra) in [(127, 8), (128, 8), (200, 17)] {
+        let s = sent(bits, &mut rng);
+        assert_eq!([s[0] - s64[0], s[1] - s64[1]], [extra, extra], "out_bits={bits}");
+    }
+}

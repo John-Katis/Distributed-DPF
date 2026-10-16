@@ -48,6 +48,8 @@ is its t-bit):
 Other differences:
 - γ = acc⁰ ⊕ acc¹ ⊕ β is opened directly from XOR shares. Floram's circuit for
   it contains only XOR gates, so the result is the same.
+- The payload is exactly ℓ = `out_bits` wide: Convert clears the bits from ℓ
+  on, and γ is opened in ⌈ℓ/8⌉ bytes (8 at ℓ = 64) instead of whole blocks.
 - Base OTs are random OTs, which saves Naor–Pinkas's last message.
 - The code is single-threaded; Floram's OpenMP is not reproduced.
 

@@ -39,7 +39,7 @@ impl HtKey {
     /// Compact size: root + S + (n−1) CWs + HCW∥LCW_0∥LCW_1 (λ+1 bits, one
     /// block + 1 byte) + `bm` output blocks.
     pub fn size_bytes(&self) -> usize {
-        16 + 16 + self.cws.len() * 16 + 17 + self.cw_out.len() * 16
+        16 + 16 + self.cws.len() * 16 + 17 + self.conv.out_bits.div_ceil(8)
     }
 
     /// The leaf `X_x` this party reaches for input `x` (DPF.Eval lines 2–5).

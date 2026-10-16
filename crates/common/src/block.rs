@@ -112,6 +112,32 @@ pub fn blocks_for_bits(out_bits: usize) -> usize {
     out_bits.div_ceil(128)
 }
 
+/// The mask of the last of the `ceil(out_bits/128)` payload blocks: its
+/// `out_bits mod 128` low bits, or all 128.
+pub fn last_block_mask(out_bits: usize) -> u128 {
+    assert!(out_bits >= 1);
+    match out_bits % 128 {
+        0 => u128::MAX,
+        r => (1u128 << r) - 1,
+    }
+}
+
+/// The `ceil(out_bits/8)` low bytes of a payload of blocks, little endian.
+pub fn payload_to_bytes(v: &[Block], out_bits: usize) -> Vec<u8> {
+    assert_eq!(v.len(), blocks_for_bits(out_bits));
+    let mut out = blocks_to_bytes(v);
+    out.truncate(out_bits.div_ceil(8));
+    out
+}
+
+/// Inverse of [`payload_to_bytes`].
+pub fn payload_from_bytes(bytes: &[u8], out_bits: usize) -> Vec<Block> {
+    assert_eq!(bytes.len(), out_bits.div_ceil(8), "unexpected payload length");
+    let mut buf = bytes.to_vec();
+    buf.resize(16 * blocks_for_bits(out_bits), 0);
+    blocks_from_bytes(&buf)
+}
+
 /// Clears every bit at position `out_bits` or above in a payload of blocks.
 pub fn mask_to_bits(v: &mut [Block], out_bits: usize) {
     for (i, b) in v.iter_mut().enumerate() {

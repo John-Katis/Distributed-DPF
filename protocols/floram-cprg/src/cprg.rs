@@ -24,7 +24,7 @@
 //!   `lsb(γ) = lsb(β) ⊕ 1 ⊕ τ_{m,0} ⊕ τ_{m,1}` is public.
 
 use crate::key::{CorrectionWord, DpfKey};
-use dpf_common::block::{bits_msb_first, blocks_for_bits, depth_for, expand_in_place, xor_blocks, Block};
+use dpf_common::block::{bits_msb_first, blocks_for_bits, depth_for, expand_in_place, last_block_mask, mask_to_bits, xor_blocks, Block};
 use dpf_common::gc::{Evaluator, GcParty, Garbler, Wire};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::prg::Prg;
@@ -94,10 +94,13 @@ fn expand_level(prg: &Prg, parents: &[Block], out: &mut Vec<Block>) -> (Block, B
 /// Payload columns of the leaves (`Convert`). A leaf's lsb is its t-bit and
 /// must not reach the payload. Up to 127 bits, column 0 is the leaf shifted
 /// down (Half-Tree's PRG-free Convert); wider payloads chain `keyL` from the
-/// leaf, column k = `left^{k+1}(leaf)`.
+/// leaf, column k = `left^{k+1}(leaf)`. Bits from `out_bits` on are cleared,
+/// so the payload is exactly `out_bits` wide and γ is opened in
+/// `ceil(out_bits/8)` bytes.
 pub fn leaf_columns(prg: &Prg, leaves: &[Block], out_bits: usize) -> Vec<Vec<Block>> {
+    let m = last_block_mask(out_bits);
     if out_bits <= 127 {
-        return vec![leaves.iter().map(|x| Block(x.0 >> 1)).collect()];
+        return vec![leaves.iter().map(|x| Block((x.0 >> 1) & m)).collect()];
     }
     let mut cols: Vec<Vec<Block>> = Vec::with_capacity(blocks_for_bits(out_bits));
     for k in 0..blocks_for_bits(out_bits) {
@@ -105,13 +108,18 @@ pub fn leaf_columns(prg: &Prg, leaves: &[Block], out_bits: usize) -> Vec<Vec<Blo
         prg.left_many(if k == 0 { leaves } else { &cols[k - 1] }, &mut next);
         cols.push(next);
     }
+    if m != u128::MAX {
+        // The chain needs the full blocks, so mask only after it.
+        cols.last_mut().unwrap().iter_mut().for_each(|x| x.0 &= m);
+    }
     cols
 }
 
 /// [`leaf_columns`] for one leaf.
 pub fn leaf_words(prg: &Prg, leaf: Block, out_bits: usize, out: &mut [Block]) {
+    let m = last_block_mask(out_bits);
     if out_bits <= 127 {
-        out[0] = Block(leaf.0 >> 1);
+        out[0] = Block((leaf.0 >> 1) & m);
         return;
     }
     let mut s = leaf;
@@ -119,6 +127,7 @@ pub fn leaf_words(prg: &Prg, leaf: Block, out_bits: usize, out: &mut [Block]) {
         s = prg.left(s);
         *o = s;
     }
+    out.last_mut().unwrap().0 &= m;
 }
 
 impl CprgLocal {
@@ -181,9 +190,10 @@ impl CprgLocal {
         assert_eq!(self.nodes.len(), 1 << self.depth);
         let cols = if self.out_bits <= 127 {
             // One payload column: shift the leaves in place.
+            let m = last_block_mask(self.out_bits);
             let mut col = std::mem::take(&mut self.nodes);
             for x in col.iter_mut() {
-                *x = Block(x.0 >> 1);
+                *x = Block((x.0 >> 1) & m);
             }
             vec![col]
         } else {
@@ -426,9 +436,12 @@ fn gen_with<P: GcParty, T: CprgTree>(
 
     // γ = acc^0 ⊕ acc^1 ⊕ β. Floram computes this in the circuit, but it has only
     // XOR gates, so opening the XOR shares directly gives the same result.
-    let mine = xor_blocks(&leaf_acc, beta_share);
-    ch.send_blocks(&mine);
-    let theirs = ch.recv_blocks(mine.len());
+    // The leaf sum is `out_bits` wide and β ∈ F_2^out_bits, so the share is
+    // reduced to `out_bits` and γ goes in `ceil(out_bits/8)` bytes.
+    let mut mine = xor_blocks(&leaf_acc, beta_share);
+    mask_to_bits(&mut mine, out_bits);
+    ch.send_payload(&mine, out_bits);
+    let theirs = ch.recv_payload(out_bits);
     let gamma = xor_blocks(&mine, &theirs);
 
     let full = local.output(&gamma);

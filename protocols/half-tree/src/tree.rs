@@ -27,7 +27,9 @@ pub fn hb(x: Block) -> Block {
 /// `Convert` from a leaf to `bm` payload blocks. For payloads of at most 127
 /// bits it is the PRG-free conversion of GYW+23 App. F.1 (the 127 seed bits
 /// `s = hb(X)` shifted down). Wider payloads hash `s` with a domain-separated
-/// fixed-key hash, one call per block.
+/// fixed-key hash, one call per block. Bits from `out_bits` on are cleared, so
+/// the payload is exactly `out_bits` wide and `CW_{n+1}` is opened in
+/// `ceil(out_bits/8)` bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Convert {
     pub out_bits: usize,
@@ -39,6 +41,12 @@ impl Convert {
         Convert { out_bits, bm: dpf_common::block::blocks_for_bits(out_bits) }
     }
 
+    /// Mask of payload block `k`.
+    #[inline]
+    fn mask(&self, k: usize) -> u128 {
+        if k + 1 == self.bm { dpf_common::block::last_block_mask(self.out_bits) } else { u128::MAX }
+    }
+
     #[inline]
     fn identity(&self) -> bool {
         self.out_bits <= 127
@@ -48,16 +56,17 @@ impl Convert {
     #[inline]
     pub fn word(&self, leaf: Block, k: usize) -> Block {
         if self.identity() {
-            Block(leaf.0 >> 1)
+            Block((leaf.0 >> 1) & self.mask(0))
         } else {
-            convert_hash().h(hb(leaf), k as u64)
+            Block(convert_hash().h(hb(leaf), k as u64).0 & self.mask(k))
         }
     }
 
     /// Payload column `k` for all leaves.
     pub fn column(&self, leaves: &[Block], k: usize) -> Vec<Block> {
+        let m = self.mask(k);
         if self.identity() {
-            leaves.iter().map(|x| Block(x.0 >> 1)).collect()
+            leaves.iter().map(|x| Block((x.0 >> 1) & m)).collect()
         } else {
             let mut out = vec![Block::ZERO; leaves.len()];
             let mut s = [Block::ZERO; 1024];
@@ -66,6 +75,9 @@ impl Convert {
                     *si = hb(*x);
                 }
                 convert_hash().h_many(&s[..l.len()], k as u64, o);
+            }
+            if m != u128::MAX {
+                out.iter_mut().for_each(|x| x.0 &= m);
             }
             out
         }
@@ -236,9 +248,10 @@ impl HtLocal {
             // One payload block: shift the leaves in place, keeping the t-bits.
             let n = self.n_size as usize;
             self.leaf_t = self.nodes[..n].iter().map(|x| x.lsb()).collect();
+            let m = self.conv.mask(0);
             let mut col = std::mem::take(&mut self.nodes);
             for x in col.iter_mut() {
-                *x = Block(x.0 >> 1);
+                *x = Block((x.0 >> 1) & m);
             }
             self.leaf_cols = vec![col];
         } else {

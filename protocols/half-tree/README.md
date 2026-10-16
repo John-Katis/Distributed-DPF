@@ -15,7 +15,10 @@ party.
   `CotPair`, and tosses one coin for the hash key `S` and the seed of the
   per-run root re-randomiser W (the F_Rand compression of §5.2).
 * `Session::gen`: n + 3 rounds. These are the COT columns, n−1 levels,
-  `(μ, d)`, `(HCW, LCW)` and `CW_{n+1}`.
+  `(μ, d)`, `(HCW, LCW)` and `CW_{n+1}`. The payload is exactly ℓ =
+  `out_bits` wide (Convert clears the bits from ℓ on), so `CW_{n+1}` takes
+  ⌈ℓ/8⌉ bytes, 8 at ℓ = 64. The malicious variant keeps whole GF(2^128)
+  blocks, which its MACs need.
 * `HtKey::eval_point`, `HtKey::eval_full` (about 1.5N hash calls).
 * `deal` / `gen_reference`: trusted dealer. `deal` is the bit-exact oracle in the
   tests.

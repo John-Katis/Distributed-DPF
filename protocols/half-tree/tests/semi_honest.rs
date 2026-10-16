@@ -41,7 +41,10 @@ fn two_party_gen_matches_cleartext_function() {
                 seed += 1;
                 let run = run_gen(n, out_bits, alpha, &beta, seed);
                 let [o0, o1] = run.outs;
-                assert_ne!(o0.key.eval_point(alpha), beta, "a single share equals beta");
+                // A share is exactly `out_bits` wide: for 1 bit it equals β half the time.
+                if out_bits >= 32 {
+                    assert_ne!(o0.key.eval_point(alpha), beta, "a single share equals beta");
+                }
                 let keys = [o0.key.clone(), o1.key.clone()];
                 check_against_cleartext(&keys, &[o0.full.clone().unwrap(), o1.full.clone().unwrap()], n, alpha, &beta);
 
@@ -111,5 +114,22 @@ fn hcw_pseudorandom_when_sibling_is_padding() {
         let (keys, fulls) = gen_reference(5, 64, 4, &beta, rng.gen());
         assert_ne!(keys[0].hcw, Block::ZERO, "HCW is publicly zero");
         check_against_cleartext(&keys, &fulls, 5, 4, &beta);
+    }
+}
+
+/// The output correction word is opened in `ceil(out_bits/8)` bytes: 8 at
+/// 64 bits, 16 at 127 and 128, 25 at 200.
+#[test]
+fn output_cw_traffic_follows_out_bits() {
+    let mut rng = ChaCha20Rng::seed_from_u64(5);
+    let sent = |out_bits: usize, rng: &mut ChaCha20Rng| {
+        let beta = random_beta(rng, out_bits);
+        let run = run_gen(1000, out_bits, 3, &beta, 7);
+        [run.outs[0].gen_stats.bytes_sent, run.outs[1].gen_stats.bytes_sent]
+    };
+    let s64 = sent(64, &mut rng);
+    for (bits, extra) in [(127, 8), (128, 8), (200, 17)] {
+        let s = sent(bits, &mut rng);
+        assert_eq!([s[0] - s64[0], s[1] - s64[1]], [extra, extra], "out_bits={bits}");
     }
 }

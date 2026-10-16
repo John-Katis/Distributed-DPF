@@ -49,7 +49,7 @@ impl DpfKey {
     /// Key size in bytes when serialised compactly: root + PRG keys + n × (σ, 2
     /// advice bits) + bm × γ.
     pub fn size_bytes(&self) -> usize {
-        16 + 32 + self.cws.len() * (16 + 1) + self.gamma.len() * 16
+        16 + 32 + self.cws.len() * (16 + 1) + self.out_bits.div_ceil(8)
     }
 
     /// Evaluates this party's share at `x`, writing `bm` blocks into `out`.
