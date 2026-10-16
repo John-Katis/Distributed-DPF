@@ -19,9 +19,24 @@
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::Aes128;
-use dpf_common::arith::convert;
+use dpf_common::arith::{convert, Ring};
 use dpf_common::block::{depth_for, expand_in_place, Block};
 use dpf_common::stream::{walk, TreeMode};
+
+/// `Convert_ℓ(s)` of a leaf label `s`: the ℓ bits above its control bit for
+/// ℓ ≤ 127 ([`convert`]); for ℓ = 128 the seed is too short, and the output is
+/// `AES_s(0)`, the first block of `G(s)` (one more PRG call per leaf).
+#[inline]
+pub fn conv<R: Ring>(s: Block, bits: usize) -> R {
+    if bits < 128 {
+        convert(s, bits)
+    } else {
+        let aes = Aes128::new(GenericArray::from_slice(&s.to_bytes()));
+        let mut b = GenericArray::from(0u128.to_le_bytes());
+        aes.encrypt_block(&mut b);
+        R::from_block(Block::from_bytes(b.as_slice()))
+    }
+}
 
 /// `G(s) = (AES_s(0), AES_s(1))`.
 #[inline]
@@ -113,8 +128,8 @@ pub trait ArithTree: Sized {
     fn expand_level(&mut self) -> (Block, Block);
     /// Lines 10–13 with the level's correction word.
     fn correct(&mut self, cw: CorrectionWord);
-    /// Line 16 over all `2^n` leaves: `(Σ Convert_ℓ(s) mod 2^64, Σ t)`.
-    fn leaf_sums(&self, bits: usize) -> (u64, u64);
+    /// Line 16 over all `2^n` leaves: `(Σ Convert_ℓ(s) mod 2^|R|, Σ t)`.
+    fn leaf_sums<R: Ring>(&self, bits: usize) -> (R, u64);
     /// The leaf at `x` and its control bit.
     fn leaf(&self, x: u64) -> (Block, bool);
     /// The leaves `x < n` and their control bits, if the tree keeps them.
@@ -131,9 +146,9 @@ impl ArithTree for Tree {
     fn correct(&mut self, cw: CorrectionWord) {
         Tree::correct(self, cw)
     }
-    fn leaf_sums(&self, bits: usize) -> (u64, u64) {
+    fn leaf_sums<R: Ring>(&self, bits: usize) -> (R, u64) {
         let (seeds, ts) = self.leaves();
-        let w = seeds.iter().fold(0u64, |a, s| a.wrapping_add(convert(*s, bits)));
+        let w = seeds.iter().fold(R::ZERO, |a, s| a.add(conv(*s, bits)));
         (w, ts.iter().filter(|t| **t).count() as u64)
     }
     fn leaf(&self, x: u64) -> (Block, bool) {
@@ -205,11 +220,11 @@ impl ArithTree for TreeStream {
         self.cws.push(cw);
     }
 
-    fn leaf_sums(&self, bits: usize) -> (u64, u64) {
-        let (mut w, mut tc) = (0u64, 0u64);
+    fn leaf_sums<R: Ring>(&self, bits: usize) -> (R, u64) {
+        let (mut w, mut tc) = (R::ZERO, 0u64);
         self.visit_leaves(|_, leaves| {
             for s in leaves {
-                w = w.wrapping_add(convert(*s, bits));
+                w = w.add(conv(*s, bits));
                 tc += s.lsb() as u64;
             }
         });

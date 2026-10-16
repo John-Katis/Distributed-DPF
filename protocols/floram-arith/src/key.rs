@@ -4,29 +4,32 @@
 //! ```text
 //! y_b(x) = (−1)^b · (Convert(s_b(x)) + t_b(x)·W_CW)  mod 2^ℓ
 //! ```
+//!
+//! The key is generic over the word type `R` of Z_2^ℓ ([`Ring`]): `u64` for
+//! ℓ ≤ 64, `u128` up to ℓ = 128.
 
-use crate::tree::{expand, CorrectionWord, Tree, TreeStream};
-use dpf_common::arith::{convert, mask, signed};
+use crate::tree::{conv, expand, CorrectionWord, Tree, TreeStream};
+use dpf_common::arith::{signed, Ring};
 use dpf_common::block::{depth_for, Block};
 
 #[derive(Clone)]
-pub struct ArithKey {
+pub struct ArithKey<R: Ring = u64> {
     pub party: usize,
     pub n_size: u64,
     /// ℓ, the payload ring Z_2^ℓ.
     pub bits: usize,
     pub root: Block,
     pub cws: Vec<CorrectionWord>,
-    pub w_cw: u64,
+    pub w_cw: R,
 }
 
-impl ArithKey {
+impl<R: Ring> ArithKey<R> {
     pub fn depth(&self) -> usize {
         depth_for(self.n_size)
     }
 
     /// The parts that are identical in both parties' keys.
-    pub fn public_part(&self) -> (&[CorrectionWord], u64) {
+    pub fn public_part(&self) -> (&[CorrectionWord], R) {
         (&self.cws, self.w_cw)
     }
 
@@ -37,12 +40,12 @@ impl ArithKey {
 
     /// The share at a leaf with seed `s` and control bit `t`.
     #[inline]
-    pub fn output(&self, s: Block, t: bool) -> u64 {
-        let y = convert(s, self.bits).wrapping_add(if t { self.w_cw } else { 0 });
+    pub fn output(&self, s: Block, t: bool) -> R {
+        let y = conv::<R>(s, self.bits).add(if t { self.w_cw } else { R::ZERO });
         signed(self.party == 1, y, self.bits)
     }
 
-    pub fn eval_point(&self, x: u64) -> u64 {
+    pub fn eval_point(&self, x: u64) -> R {
         assert!(x < self.n_size, "x out of domain");
         let depth = self.depth();
         let mut s = self.root;
@@ -58,7 +61,7 @@ impl ArithKey {
     }
 
     /// Full-domain evaluation, level by level.
-    pub fn eval_full(&self) -> Vec<u64> {
+    pub fn eval_full(&self) -> Vec<R> {
         let mut tree = Tree::new(self.n_size, self.root, self.party == 1);
         for cw in &self.cws {
             tree.expand_level();
@@ -69,14 +72,14 @@ impl ArithKey {
         s[..n].iter().zip(&t[..n]).map(|(s, t)| self.output(*s, *t)).collect()
     }
 
-    pub fn ring_mask(&self) -> u64 {
-        mask(self.bits)
+    pub fn ring_mask(&self) -> R {
+        R::mask(self.bits)
     }
 
     /// [`eval_full`](Self::eval_full) without holding the domain: a batched
     /// walk ([`dpf_common::stream`]) that calls `visit(x0, ys)` with this
     /// party's shares at `x0 .. x0 + ys.len()`, for all x < N.
-    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[u64])) {
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[R])) {
         let tree = TreeStream::with_cws(self.n_size, self.root, self.party == 1, self.cws.clone(), batch);
         let mut ys = Vec::new();
         tree.visit_leaves(|x0, leaves| {

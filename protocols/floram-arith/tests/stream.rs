@@ -1,7 +1,7 @@
 //! The streaming tree must reproduce the stored tree exactly: same keys, same
 //! messages, and the same full-domain output.
 
-use dpf_common::arith::mask;
+use dpf_common::arith::Ring;
 use floram_arith::{gen_reference, gen_reference_mode, run_gen_mode, TreeMode};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -12,10 +12,15 @@ const BATCHES: &[usize] = &[4, 64];
 
 #[test]
 fn stream_matches_stored() {
+    stream_matches_stored_in::<u64>(&[1, 16, 64]);
+    stream_matches_stored_in::<u128>(&[127, 128]);
+}
+
+fn stream_matches_stored_in<R: Ring>(widths: &[usize]) {
     let mut rng = ChaCha20Rng::seed_from_u64(31);
     for &n in SIZES {
-        for bits in [1, 16, 64] {
-            let beta = rng.gen::<u64>() & mask(bits);
+        for &bits in widths {
+            let beta = R::random(&mut rng).and(R::mask(bits));
             let alpha = rng.gen_range(0..n);
             let seed = rng.gen();
             let stored = run_gen_mode(n, bits, alpha, beta, seed, TreeMode::Stored);

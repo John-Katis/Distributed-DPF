@@ -19,13 +19,13 @@ pub use gen::{deal, deal_mode, gen, gen_mode, gen_reference, gen_reference_mode,
 pub use key::ArithKey;
 pub use tree::CorrectionWord;
 
-use dpf_common::arith::mask;
+use dpf_common::arith::{mask, Ring};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
 
-pub struct TwoPartyRun {
-    pub outs: [GenOutput; 2],
+pub struct TwoPartyRun<R: Ring = u64> {
+    pub outs: [GenOutput<R>; 2],
     pub times: [Duration; 2],
     pub seeds: [[u8; 32]; 2],
     /// The additive shares of α that were used, so tests can cover wrap-around.
@@ -33,13 +33,13 @@ pub struct TwoPartyRun {
 }
 
 /// Additively shares α (mod 2^n) and β (mod 2^bits) and runs [`gen`] for both
-/// parties.
-pub fn run_gen(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64) -> TwoPartyRun {
+/// parties, over words of type `R` (`u64` for ℓ ≤ 64, `u128` for ℓ ≤ 128).
+pub fn run_gen<R: Ring>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: u64) -> TwoPartyRun<R> {
     run_gen_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
 }
 
 /// [`run_gen`] with the tree held as `mode` says.
-pub fn run_gen_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64, mode: TreeMode) -> TwoPartyRun {
+pub fn run_gen_mode<R: Ring>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: u64, mode: TreeMode) -> TwoPartyRun<R> {
     assert!(alpha < n_size);
     let n = dpf_common::block::depth_for(n_size);
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
@@ -47,9 +47,9 @@ pub fn run_gen_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64, 
     let an = mask(n);
     let a0 = rng.gen::<u64>() & an;
     let a1 = alpha.wrapping_sub(a0) & an;
-    let m = mask(bits);
-    let b0 = rng.gen::<u64>() & m;
-    let b1 = beta.wrapping_sub(b0) & m;
+    let m = R::mask(bits);
+    let b0 = R::random(&mut rng).and(m);
+    let b1 = beta.sub(b0).and(m);
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();

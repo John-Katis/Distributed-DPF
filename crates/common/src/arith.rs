@@ -1,9 +1,12 @@
-//! Arithmetic over Z_2^ℓ (ℓ ≤ 64) and the OT-based arithmetic multiplexer.
+//! Arithmetic over Z_2^ℓ and the OT-based arithmetic multiplexer.
 //!
-//! Ring elements are `u64` values reduced with [`mask`]. [`mux`] is
-//! F^{A,ℓ}_MUX of NDSS'25 (instantiated as in SIRNN): from an XOR-shared
-//! selector `g` and additive shares of `W0`, `W1`, it outputs additive shares of
-//! `W_g`, using one correlated OT per selection in each direction.
+//! Ring elements are machine words of a [`Ring`] type: `u64` for ℓ ≤ 64 and
+//! `u128` for 64 < ℓ ≤ 128, so a protocol over Z_2^64 computes and sends
+//! 64-bit words and one over Z_2^128 128-bit words. Values are reduced with
+//! [`Ring::mask`]. [`mux`] is F^{A,ℓ}_MUX of NDSS'25 (instantiated as in
+//! SIRNN): from an XOR-shared selector `g` and additive shares of `W0`, `W1`,
+//! it outputs additive shares of `W_g`, using one correlated OT per selection
+//! in each direction.
 
 use crate::block::Block;
 use crate::coin::Abort;
@@ -11,31 +14,142 @@ use crate::hash::cot_hash;
 use crate::net::Channel;
 use crate::ot::CotPair;
 use rand::{CryptoRng, RngCore};
+use std::fmt::Debug;
 
-/// `2^bits − 1`, the reduction mask of Z_2^bits.
+/// `2^bits − 1` as a `u64`, `1 ≤ bits ≤ 64` (also used for domain masks).
 #[inline]
 pub fn mask(bits: usize) -> u64 {
-    assert!((1..=64).contains(&bits), "ring width must be 1..=64 bits");
-    if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 }
+    <u64 as Ring>::mask(bits)
 }
 
-/// `Convert_R` for a pseudorandom 128-bit seed: bits 1..=bits of `s`. Bit 0 is
-/// skipped because the GGM leaf seeds carry the t-bit there.
+/// A ring Z_2^w (w = [`BITS`](Ring::BITS)) whose elements also represent
+/// Z_2^ℓ for every ℓ ≤ w after reduction with [`mask`](Ring::mask).
+pub trait Ring: Copy + Default + Eq + Ord + Debug + Send + Sync + 'static {
+    /// Width of the machine word.
+    const BITS: usize;
+    /// Bytes of one word on the wire.
+    const BYTES: usize = Self::BITS / 8;
+    const ZERO: Self;
+    const ONE: Self;
+    /// `2^bits − 1`, `1 ≤ bits ≤ BITS`.
+    fn mask(bits: usize) -> Self;
+    fn add(self, o: Self) -> Self;
+    fn sub(self, o: Self) -> Self;
+    fn neg(self) -> Self;
+    fn mul(self, o: Self) -> Self;
+    fn and(self, o: Self) -> Self;
+    fn shl(self, k: usize) -> Self;
+    fn bit(self, i: usize) -> bool;
+    fn from_u64(x: u64) -> Self;
+    /// The low 64 bits.
+    fn low_u64(self) -> u64;
+    /// The low `BITS` bits of a block.
+    fn from_block(b: Block) -> Self;
+    fn random<R: RngCore + ?Sized>(rng: &mut R) -> Self;
+    /// Appends the `BYTES` little-endian bytes.
+    fn put(self, out: &mut Vec<u8>);
+    /// Reads `BYTES` little-endian bytes.
+    fn get(b: &[u8]) -> Self;
+}
+
+macro_rules! ring_impl {
+    ($t:ty, $rand:ident) => {
+        impl Ring for $t {
+            const BITS: usize = <$t>::BITS as usize;
+            const ZERO: Self = 0;
+            const ONE: Self = 1;
+            #[inline]
+            fn mask(bits: usize) -> Self {
+                assert!((1..=<Self as Ring>::BITS).contains(&bits), "ring width must be 1..={} bits", <Self as Ring>::BITS);
+                if bits == <Self as Ring>::BITS { <$t>::MAX } else { (1 << bits) - 1 }
+            }
+            #[inline]
+            fn add(self, o: Self) -> Self {
+                self.wrapping_add(o)
+            }
+            #[inline]
+            fn sub(self, o: Self) -> Self {
+                self.wrapping_sub(o)
+            }
+            #[inline]
+            fn neg(self) -> Self {
+                self.wrapping_neg()
+            }
+            #[inline]
+            fn mul(self, o: Self) -> Self {
+                self.wrapping_mul(o)
+            }
+            #[inline]
+            fn and(self, o: Self) -> Self {
+                self & o
+            }
+            #[inline]
+            fn shl(self, k: usize) -> Self {
+                self << k
+            }
+            #[inline]
+            fn bit(self, i: usize) -> bool {
+                (self >> i) & 1 == 1
+            }
+            #[inline]
+            fn from_u64(x: u64) -> Self {
+                x as $t
+            }
+            #[inline]
+            fn low_u64(self) -> u64 {
+                self as u64
+            }
+            #[inline]
+            fn from_block(b: Block) -> Self {
+                b.0 as $t
+            }
+            #[inline]
+            fn random<R: RngCore + ?Sized>(rng: &mut R) -> Self {
+                $rand(rng)
+            }
+            #[inline]
+            fn put(self, out: &mut Vec<u8>) {
+                out.extend(self.to_le_bytes());
+            }
+            #[inline]
+            fn get(b: &[u8]) -> Self {
+                <$t>::from_le_bytes(b.try_into().expect("ring word length"))
+            }
+        }
+    };
+}
+
+fn rand_u64<R: RngCore + ?Sized>(rng: &mut R) -> u64 {
+    rng.next_u64()
+}
+
+fn rand_u128<R: RngCore + ?Sized>(rng: &mut R) -> u128 {
+    let lo = rng.next_u64() as u128;
+    lo | (rng.next_u64() as u128) << 64
+}
+
+ring_impl!(u64, rand_u64);
+ring_impl!(u128, rand_u128);
+
+/// `Convert_R` for a pseudorandom 128-bit seed: bits 1..=bits of `s`, for
+/// `bits ≤ 127`. Bit 0 is skipped because the GGM leaf seeds carry the t-bit
+/// there; a 128-bit output needs more PRG output than the seed has.
 #[inline]
-pub fn convert(s: Block, bits: usize) -> u64 {
-    ((s.0 >> 1) as u64) & mask(bits)
+pub fn convert<R: Ring>(s: Block, bits: usize) -> R {
+    assert!(bits < 128, "a seed has 127 bits above its t-bit");
+    R::from_block(Block(s.0 >> 1)).and(R::mask(bits))
 }
 
 /// `(-1)^b · x mod 2^bits`.
 #[inline]
-pub fn signed(b: bool, x: u64, bits: usize) -> u64 {
-    (if b { x.wrapping_neg() } else { x }) & mask(bits)
+pub fn signed<R: Ring>(b: bool, x: R, bits: usize) -> R {
+    (if b { x.neg() } else { x }).and(R::mask(bits))
 }
 
 /// Turns a COT key into a ring element: `H(k, tweak)` truncated.
 #[inline]
-fn pad(k: Block, tweak: u64, bits: usize) -> u64 {
-    (cot_hash().h(k, tweak).0 as u64) & mask(bits)
+fn pad<R: Ring>(k: Block, tweak: u64, bits: usize) -> R {
+    R::from_block(cot_hash().h(k, tweak)).and(R::mask(bits))
 }
 
 /// Additive shares of `W_{g_i}` for each i, given this party's XOR share of
@@ -54,45 +168,45 @@ fn pad(k: Block, tweak: u64, bits: usize) -> u64 {
 /// correlation `c_b` and the peer selects with `g_{1−b}`. From a COT
 /// `(K, K ⊕ Δ)` the sender keeps `−H(K)` and sends the single word
 /// `u = H(K ⊕ Δ) − H(K) − c_b`; the receiver gets `H(M) − g_{1−b}·u`. That is
-/// one ℓ-bit word per COT, 2(λ + ℓ) bits per selection in total.
-pub fn mux<R: RngCore + CryptoRng>(
+/// one word per COT (`T::BYTES` bytes), 2(λ + |T|) bits per selection in
+/// total.
+pub fn mux<T: Ring, R: RngCore + CryptoRng>(
     ch: &mut Channel,
     cot: &mut CotPair,
     g: &[bool],
-    w0: &[u64],
-    w1: &[u64],
+    w0: &[T],
+    w1: &[T],
     bits: usize,
     rng: &mut R,
-) -> Result<Vec<u64>, Abort> {
+) -> Result<Vec<T>, Abort> {
     let n = g.len();
     assert!(w0.len() == n && w1.len() == n);
-    let m = mask(bits);
+    let m = T::mask(bits);
     let (k, mm) = cot.extend(ch, g, n, rng)?;
     let delta = cot.delta();
 
     // Sender side: correlation c_b = (1 − 2g_b)·D_b.
-    let mut out: Vec<u64> = Vec::with_capacity(n);
-    let mut msgs = Vec::with_capacity(n);
+    let mut out: Vec<T> = Vec::with_capacity(n);
+    let mut msg = Vec::with_capacity(n * T::BYTES);
     for i in 0..n {
-        let d = w1[i].wrapping_sub(w0[i]) & m;
+        let d = w1[i].sub(w0[i]).and(m);
         let c = signed(g[i], d, bits);
-        let x0 = pad(k[i], i as u64, bits);
-        let x1 = pad(k[i] ^ delta, i as u64, bits);
-        msgs.push(x1.wrapping_sub(x0).wrapping_sub(c) & m);
-        let local = if g[i] { d } else { 0 };
-        out.push(w0[i].wrapping_add(local).wrapping_sub(x0) & m);
+        let x0: T = pad(k[i], i as u64, bits);
+        let x1: T = pad(k[i] ^ delta, i as u64, bits);
+        x1.sub(x0).sub(c).and(m).put(&mut msg);
+        let local = if g[i] { d } else { T::ZERO };
+        out.push(w0[i].add(local).sub(x0).and(m));
     }
-    ch.send(msgs.iter().flat_map(|x| x.to_le_bytes()).collect());
+    ch.send(msg);
 
     // Receiver side: H(M) − g_b·u for the peer's correlation.
     let theirs = ch.recv();
-    if theirs.len() != 8 * n {
+    if theirs.len() != T::BYTES * n {
         return Err(Abort("malformed MUX message"));
     }
-    for i in 0..n {
-        let u = u64::from_le_bytes(theirs[8 * i..8 * i + 8].try_into().unwrap());
-        let y = pad(mm[i], i as u64, bits).wrapping_sub(if g[i] { u } else { 0 });
-        out[i] = out[i].wrapping_add(y) & m;
+    for (i, u) in theirs.chunks(T::BYTES).map(T::get).enumerate() {
+        let y = pad::<T>(mm[i], i as u64, bits).sub(if g[i] { u } else { T::ZERO });
+        out[i] = out[i].add(y).and(m);
     }
     Ok(out)
 }
@@ -104,39 +218,54 @@ mod tests {
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
-    #[test]
-    fn mux_selects() {
-        for bits in [1usize, 7, 32, 64] {
-            let m = mask(bits);
+    fn mux_selects_in<T: Ring>(widths: &[usize]) {
+        for &bits in widths {
+            let m = T::mask(bits);
             let mut rng = ChaCha20Rng::seed_from_u64(bits as u64);
             let n = 50;
+            let rnd = |rng: &mut ChaCha20Rng| T::random(rng).and(m);
             let g: Vec<bool> = (0..n).map(|_| rng.gen()).collect();
-            let w0: Vec<u64> = (0..n).map(|_| rng.gen::<u64>() & m).collect();
-            let w1: Vec<u64> = (0..n).map(|_| rng.gen::<u64>() & m).collect();
+            let w0: Vec<T> = (0..n).map(|_| rnd(&mut rng)).collect();
+            let w1: Vec<T> = (0..n).map(|_| rnd(&mut rng)).collect();
             let g0: Vec<bool> = (0..n).map(|_| rng.gen()).collect();
             let g1: Vec<bool> = g.iter().zip(&g0).map(|(a, b)| a ^ b).collect();
-            let a0: Vec<u64> = (0..n).map(|_| rng.gen::<u64>() & m).collect();
-            let b0: Vec<u64> = (0..n).map(|_| rng.gen::<u64>() & m).collect();
-            let a1: Vec<u64> = w0.iter().zip(&a0).map(|(w, a)| w.wrapping_sub(*a) & m).collect();
-            let b1: Vec<u64> = w1.iter().zip(&b0).map(|(w, b)| w.wrapping_sub(*b) & m).collect();
-            let (y0, y1) = run_two_party(
-                move |c| {
-                    let mut r = ChaCha20Rng::seed_from_u64(1);
+            let a0: Vec<T> = (0..n).map(|_| rnd(&mut rng)).collect();
+            let b0: Vec<T> = (0..n).map(|_| rnd(&mut rng)).collect();
+            let a1: Vec<T> = w0.iter().zip(&a0).map(|(w, a)| w.sub(*a).and(m)).collect();
+            let b1: Vec<T> = w1.iter().zip(&b0).map(|(w, b)| w.sub(*b).and(m)).collect();
+            let party = |seed: u64, g: Vec<bool>, a: Vec<T>, b: Vec<T>| {
+                move |c: &mut Channel| {
+                    let mut r = ChaCha20Rng::seed_from_u64(seed);
                     let d = Block::random(&mut r);
                     let mut cot = CotPair::setup(c, &mut r, d, false).unwrap();
-                    mux(c, &mut cot, &g0, &a0, &b0, bits, &mut r).unwrap()
-                },
-                move |c| {
-                    let mut r = ChaCha20Rng::seed_from_u64(2);
-                    let d = Block::random(&mut r);
-                    let mut cot = CotPair::setup(c, &mut r, d, false).unwrap();
-                    mux(c, &mut cot, &g1, &a1, &b1, bits, &mut r).unwrap()
-                },
-            );
+                    let y = mux(c, &mut cot, &g, &a, &b, bits, &mut r).unwrap();
+                    (y, c.stats().bytes_sent)
+                }
+            };
+            let ((y0, _), (y1, _)) = run_two_party(party(1, g0, a0, b0), party(2, g1, a1, b1));
             for i in 0..n {
                 let want = if g[i] { w1[i] } else { w0[i] };
-                assert_eq!(y0[i].wrapping_add(y1[i]) & m, want, "bits={bits} i={i}");
+                assert_eq!(y0[i].add(y1[i]).and(m), want, "bits={bits} i={i}");
             }
         }
+    }
+
+    #[test]
+    fn mux_selects() {
+        mux_selects_in::<u64>(&[1, 7, 32, 64]);
+        mux_selects_in::<u128>(&[1, 65, 127, 128]);
+    }
+
+    #[test]
+    fn ring_words() {
+        assert_eq!(<u128 as Ring>::mask(128), u128::MAX);
+        assert_eq!(<u128 as Ring>::mask(70), (1 << 70) - 1);
+        assert_eq!(<u64 as Ring>::ONE.neg(), u64::MAX);
+        let x: u128 = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210;
+        let mut b = Vec::new();
+        x.put(&mut b);
+        assert_eq!((b.len(), <u128 as Ring>::get(&b)), (16, x));
+        assert_eq!(convert::<u128>(Block(u128::MAX), 127), u128::MAX >> 1);
+        assert_eq!(convert::<u64>(Block(0b110), 2), 0b11);
     }
 }

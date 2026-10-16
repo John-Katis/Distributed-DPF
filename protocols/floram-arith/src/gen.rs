@@ -27,13 +27,16 @@
 //! IKNP / KK13 OT extension.
 //!
 //! `Convert` reads the ℓ bits of the leaf label above its control bit, as the
-//! paper's `s∥t` split implies. The reference converts the low ℓ bits
+//! paper's `s∥t` split implies ([`crate::tree::conv`]; for ℓ = 128 one more
+//! PRG call per leaf). All of Z_2^ℓ is computed and sent in words of the
+//! [`Ring`] type `R`: 64-bit words for ℓ ≤ 64 (the reference's `uint64_t`),
+//! 128-bit words for 64 < ℓ ≤ 128. The reference converts the low ℓ bits
 //! including the control bit; then `lsb(W_CW) = lsb(β) ⊕ τ^{n−1,0} ⊕ τ^{n−1,1} ⊕ 1`,
 //! which reveals the lsb of β, so we do not copy that.
 
 use crate::key::ArithKey;
-use crate::tree::{ArithTree, CorrectionWord, Tree, TreeStream};
-use dpf_common::arith::{convert, mask, mux, signed};
+use crate::tree::{conv, ArithTree, CorrectionWord, Tree, TreeStream};
+use dpf_common::arith::{mux, signed, Ring};
 use dpf_common::block::{bits_msb_first, depth_for, Block};
 use dpf_common::bool2pc::{mux_block, BoolParty};
 use dpf_common::net::{Channel, CommStats};
@@ -44,11 +47,11 @@ use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
 
 /// Everything one party gets out of [`gen`].
-pub struct GenOutput {
-    pub key: ArithKey,
+pub struct GenOutput<R: Ring = u64> {
+    pub key: ArithKey<R>,
     /// Full-domain output shares, a by-product of generation. `None` with
     /// the streaming tree.
-    pub full: Option<Vec<u64>>,
+    pub full: Option<Vec<R>>,
     pub setup_stats: CommStats,
     pub gen_stats: CommStats,
     /// F_AND invocations (BitDec and CCMP).
@@ -93,7 +96,7 @@ fn party_rngs(seed: [u8; 32]) -> (ChaCha20Rng, ChaCha20Rng) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn gen_with<T: ArithTree>(
+fn gen_with<R: Ring, T: ArithTree>(
     mode: TreeMode,
     bp: &mut BoolParty,
     cot: &mut CotPair,
@@ -103,11 +106,11 @@ fn gen_with<T: ArithTree>(
     n_size: u64,
     bits: usize,
     alpha_share: u64,
-    beta_share: u64,
-) -> (ArithKey, Option<Vec<u64>>) {
+    beta_share: R,
+) -> (ArithKey<R>, Option<Vec<R>>) {
     let b = ch.party();
     let n = depth_for(n_size);
-    let m = mask(bits);
+    let m = R::mask(bits);
 
     // Line 1: BitDec.
     let alpha = bit_dec(bp, ch, alpha_share, n);
@@ -134,15 +137,18 @@ fn gen_with<T: ArithTree>(
     }
 
     // Lines 16–22.
-    let (w, t_count) = tree.leaf_sums(bits);
-    let w = w & m;
+    let (w, t_count) = tree.leaf_sums::<R>(bits);
+    let w = w.and(m);
     let g = ccmp(bp, ch, t_count);
-    let w0 = beta_share.wrapping_add(signed(b == 0, w, bits)) & m;
-    let w1 = beta_share.wrapping_neg().wrapping_add(signed(b == 1, w, bits)) & m;
+    let w0 = beta_share.add(signed(b == 0, w, bits)).and(m);
+    let w1 = beta_share.neg().add(signed(b == 1, w, bits)).and(m);
     let wcw_share = mux(ch, cot, &[g], &[w0], &[w1], bits, rng).expect("semi-honest MUX")[0];
-    ch.send(wcw_share.to_le_bytes().to_vec());
-    let theirs = u64::from_le_bytes(ch.recv().try_into().expect("8-byte share"));
-    let w_cw = wcw_share.wrapping_add(theirs) & m;
+    let mut msg = Vec::with_capacity(R::BYTES);
+    wcw_share.put(&mut msg);
+    ch.send(msg);
+    let theirs = ch.recv();
+    assert_eq!(theirs.len(), R::BYTES, "malformed W_CW share");
+    let w_cw = wcw_share.add(R::get(&theirs)).and(m);
 
     let key = ArithKey { party: b, n_size, bits, root, cws, w_cw };
     let full = tree.stored_leaves(n_size as usize).map(|(seeds, ts)| seeds.iter().zip(ts).map(|(s, t)| key.output(*s, *t)).collect());
@@ -152,14 +158,16 @@ fn gen_with<T: ArithTree>(
 /// Runs this party's side of the generation.
 ///
 /// * `alpha_share`: additive share of `α < N` modulo `2^n`, `n = ceil(log2 N)`.
-/// * `beta_share`: additive share of `β` modulo `2^bits`, `1 ≤ bits ≤ 64`.
-pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32]) -> GenOutput {
+/// * `beta_share`: additive share of `β` modulo `2^bits`, `1 ≤ bits ≤ R::BITS`
+///   (`R = u64` for ℓ ≤ 64, `u128` for ℓ ≤ 128).
+pub fn gen<R: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32]) -> GenOutput<R> {
     gen_mode(ch, n_size, bits, alpha_share, beta_share, seed, TreeMode::Stored)
 }
 
 /// [`gen`] with the tree held as `mode` says. Both modes send the same
 /// messages; [`TreeMode::Stream`] returns no full-domain output.
-pub fn gen_mode(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32], mode: TreeMode) -> GenOutput {
+pub fn gen_mode<R: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32], mode: TreeMode) -> GenOutput<R> {
+    assert!((1..=R::BITS).contains(&bits), "ℓ must be 1..={}", R::BITS);
     let t_setup = Instant::now();
     let (mut rng_tree, mut rng) = party_rngs(seed);
     let root = Block::random(&mut rng_tree);
@@ -171,8 +179,8 @@ pub fn gen_mode(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, be
     let setup_time = t_setup.elapsed();
     let t_gen = Instant::now();
     let (key, full) = match mode {
-        TreeMode::Stored => gen_with::<Tree>(mode, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
-        TreeMode::Stream { .. } => gen_with::<TreeStream>(mode, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
+        TreeMode::Stored => gen_with::<R, Tree>(mode, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
+        TreeMode::Stream { .. } => gen_with::<R, TreeStream>(mode, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
     };
     GenOutput {
         key,
@@ -188,22 +196,22 @@ pub fn gen_mode(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, be
 
 /// Trusted-dealer generation for given root shares: the plaintext version of
 /// [`gen`] and its bit-exact oracle.
-pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64) -> [ArithKey; 2] {
+pub fn deal<R: Ring>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: R) -> [ArithKey<R>; 2] {
     deal_mode(roots, n_size, bits, alpha, beta, TreeMode::Stored)
 }
 
 /// [`deal`] with the tree held as `mode` says.
-pub fn deal_mode(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, mode: TreeMode) -> [ArithKey; 2] {
+pub fn deal_mode<R: Ring>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: R, mode: TreeMode) -> [ArithKey<R>; 2] {
     match mode {
-        TreeMode::Stored => deal_with::<Tree>(roots, n_size, bits, alpha, beta, mode),
-        TreeMode::Stream { .. } => deal_with::<TreeStream>(roots, n_size, bits, alpha, beta, mode),
+        TreeMode::Stored => deal_with::<R, Tree>(roots, n_size, bits, alpha, beta, mode),
+        TreeMode::Stream { .. } => deal_with::<R, TreeStream>(roots, n_size, bits, alpha, beta, mode),
     }
 }
 
-fn deal_with<T: ArithTree>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, mode: TreeMode) -> [ArithKey; 2] {
+fn deal_with<R: Ring, T: ArithTree>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: R, mode: TreeMode) -> [ArithKey<R>; 2] {
     assert!(alpha < n_size);
     let n = depth_for(n_size);
-    let m = mask(bits);
+    let m = R::mask(bits);
     let mut tr = [T::new(n_size, roots[0], false, mode), T::new(n_size, roots[1], true, mode)];
     let mut cws = Vec::with_capacity(n);
     for a in bits_msb_first(alpha, n) {
@@ -217,19 +225,19 @@ fn deal_with<T: ArithTree>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u
     }
     let ((s0, t0), (s1, t1)) = (tr[0].leaf(alpha), tr[1].leaf(alpha));
     assert!(t0 ^ t1, "α-leaf control bits must differ");
-    let base = beta.wrapping_sub(convert(s0, bits)).wrapping_add(convert(s1, bits));
-    let w_cw = signed(t1, base, bits) & m;
+    let base = beta.sub(conv(s0, bits)).add(conv(s1, bits));
+    let w_cw = signed(t1, base, bits).and(m);
     let mk = |party: usize| ArithKey { party, n_size, bits, root: roots[party], cws: cws.clone(), w_cw };
     [mk(0), mk(1)]
 }
 
 /// Trusted-dealer generation from a seed.
-pub fn gen_reference(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: [u8; 32]) -> [ArithKey; 2] {
+pub fn gen_reference<R: Ring>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: [u8; 32]) -> [ArithKey<R>; 2] {
     gen_reference_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
 }
 
 /// [`gen_reference`] with the tree held as `mode` says.
-pub fn gen_reference_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: [u8; 32], mode: TreeMode) -> [ArithKey; 2] {
+pub fn gen_reference_mode<R: Ring>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: [u8; 32], mode: TreeMode) -> [ArithKey<R>; 2] {
     let mut rng = ChaCha20Rng::from_seed(seed);
     let roots = [Block::random(&mut rng), Block::random(&mut rng)];
     deal_mode(roots, n_size, bits, alpha, beta, mode)
