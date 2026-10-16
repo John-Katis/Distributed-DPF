@@ -49,7 +49,7 @@ use super::sec_prg::{eval_shared, preprocess, PrgCorr};
 use crate::tree::{child, conv, conv_prg, expand, CorrectionWord, Group, SEED_BITS};
 use crate::word::{mux, Word};
 use dpf_common::block::{depth_for, Block};
-use dpf_common::bool2pc::{mux_block, BoolParty};
+use dpf_common::bool2pc::{mux_block, rot_triples, BoolParty};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::ot::{CotPair, FerretConfig};
 use rand::{Rng, SeedableRng};
@@ -123,7 +123,6 @@ fn final_cw(
 
 #[allow(clippy::too_many_arguments)]
 fn gen_with(
-    bp: &mut BoolParty,
     cot: &mut CotPair,
     rng: &mut ChaCha20Rng,
     ch: &mut Channel,
@@ -133,12 +132,16 @@ fn gen_with(
     bits: usize,
     alpha_share: u64,
     beta_share: Word,
-) -> (FssKey, usize) {
+) -> (FssKey, usize, usize) {
     let b = ch.party();
     let n = depth_for(n_size);
     let mut tweak = 0;
     let calls = 2 * n + if bits > SEED_BITS { 2 } else { 0 };
     let corr = preprocess(ch, cot, calls, &mut tweak, rng);
+    // F_GenMT from Ferret (FssNN §2.2): one F_AND per tree and level.
+    let triples = rot_triples(ch, cot, 2 * n, rng);
+    let mut bp = BoolParty::with_triples(b, triples, rng);
+    let bp = &mut bp;
 
     // Step 2: ⟨s_j^(0)⟩, own root, zero share of the peer's.
     let mut node = [Block::ZERO; 2];
@@ -173,7 +176,7 @@ fn gen_with(
     }
 
     let fcw = final_cw(ch, cot, rng, group, bits, node, beta_share, &corr[2 * n..]);
-    (FssKey { party: b, n_size, group, bits, root, cws, fcw }, calls)
+    (FssKey { party: b, n_size, group, bits, root, cws, fcw }, calls, bp.ands)
 }
 
 /// A root with `t = party` (Alg. 4 line 2).
@@ -196,17 +199,16 @@ pub fn gen(ch: &mut Channel, n_size: u64, group: Group, bits: usize, alpha_share
     let delta = Block::random(&mut rng);
     let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
     cot.enable_ferret(ch, ferret, &mut rng).expect("semi-honest Ferret");
-    let mut bp = BoolParty::setup(ch, &mut rng);
     ch.sync();
     let setup_stats = ch.stats();
     let setup_time = t_setup.elapsed();
     let t_gen = Instant::now();
-    let (key, prg_calls) = gen_with(&mut bp, &mut cot, &mut rng, ch, root, n_size, group, bits, alpha_share, beta_share);
+    let (key, prg_calls, and_gates) = gen_with(&mut cot, &mut rng, ch, root, n_size, group, bits, alpha_share, beta_share);
     GenOutput {
         key,
         gen_stats: ch.stats().since(&setup_stats),
         setup_stats,
-        and_gates: bp.ands,
+        and_gates,
         cots: cot.produced,
         prg_calls,
         setup_time,

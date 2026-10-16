@@ -82,15 +82,17 @@ implemented.
      and party 0 sends `s_j ⊕ z_j` for `j ∈ Z3` (DGH+21's 6 bits).
 
    All 2n calls are preprocessed in one batch at the start of Gen, in two
-   rounds (keep and discard bits cross, then the masked `s_j`). The
-   bit triples of F_AND (CrypTFlow2 1-of-8 KKOT) are unchanged.
+   rounds (keep and discard bits cross, then the masked `s_j`). The 2n bit
+   triples of F_AND also come from Ferret (FssNN §2.2: "Π_GenMT ... using
+   VOLE-style OT generation scheme proposed in Ferret"): one random COT per
+   direction and triple, nothing sent.
 
 | Functionality | Instantiation | Module |
 |---|---|---|
 | F_SecPRG | DGH+21 LPN-PRG, distributed 2PC with correlations from silent OT | `fssnn::lpn_prg`, `fssnn::semi_honest::sec_prg` |
 | Silent OT | Ferret COTs (semi-honest), bootstrapped from IKNP | `dpf_common::ot::ferret` |
 | F_2PC: MUX | two parallel λ-bit COTs (Ferret) | `dpf_common::bool2pc::mux_block` |
-| F_2PC: AND | CrypTFlow2 bit triples (1-of-8 KKOT) | `dpf_common::bool2pc` |
+| F_2PC: AND | Beaver bit triples from Ferret random COTs (ABY's R-OT triples; FssNN §2.2 generates its triples with Ferret) | `dpf_common::bool2pc::rot_triples` |
 | OT | Naor–Pinkas base OTs, IKNP COT, KK13 1-of-N OT | `dpf_common::ot` |
 
 Notes and deviations:

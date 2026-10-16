@@ -7,6 +7,9 @@
 //!   CrypTFlow2 App. A.2). As in the reference `and_wrapper`, every AND uses
 //!   the first triple of its own pair, so no two ANDs share a triple
 //!   component. Online: open `x ⊕ a`, `y ⊕ b` (2 bits, one round).
+//!   Alternatively ([`BoolParty::with_triples`]) the triples come from a
+//!   pool, e.g. [`rot_triples`]: ABY's random-OT triples on (silent) random
+//!   COTs, as FssNN generates its triples with Ferret.
 //! * F_OR: `x ∨ y = 1 ⊕ ((1 ⊕ x) ∧ (1 ⊕ y))`.
 //! * F_MUX^{B,λ}: `z = x ⊕ c·(x ⊕ y)` on λ-bit blocks, with the product from
 //!   two parallel correlated OTs (`multiplexer2` / `multiplexer`).
@@ -19,7 +22,7 @@ use crate::block::Block;
 use crate::hash::cot_hash;
 use crate::net::Channel;
 use crate::ot::kkot::{KkotReceiver, KkotSender};
-use crate::ot::CotPair;
+use crate::ot::{CotPair, RandomCots};
 use crate::coin::Abort;
 use rand::{CryptoRng, Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -27,6 +30,8 @@ use rand_chacha::ChaCha20Rng;
 enum Kkot {
     Sender(KkotSender),
     Receiver(KkotReceiver),
+    /// Precomputed triples, used front to back.
+    Pool(std::vec::IntoIter<(bool, bool, bool)>),
 }
 
 /// One party's Boolean 2PC engine.
@@ -50,6 +55,12 @@ impl BoolParty {
         BoolParty { party, kkot, rng: ChaCha20Rng::from_rng(rng).unwrap(), ands: 0 }
     }
 
+    /// A party that takes its F_AND triples from `triples` (no setup, no
+    /// triple traffic) instead of KKOT; it panics when they run out.
+    pub fn with_triples<R: RngCore + CryptoRng>(party: usize, triples: Vec<(bool, bool, bool)>, rng: &mut R) -> Self {
+        BoolParty { party, kkot: Kkot::Pool(triples.into_iter()), rng: ChaCha20Rng::from_rng(rng).unwrap(), ands: 0 }
+    }
+
     pub fn party(&self) -> usize {
         self.party
     }
@@ -63,6 +74,11 @@ impl BoolParty {
     /// `m` bit triples `(a, b, c)` with `c = a ∧ b`, each the first of a
     /// correlated pair from one 1-out-of-8 KKOT₂ (CrypTFlow2 `_8KKOT`).
     fn triples(&mut self, ch: &mut Channel, m: usize) -> Vec<(bool, bool, bool)> {
+        if let Kkot::Pool(p) = &mut self.kkot {
+            let t: Vec<_> = p.by_ref().take(m).collect();
+            assert_eq!(t.len(), m, "triple pool exhausted");
+            return t;
+        }
         // Per pair: a (shared by the pair), b[0], b[1], c[0], c[1].
         let a: Vec<bool> = (0..m).map(|_| self.rng.gen()).collect();
         let b: Vec<[bool; 2]> = (0..m).map(|_| [self.rng.gen(), self.rng.gen()]).collect();
@@ -85,6 +101,7 @@ impl BoolParty {
                 s.send(ch, &msgs, 8, 2);
                 (0..m).map(|i| (a[i], b[i][0], c[i][0])).collect()
             }
+            Kkot::Pool(_) => unreachable!(),
             Kkot::Receiver(r) => {
                 let sel: Vec<u8> = (0..m).map(|i| (b[i][1] as u8) << 2 | (b[i][0] as u8) << 1 | a[i] as u8).collect();
                 let res = r.recv(ch, &sel, 8, 2);
@@ -139,6 +156,39 @@ impl BoolParty {
         let theirs = ch.recv_bits(bits.len());
         bits.iter().zip(theirs).map(|(a, b)| a ^ b).collect()
     }
+}
+
+/// `m` bit triples from random COTs, one per direction (ABY's R-OT triples,
+/// Demmler et al. NDSS'15 §III-B). In the direction where party s sends,
+/// a random OT `(x_0, x_1) = lsb H(K), lsb H(K ⊕ Δ)` and `(r, x_r)` gives
+/// `x_0 ⊕ x_r = r·(x_0 ⊕ x_1)`, i.e. XOR shares of `a_s·b_{1−s}` with
+/// `a_s = x_0 ⊕ x_1` and `b_{1−s} = r`. With both directions,
+/// `c_b = a_b·b_b ⊕ (cross shares)` makes `c_0 ⊕ c_1 = (a_0 ⊕ a_1)(b_0 ⊕ b_1)`.
+/// On Ferret COTs this sends nothing beyond Ferret's own refills.
+pub fn rot_triples<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, m: usize, rng: &mut R) -> Vec<(bool, bool, bool)> {
+    let me = ch.party();
+    let delta = cot.delta();
+    let h = |x: Block, i: usize| cot_hash().h(x, (1 << 62) | i as u64).lsb();
+    let (mut a, mut b, mut c) = (vec![false; m], vec![false; m], vec![false; m]);
+    for s in 0..2 {
+        match cot.random_cots(ch, s, m, rng).expect("semi-honest COT") {
+            RandomCots::Sender(k) => {
+                debug_assert_eq!(me, s);
+                for i in 0..m {
+                    let (x0, x1) = (h(k[i], i), h(k[i] ^ delta, i));
+                    a[i] = x0 ^ x1;
+                    c[i] ^= x0;
+                }
+            }
+            RandomCots::Receiver(r, macs) => {
+                for i in 0..m {
+                    b[i] = r[i];
+                    c[i] ^= h(macs[i], i);
+                }
+            }
+        }
+    }
+    (0..m).map(|i| (a[i], b[i], c[i] ^ (a[i] & b[i]))).collect()
 }
 
 /// F_MUX^{B,λ}: shares of `x_i` if `c = 0` and of `y_i` if `c = 1`, for
@@ -242,6 +292,34 @@ mod tests {
             );
             for i in 0..5 {
                 assert_eq!(z0[i] ^ z1[i], if c { y[i] } else { x[i] });
+            }
+        }
+    }
+
+    #[test]
+    fn rot_triples_are_triples() {
+        for ferret in [false, true] {
+            let party = |seed: u64| {
+                move |ch: &mut Channel| {
+                    let mut r = ChaCha20Rng::seed_from_u64(seed);
+                    let d = Block::random(&mut r);
+                    let mut cot = CotPair::setup(ch, &mut r, d, false).unwrap();
+                    if ferret {
+                        cot.enable_ferret(ch, crate::ot::FerretConfig::TOY, &mut r).unwrap();
+                    }
+                    let before = ch.stats().bytes_sent;
+                    let t = rot_triples(ch, &mut cot, 300, &mut r);
+                    (t, ch.stats().bytes_sent - before)
+                }
+            };
+            let ((t0, sent), (t1, _)) = run_two_party(party(1), party(2));
+            for (x, y) in t0.iter().zip(&t1) {
+                assert_eq!(x.2 ^ y.2, (x.0 ^ y.0) & (x.1 ^ y.1), "ferret={ferret}");
+            }
+            // Both a and b are random, not constant.
+            assert!(t0.iter().any(|t| t.0) && t0.iter().any(|t| t.1));
+            if ferret {
+                assert_eq!(sent, 0, "silent triples send nothing from a full buffer");
             }
         }
     }
