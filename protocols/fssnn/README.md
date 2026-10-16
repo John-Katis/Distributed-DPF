@@ -52,9 +52,10 @@ implemented.
      one more F_MUX^{A,ℓ} on the shared `t_1` picks `W` or `−W`, and the
      result is opened. Both are SIRNN's MUX (`dpf_common::arith::mux`), as in
      `floram-arith` (here `fssnn::word::mux`, for words up to 256 bits),
-     at 2(λ + ℓ) bits per selection. That is
-     (2ℓ + 1)·2(λ + ℓ) bits and 4 rounds (two MUX layers, each a COT
-     extension and one exchange) on top of the `bin` cost.
+     at 2ℓ + 2 bits per selection: one masked ℓ-bit word each way, plus
+     each party's choice-bit correction for its Ferret COT. That is
+     (2ℓ + 1)·(2ℓ + 2) bits and 4 rounds (two MUX layers, each a
+     choice-bit correction and one exchange) on top of the `bin` cost.
    - For ℓ > 127, the leaves first go through two more F_SecPRG calls in 2PC,
      one per tree, batched into one evaluation (2 rounds). Their correlations
      are preprocessed together with the 2n per-level ones. `Conv` is linear in
