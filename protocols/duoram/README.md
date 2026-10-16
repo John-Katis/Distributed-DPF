@@ -53,8 +53,17 @@ testing ONLY":
 - **Leaf lanes skip the flag bit:** lane 0 (the DPF word) is bits 1..=64 of
   the leaf and lane 1 bits 65..=127. A lane 0 that contains bit 0 makes
   `lsb(F) = lsb(β)` public.
-- **Flag conversion mod 2^64:** the reference packs flags into `int8_t` and
-  patches overflows (`== ±128 → 0`). Here the conversion runs mod 2^64.
+- **Flag conversion mod 2^w:** the reference packs flags into `int8_t` and
+  patches overflows (`== ±128 → 0`). Here the conversion runs in the output
+  ring's words.
+- **128-bit output:** the reference's `value_t` is `int64_t`. Here it is a type
+  parameter (`duoram::Lanes`): `u64` for w ≤ 64, exactly as above, and `u128`
+  for 64 < w ≤ 128, which makes every ring word on the wire (products, P2's
+  triples, the openings of c, F̄, S, F) 16 bytes, and costs 128 instead of 64
+  Gilboa COTs per full-width 2P product. The leaf has no room for two 128-bit
+  lanes, so they are `G_0(leaf)` and `G_1(leaf)`, one more expansion per leaf.
+  Lane 1 must not be leaf bits: `c − F̄` reveals `Γ'`, which would give the
+  peer's leaf and with it β.
 - **PRG key:** the reference passes an uninitialised `AES_KEY` to the PRG.
   Here the key is a fixed public constant.
 - **Shift mod 2^n:** the shift S is taken mod 2^n, so N need not be a power of
@@ -66,4 +75,5 @@ testing ONLY":
 cargo test -p duoram --release
 cargo run --release -p duoram --example bench-duoram -- all --variant 3p --in-bits 20 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 2p --in-bits 20 --out-bits 64
+cargo run --release -p duoram --example bench-duoram -- all --variant 2p --in-bits 20 --out-bits 128
 ```

@@ -22,11 +22,15 @@
 //!
 //! **Online** (Protocol 2 lines 5–7, one round): open `S = α − r mod 2^n`
 //! and `F = β − (Γ_0 + Γ_1)`.
+//!
+//! Every ring value (lanes, products, opened words) is a word of the type `R`,
+//! the reference's `value_t`: `u64` for an output ring of up to 64 bits,
+//! `u128` for up to 128 bits ([`Lanes`]).
 
 use crate::du_atallah::{compute_cw, deal as p2_deal, receive_dealt, Helper};
 use crate::key::DuoramKey;
-use crate::tree::{CorrectionWord, DuoramTree, StoredTree, StreamTree};
-use dpf_common::arith::mask;
+use crate::tree::{CorrectionWord, DuoramTree, Lanes, StoredTree, StreamTree};
+use dpf_common::arith::{mask, Ring};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::net::{Channel, CommStats, Peers};
 use dpf_common::ot::CotPair;
@@ -36,8 +40,8 @@ use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
 
 /// Everything one of P0, P1 gets out of a generation.
-pub struct GenOutput {
-    pub key: DuoramKey,
+pub struct GenOutput<R: Lanes = u64> {
+    pub key: DuoramKey<R>,
     pub setup_stats: CommStats,
     /// Preprocessing traffic of this party (all its links).
     pub pre_stats: CommStats,
@@ -53,15 +57,15 @@ pub struct GenOutput {
 }
 
 /// The state preprocessing leaves behind, before α and β are known.
-pub struct Preprocessed {
+pub struct Preprocessed<R: Lanes = u64> {
     party: usize,
     n_size: u64,
     root: Block,
     cws: Vec<CorrectionWord>,
-    c: u64,
-    fbar: u64,
+    c: R,
+    fbar: R,
     /// `Γ_b`.
-    gamma: u64,
+    gamma: R,
     /// Additive share of r mod 2^n.
     r_share: u64,
 }
@@ -72,36 +76,39 @@ pub fn counts(n_size: u64) -> (usize, usize) {
     (n, n + 2)
 }
 
-fn signed(party: usize, x: u64) -> u64 {
+fn signed<R: Ring>(party: usize, x: R) -> R {
     if party == 1 {
-        x.wrapping_neg()
+        x.neg()
     } else {
         x
     }
 }
 
-fn exchange_u64s(ch: &mut Channel, mine: &[u64]) -> Vec<u64> {
-    ch.send(mine.iter().flat_map(|v| v.to_le_bytes()).collect());
+/// Opens additively shared words.
+fn exchange<R: Ring>(ch: &mut Channel, mine: &[R]) -> Vec<R> {
+    let mut msg = Vec::with_capacity(R::BYTES * mine.len());
+    mine.iter().for_each(|v| v.put(&mut msg));
+    ch.send(msg);
     let got = ch.recv();
-    assert_eq!(got.len(), 8 * mine.len(), "unexpected message length");
-    got.chunks(8).zip(mine).map(|(c, v)| v.wrapping_add(u64::from_le_bytes(c.try_into().unwrap()))).collect()
+    assert_eq!(got.len(), R::BYTES * mine.len(), "unexpected message length");
+    got.chunks(R::BYTES).zip(mine).map(|(c, v)| v.add(R::get(c))).collect()
 }
 
 /// Steps 1–5 for this party, over the link to the other party.
-pub fn preprocess(ch: &mut Channel, helper: &mut Helper, n_size: u64, rng: &mut ChaCha20Rng) -> Preprocessed {
+pub fn preprocess<R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, n_size: u64, rng: &mut ChaCha20Rng) -> Preprocessed<R> {
     preprocess_mode(ch, helper, n_size, rng, TreeMode::Stored)
 }
 
 /// [`preprocess`] with the tree held as `mode` says. Both modes send the same
 /// messages.
-pub fn preprocess_mode(ch: &mut Channel, helper: &mut Helper, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed {
+pub fn preprocess_mode<R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed<R> {
     match mode {
-        TreeMode::Stored => preprocess_with::<StoredTree>(ch, helper, n_size, rng, mode),
-        TreeMode::Stream { .. } => preprocess_with::<StreamTree>(ch, helper, n_size, rng, mode),
+        TreeMode::Stored => preprocess_with::<StoredTree, R>(ch, helper, n_size, rng, mode),
+        TreeMode::Stream { .. } => preprocess_with::<StreamTree, R>(ch, helper, n_size, rng, mode),
     }
 }
 
-fn preprocess_with<T: DuoramTree>(ch: &mut Channel, helper: &mut Helper, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed {
+fn preprocess_with<T: DuoramTree, R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed<R> {
     let b = ch.party();
     let n = depth_for(n_size);
     let r_bits = rng.gen::<u64>() & mask(n);
@@ -124,22 +131,23 @@ fn preprocess_with<T: DuoramTree>(ch: &mut Channel, helper: &mut Helper, n_size:
     }
 
     // Steps 3–4: sums over the leaves.
-    let (gamma, gamma2, pm) = tree.leaf_sums();
+    let (gamma, gamma2, pm) = tree.leaf_sums::<R>();
     let (gamma, gamma2, pm) = (signed(b, gamma), signed(b, gamma2), signed(b, pm));
 
     // Steps 4–5: one batch of products. Party 0 supplies the left operands.
-    let mut mine: Vec<u64> = (0..n).map(|j| (r_bits >> j) & 1).collect();
+    let mut mine: Vec<R> = (0..n).map(|j| R::from_u64((r_bits >> j) & 1)).collect();
     mine.extend(if b == 0 { [gamma2, pm] } else { [pm, gamma2] });
     let mut ybits = vec![1; n];
-    ybits.extend([64, 64]);
+    ybits.extend([R::BITS, R::BITS]);
     let prod = helper.cross(ch, &mine, &ybits, rng);
-    let r_share = (0..n).fold(0u64, |acc, j| {
-        let d = ((r_bits >> j) & 1).wrapping_sub(prod[j].wrapping_mul(2));
-        acc.wrapping_add(d << j)
-    }) & mask(n);
-    let phi = gamma2.wrapping_mul(pm).wrapping_add(prod[n]).wrapping_add(prod[n + 1]);
-    let rho: u64 = rng.gen();
-    let opened = exchange_u64s(ch, &[pm.wrapping_add(rho), phi.wrapping_add(rho)]);
+    let r_share = (0..n).fold(R::ZERO, |acc, j| {
+        let d = mine[j].sub(prod[j].mul(R::from_u64(2)));
+        acc.add(d.shl(j))
+    });
+    let r_share = r_share.low_u64() & mask(n);
+    let phi = gamma2.mul(pm).add(prod[n]).add(prod[n + 1]);
+    let rho = R::random(rng);
+    let opened = exchange(ch, &[pm.add(rho), phi.add(rho)]);
 
     Preprocessed { party: b, n_size, root, cws, c: opened[0], fbar: opened[1], gamma, r_share }
 }
@@ -148,9 +156,9 @@ fn preprocess_with<T: DuoramTree>(ch: &mut Channel, helper: &mut Helper, n_size:
 ///
 /// * `alpha_share`: additive share of `α < N` mod `2^n`.
 /// * `beta_share`: additive share of `β` mod `2^bits`.
-pub fn online(ch: &mut Channel, pre: Preprocessed, bits: usize, alpha_share: u64, beta_share: u64) -> DuoramKey {
+pub fn online<R: Lanes>(ch: &mut Channel, pre: Preprocessed<R>, bits: usize, alpha_share: u64, beta_share: R) -> DuoramKey<R> {
     let n = depth_for(pre.n_size);
-    let o = exchange_u64s(ch, &[alpha_share.wrapping_sub(pre.r_share), beta_share.wrapping_sub(pre.gamma)]);
+    let o = exchange(ch, &[R::from_u64(alpha_share.wrapping_sub(pre.r_share)), beta_share.sub(pre.gamma)]);
     DuoramKey {
         party: pre.party,
         n_size: pre.n_size,
@@ -159,19 +167,19 @@ pub fn online(ch: &mut Channel, pre: Preprocessed, bits: usize, alpha_share: u64
         cws: pre.cws,
         c: pre.c,
         fbar: pre.fbar,
-        shift: o[0] & mask(n),
+        shift: o[0].low_u64() & mask(n),
         f: o[1],
     }
 }
 
-fn finish(
+fn finish<R: Lanes>(
     ch: &mut Channel,
-    pre_fn: impl FnOnce(&mut Channel) -> Preprocessed,
+    pre_fn: impl FnOnce(&mut Channel) -> Preprocessed<R>,
     stats: impl Fn(&Channel) -> CommStats,
     bits: usize,
     alpha_share: u64,
-    beta_share: u64,
-) -> (DuoramKey, CommStats, CommStats, Duration, Duration) {
+    beta_share: R,
+) -> (DuoramKey<R>, CommStats, CommStats, Duration, Duration) {
     let s0 = stats(ch);
     let t0 = Instant::now();
     let pre = pre_fn(ch);
@@ -183,12 +191,13 @@ fn finish(
 }
 
 /// 2P-Duoram: P0 and P1 alone, correlations from IKNP OT.
-pub fn gen_2p(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32]) -> GenOutput {
+pub fn gen_2p<R: Lanes>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32]) -> GenOutput<R> {
     gen_2p_mode(ch, n_size, bits, alpha_share, beta_share, seed, TreeMode::Stored)
 }
 
 /// [`gen_2p`] with the tree held as `mode` says.
-pub fn gen_2p_mode(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32], mode: TreeMode) -> GenOutput {
+pub fn gen_2p_mode<R: Lanes>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32], mode: TreeMode) -> GenOutput<R> {
+    assert!((1..=R::BITS).contains(&bits), "output ring must be 1..={} bits", R::BITS);
     let t_setup = Instant::now();
     let mut rng = ChaCha20Rng::from_seed(seed);
     let delta = Block::random(&mut rng);
@@ -209,18 +218,19 @@ pub fn gen_2p_mode(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64,
 
 /// 3P-Duoram, party P0 or P1: correlations dealt by P2. P2's link is only
 /// used for its one message (`helper_bytes`); `pre_stats` is the P0–P1 link.
-pub fn gen_3p(peers: &mut Peers, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32]) -> GenOutput {
+pub fn gen_3p<R: Lanes>(peers: &mut Peers, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32]) -> GenOutput<R> {
     gen_3p_mode(peers, n_size, bits, alpha_share, beta_share, seed, TreeMode::Stored)
 }
 
 /// [`gen_3p`] with the tree held as `mode` says.
-pub fn gen_3p_mode(peers: &mut Peers, n_size: u64, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32], mode: TreeMode) -> GenOutput {
+pub fn gen_3p_mode<R: Lanes>(peers: &mut Peers, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32], mode: TreeMode) -> GenOutput<R> {
+    assert!((1..=R::BITS).contains(&bits), "output ring must be 1..={} bits", R::BITS);
     let b = peers.party();
     assert!(b < 2, "P2 runs gen_3p_helper");
     let mut rng = ChaCha20Rng::from_seed(seed);
     let (levels, crosses) = counts(n_size);
     let t0 = Instant::now();
-    let mut helper = receive_dealt(peers.to(2), levels, crosses);
+    let mut helper = receive_dealt::<R>(peers.to(2), levels, crosses);
     let from_p2 = peers.stats_with(2);
     let recv_time = t0.elapsed();
     let (key, pre_stats, online_stats, pre_time, online_time) = finish(
@@ -244,30 +254,31 @@ pub fn gen_3p_mode(peers: &mut Peers, n_size: u64, bits: usize, alpha_share: u64
     }
 }
 
-/// 3P-Duoram, the helper P2: deals the correlations and is done.
-pub fn gen_3p_helper(peers: &mut Peers, n_size: u64, seed: [u8; 32]) -> CommStats {
+/// 3P-Duoram, the helper P2: deals the correlations (products over the word
+/// type `R`) and is done.
+pub fn gen_3p_helper<R: Lanes>(peers: &mut Peers, n_size: u64, seed: [u8; 32]) -> CommStats {
     let (levels, crosses) = counts(n_size);
-    p2_deal(peers, levels, crosses, &mut ChaCha20Rng::from_seed(seed));
+    p2_deal::<R, _>(peers, levels, crosses, &mut ChaCha20Rng::from_seed(seed));
     peers.stats()
 }
 
 /// Trusted-dealer generation with the same roots, target and blind `ρ`: the
 /// cleartext version of preprocessing plus online phase.
-pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, r: u64, rho: u64) -> [DuoramKey; 2] {
+pub fn deal<R: Lanes>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: R, r: u64, rho: R) -> [DuoramKey<R>; 2] {
     deal_mode(roots, n_size, bits, alpha, beta, r, rho, TreeMode::Stored)
 }
 
 /// [`deal`] with the tree held as `mode` says.
 #[allow(clippy::too_many_arguments)]
-pub fn deal_mode(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, r: u64, rho: u64, mode: TreeMode) -> [DuoramKey; 2] {
+pub fn deal_mode<R: Lanes>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: R, r: u64, rho: R, mode: TreeMode) -> [DuoramKey<R>; 2] {
     match mode {
-        TreeMode::Stored => deal_with::<StoredTree>(roots, n_size, bits, alpha, beta, r, rho, mode),
-        TreeMode::Stream { .. } => deal_with::<StreamTree>(roots, n_size, bits, alpha, beta, r, rho, mode),
+        TreeMode::Stored => deal_with::<StoredTree, R>(roots, n_size, bits, alpha, beta, r, rho, mode),
+        TreeMode::Stream { .. } => deal_with::<StreamTree, R>(roots, n_size, bits, alpha, beta, r, rho, mode),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn deal_with<T: DuoramTree>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: u64, r: u64, rho: u64, mode: TreeMode) -> [DuoramKey; 2] {
+fn deal_with<T: DuoramTree, R: Lanes>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: R, r: u64, rho: R, mode: TreeMode) -> [DuoramKey<R>; 2] {
     assert!(alpha < n_size);
     assert!(!roots[0].lsb() && roots[1].lsb(), "the root of party b has flag b");
     let n = depth_for(n_size);
@@ -285,34 +296,35 @@ fn deal_with<T: DuoramTree>(roots: [Block; 2], n_size: u64, bits: usize, alpha: 
         }
         cws.push(cw);
     }
-    let (s0, s1) = (trees[0].leaf_sums(), trees[1].leaf_sums());
-    let gamma = signed(0, s0.0).wrapping_add(signed(1, s1.0));
-    let gamma2 = signed(0, s0.1).wrapping_add(signed(1, s1.1));
-    let pm = signed(0, s0.2).wrapping_add(signed(1, s1.2));
-    assert!(pm == 1 || pm == u64::MAX, "pm = ±1");
+    let (s0, s1) = (trees[0].leaf_sums::<R>(), trees[1].leaf_sums::<R>());
+    let gamma = signed(0, s0.0).add(signed(1, s1.0));
+    let gamma2 = signed(0, s0.1).add(signed(1, s1.1));
+    let pm = signed(0, s0.2).add(signed(1, s1.2));
+    assert!(pm == R::ONE || pm == R::ONE.neg(), "pm = ±1");
     let mk = |party: usize| DuoramKey {
         party,
         n_size,
         bits,
         root: roots[party],
         cws: cws.clone(),
-        c: pm.wrapping_add(rho),
-        fbar: gamma2.wrapping_mul(pm).wrapping_add(rho),
+        c: pm.add(rho),
+        fbar: gamma2.mul(pm).add(rho),
         shift: alpha.wrapping_sub(r) & mask(n),
-        f: beta.wrapping_sub(gamma),
+        f: beta.sub(gamma),
     };
     [mk(0), mk(1)]
 }
 
 /// Trusted-dealer keys from a seed.
-pub fn gen_reference(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: [u8; 32]) -> [DuoramKey; 2] {
+pub fn gen_reference<R: Lanes>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: [u8; 32]) -> [DuoramKey<R>; 2] {
     gen_reference_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
 }
 
 /// [`gen_reference`] with the tree held as `mode` says.
-pub fn gen_reference_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: [u8; 32], mode: TreeMode) -> [DuoramKey; 2] {
+pub fn gen_reference_mode<R: Lanes>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: [u8; 32], mode: TreeMode) -> [DuoramKey<R>; 2] {
     let mut rng = ChaCha20Rng::from_seed(seed);
     let roots = [Block(rng.gen::<u128>() & !1), Block(rng.gen::<u128>() | 1)];
     let r = rng.gen::<u64>() & mask(depth_for(n_size));
-    deal_mode(roots, n_size, bits, alpha, beta, r, rng.gen(), mode)
+    let rho = R::random(&mut rng);
+    deal_mode(roots, n_size, bits, alpha, beta, r, rho, mode)
 }

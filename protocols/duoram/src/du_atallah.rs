@@ -11,8 +11,9 @@
 //!   `(L_b ⊕ R_b ⊕ rand_b, c_b ⊕ bit_b)`, then its share
 //!   `R_b ⊕ γ_b ⊕ c_b·(D_b ⊕ D̂_{1−b}) ⊕ ĉ_{1−b}·rand_b`, and both shares are
 //!   opened. Two rounds per level.
-//! * **cross**: shares of `x·y mod 2^64` for P0's `x` and P1's `y` (the
-//!   reference's `xor_to_additive` and `du_attalah_Pb`). With a triple
+//! * **cross**: shares of `x·y mod 2^w` for P0's `x` and P1's `y` (the
+//!   reference's `xor_to_additive` and `du_attalah_Pb`), on words of the
+//!   ring type `R` (the reference's `value_t`; w = 64 or 128). With a triple
 //!   `(X, Z_0 = X·Y − T)`, `(Y, Z_1 = T)`: P0 sends `x + X`, P1 sends `y + Y`,
 //!   and the shares are `x·(y + Y) + Z_0` and `−Y·(x + X) + Z_1`.
 //!
@@ -26,6 +27,7 @@
 //! directions in one round), and `cross` is a Gilboa product, one COT per
 //! bit of `y`.
 
+use dpf_common::arith::Ring;
 use dpf_common::block::Block;
 use dpf_common::hash::FixedKeyHash;
 use dpf_common::net::{Channel, Peers};
@@ -47,43 +49,42 @@ pub struct CwCorr {
 }
 
 /// Where this party's correlations come from.
-pub enum Helper<'a> {
+pub enum Helper<'a, R: Ring = u64> {
     /// Dealt by P2 in advance.
-    Dealt { cw: Vec<CwCorr>, cross: Vec<(u64, u64)> },
+    Dealt { cw: Vec<CwCorr>, cross: Vec<(R, R)> },
     /// Generated from COTs with the peer.
     Ot(&'a mut CotPair),
 }
 
 /// What P2 deals to one party.
-fn encode(cw: &[CwCorr], cross: &[(u64, u64)]) -> Vec<u8> {
-    let mut m = Vec::with_capacity(cw.len() * 33 + cross.len() * 16);
+fn encode<R: Ring>(cw: &[CwCorr], cross: &[(R, R)]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(cw.len() * 33 + cross.len() * 2 * R::BYTES);
     for c in cw {
         m.extend(c.rand.to_bytes());
         m.extend(c.gamma.to_bytes());
         m.push(c.bit as u8);
     }
     for (a, z) in cross {
-        m.extend(a.to_le_bytes());
-        m.extend(z.to_le_bytes());
+        a.put(&mut m);
+        z.put(&mut m);
     }
     m
 }
 
-fn decode(m: &[u8], levels: usize, crosses: usize) -> Helper<'static> {
-    assert_eq!(m.len(), levels * 33 + crosses * 16, "unexpected message length");
+fn decode<R: Ring>(m: &[u8], levels: usize, crosses: usize) -> Helper<'static, R> {
+    assert_eq!(m.len(), levels * 33 + crosses * 2 * R::BYTES, "unexpected message length");
     let (a, b) = m.split_at(levels * 33);
     let cw = a
         .chunks(33)
         .map(|c| CwCorr { rand: Block::from_bytes(&c[..16]), gamma: Block::from_bytes(&c[16..32]), bit: c[32] == 1 })
         .collect();
-    let u = |c: &[u8]| u64::from_le_bytes(c.try_into().unwrap());
-    let cross = b.chunks(16).map(|c| (u(&c[..8]), u(&c[8..]))).collect();
+    let cross = b.chunks(2 * R::BYTES).map(|c| (R::get(&c[..R::BYTES]), R::get(&c[R::BYTES..]))).collect();
     Helper::Dealt { cw, cross }
 }
 
 /// P2's whole role in the DPF preprocessing: one message to each party with
 /// `levels` AND triples and `crosses` multiplication triples.
-pub fn deal<R: RngCore + CryptoRng>(p2: &mut Peers, levels: usize, crosses: usize, rng: &mut R) {
+pub fn deal<T: Ring, R: RngCore + CryptoRng>(p2: &mut Peers, levels: usize, crosses: usize, rng: &mut R) {
     let (mut cw0, mut cw1) = (Vec::with_capacity(levels), Vec::with_capacity(levels));
     for _ in 0..levels {
         let (r0, r1, t) = (Block::random(rng), Block::random(rng), Block::random(rng));
@@ -93,20 +94,20 @@ pub fn deal<R: RngCore + CryptoRng>(p2: &mut Peers, levels: usize, crosses: usiz
     }
     let (mut x0, mut x1) = (Vec::with_capacity(crosses), Vec::with_capacity(crosses));
     for _ in 0..crosses {
-        let (x, y, t): (u64, u64, u64) = (rng.gen(), rng.gen(), rng.gen());
-        x0.push((x, x.wrapping_mul(y).wrapping_sub(t)));
+        let (x, y, t) = (T::random(rng), T::random(rng), T::random(rng));
+        x0.push((x, x.mul(y).sub(t)));
         x1.push((y, t));
     }
-    p2.to(0).send(encode(&cw0, &x0));
-    p2.to(1).send(encode(&cw1, &x1));
+    p2.to(0).send(encode::<T>(&cw0, &x0));
+    p2.to(1).send(encode::<T>(&cw1, &x1));
 }
 
 /// Receives what [`deal`] sent this party.
-pub fn receive_dealt(from_p2: &mut Channel, levels: usize, crosses: usize) -> Helper<'static> {
+pub fn receive_dealt<R: Ring>(from_p2: &mut Channel, levels: usize, crosses: usize) -> Helper<'static, R> {
     decode(&from_p2.recv(), levels, crosses)
 }
 
-impl Helper<'_> {
+impl<T: Ring> Helper<'_, T> {
     /// AND triples for `levels` correction words. 2P: one COT per triple in
     /// each direction, plus one round of derandomisation words.
     pub fn cw_corr<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, levels: usize, rng: &mut R) -> Vec<CwCorr> {
@@ -134,27 +135,31 @@ impl Helper<'_> {
         }
     }
 
-    /// Shares of `x_k · y_k mod 2^64`, where party 0 passes the `x_k` and party
+    /// Shares of `x_k · y_k mod 2^w`, where party 0 passes the `x_k` and party
     /// 1 the `y_k` as `mine`. `ybits[k]` bounds the width of `y_k` (the cost of
-    /// the 2P Gilboa product).
-    pub fn cross<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, mine: &[u64], ybits: &[usize], rng: &mut R) -> Vec<u64> {
+    /// the 2P Gilboa product). Every word sent is a `T` (`T::BYTES` bytes).
+    pub fn cross<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, mine: &[T], ybits: &[usize], rng: &mut R) -> Vec<T> {
         let first = ch.party() == 0;
         match self {
             Helper::Dealt { cross, .. } => {
                 assert!(cross.len() >= mine.len(), "not enough dealt triples");
-                let tr: Vec<(u64, u64)> = cross.drain(..mine.len()).collect();
-                let masked: Vec<u8> = mine.iter().zip(&tr).flat_map(|(v, (a, _))| v.wrapping_add(*a).to_le_bytes()).collect();
+                let tr: Vec<(T, T)> = cross.drain(..mine.len()).collect();
+                let mut masked = Vec::with_capacity(T::BYTES * mine.len());
+                for (v, (a, _)) in mine.iter().zip(&tr) {
+                    v.add(*a).put(&mut masked);
+                }
                 ch.send(masked);
                 let got = ch.recv();
-                assert_eq!(got.len(), 8 * mine.len(), "unexpected message length");
-                (0..mine.len())
-                    .map(|k| {
-                        let other = u64::from_le_bytes(got[8 * k..8 * k + 8].try_into().unwrap());
+                assert_eq!(got.len(), T::BYTES * mine.len(), "unexpected message length");
+                got.chunks(T::BYTES)
+                    .map(T::get)
+                    .enumerate()
+                    .map(|(k, other)| {
                         let (a, z) = tr[k];
                         if first {
-                            mine[k].wrapping_mul(other).wrapping_add(z)
+                            mine[k].mul(other).add(z)
                         } else {
-                            a.wrapping_neg().wrapping_mul(other).wrapping_add(z)
+                            a.neg().mul(other).add(z)
                         }
                     })
                     .collect()
@@ -163,35 +168,35 @@ impl Helper<'_> {
                 assert_eq!(ybits.len(), mine.len());
                 let total: usize = ybits.iter().sum();
                 let h = ot_hash();
-                let h64 = |x: Block, j: usize| h.h(x, (1 << 40) | j as u64).0 as u64;
+                let hw = |x: Block, j: usize| T::from_block(h.h(x, (1 << 40) | j as u64));
                 if first {
                     let (k, _) = cot.extend(ch, &[], total, rng).expect("semi-honest COT");
                     let d = cot.delta();
-                    let mut out = vec![0u64; mine.len()];
-                    let mut msg = Vec::with_capacity(8 * total);
+                    let mut out = vec![T::ZERO; mine.len()];
+                    let mut msg = Vec::with_capacity(T::BYTES * total);
                     let mut j = 0;
                     for (it, &w) in ybits.iter().enumerate() {
                         for l in 0..w {
-                            let (h0, h1) = (h64(k[j], j), h64(k[j] ^ d, j));
-                            msg.extend(h1.wrapping_sub(h0).wrapping_sub(mine[it] << l).to_le_bytes());
-                            out[it] = out[it].wrapping_sub(h0);
+                            let (h0, h1) = (hw(k[j], j), hw(k[j] ^ d, j));
+                            h1.sub(h0).sub(mine[it].shl(l)).put(&mut msg);
+                            out[it] = out[it].sub(h0);
                             j += 1;
                         }
                     }
                     ch.send(msg);
                     out
                 } else {
-                    let choices: Vec<bool> = mine.iter().zip(ybits).flat_map(|(&y, &w)| (0..w).map(move |l| (y >> l) & 1 == 1)).collect();
+                    let choices: Vec<bool> = mine.iter().zip(ybits).flat_map(|(&y, &w)| (0..w).map(move |l| y.bit(l))).collect();
                     let (_, m) = cot.extend(ch, &choices, 0, rng).expect("semi-honest COT");
                     let got = ch.recv();
-                    assert_eq!(got.len(), 8 * total, "unexpected message length");
-                    let mut out = vec![0u64; mine.len()];
+                    assert_eq!(got.len(), T::BYTES * total, "unexpected message length");
+                    let mut out = vec![T::ZERO; mine.len()];
                     let mut j = 0;
                     for (it, &w) in ybits.iter().enumerate() {
                         for _ in 0..w {
-                            let dj = u64::from_le_bytes(got[8 * j..8 * j + 8].try_into().unwrap());
-                            let v = h64(m[j], j).wrapping_sub(if choices[j] { dj } else { 0 });
-                            out[it] = out[it].wrapping_add(v);
+                            let dj = T::get(&got[T::BYTES * j..T::BYTES * (j + 1)]);
+                            let v = hw(m[j], j).sub(if choices[j] { dj } else { T::ZERO });
+                            out[it] = out[it].add(v);
                             j += 1;
                         }
                     }
@@ -277,7 +282,7 @@ mod tests {
                 let mut h = receive_dealt(p.to(2), 3, 3);
                 party(p.to(0), &mut h, 1)
             },
-            |p| deal(p, 3, 3, &mut ChaCha20Rng::seed_from_u64(7)),
+            |p| deal::<u64, _>(p, 3, 3, &mut ChaCha20Rng::seed_from_u64(7)),
         );
         check(a.0, a.1);
     }

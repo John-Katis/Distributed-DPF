@@ -16,13 +16,16 @@
 //! so `y_0 + y_1 = β·e_α(x)`. Party 1's negation turns the XOR-shared tree
 //! into additive shares (equal off-path pairs cancel), as in
 //! `convert_shares`.
+//!
+//! The key is generic over the word type of Z_2^w ([`Lanes`]): `u64` for
+//! w ≤ 64 (the reference's `value_t`), `u128` up to w = 128.
 
-use crate::tree::{correct, expand_many, expand_one, lanes, CorrectionWord, StreamTree};
+use crate::tree::{correct, expand_many, expand_one, lanes, CorrectionWord, Lanes, StreamTree};
 use dpf_common::arith::mask;
 use dpf_common::block::{depth_for, Block};
 
 #[derive(Clone, Debug)]
-pub struct DuoramKey {
+pub struct DuoramKey<R: Lanes = u64> {
     pub party: usize,
     pub n_size: u64,
     /// Output ring Z_2^bits.
@@ -30,44 +33,56 @@ pub struct DuoramKey {
     pub root: Block,
     pub cws: Vec<CorrectionWord>,
     /// `pm + ρ` (App. D).
-    pub c: u64,
+    pub c: R,
     /// `Γ'·pm + ρ` (App. D).
-    pub fbar: u64,
+    pub fbar: R,
     /// Cyclic shift `α − r mod 2^n`.
     pub shift: u64,
     /// Final correction word `β − (v_0[r] + v_1[r])`.
-    pub f: u64,
+    pub f: R,
 }
 
-impl DuoramKey {
+impl<R: Lanes> DuoramKey<R> {
     pub fn depth(&self) -> usize {
         depth_for(self.n_size)
     }
 
     /// The part both parties share.
-    pub fn public_part(&self) -> (&[CorrectionWord], u64, u64) {
+    pub fn public_part(&self) -> (&[CorrectionWord], u64, R) {
         (&self.cws, self.shift, self.f)
     }
 
-    /// Root, CWs (16 + 1 bytes each) and the four scalars.
+    /// Root, CWs (16 + 1 bytes each), the 8-byte shift and three ring words.
     pub fn size_bytes(&self) -> usize {
-        16 + 17 * self.cws.len() + 4 * 8
+        16 + 17 * self.cws.len() + 8 + 3 * R::BYTES
     }
 
-    fn sign(&self, x: u64) -> u64 {
+    fn sign(&self, x: R) -> R {
         if self.party == 1 {
-            x.wrapping_neg()
+            x.neg()
         } else {
             x
         }
     }
 
+    /// Output share for a leaf with lanes `v`, `v2`.
+    #[inline]
+    fn output_lanes(&self, leaf: Block, v: R, v2: R) -> R {
+        let (v, v2, t) = (self.sign(v), self.sign(v2), self.sign(R::from_u64(leaf.lsb() as u64)));
+        let tt = t.mul(self.c).add(v2).sub(t.mul(self.fbar));
+        v.add(self.f.mul(tt)).and(R::mask(self.bits))
+    }
+
     /// Output share for a leaf of the unshifted tree.
-    pub fn output(&self, leaf: Block) -> u64 {
-        let (v, v2) = lanes(leaf);
-        let (v, v2, t) = (self.sign(v), self.sign(v2), self.sign(leaf.lsb() as u64));
-        let tt = t.wrapping_mul(self.c).wrapping_add(v2).wrapping_sub(t.wrapping_mul(self.fbar));
-        v.wrapping_add(self.f.wrapping_mul(tt)) & mask(self.bits)
+    pub fn output(&self, leaf: Block) -> R {
+        let (v, v2) = lanes::<R>(leaf);
+        self.output_lanes(leaf, v, v2)
+    }
+
+    /// Output shares of some leaves of the unshifted tree, `f(i, y)` for
+    /// `leaves[i]`.
+    fn outputs(&self, leaves: &[Block], mut f: impl FnMut(usize, R)) {
+        R::for_each(leaves, |i, v, v2| f(i, self.output_lanes(leaves[i], v, v2)));
     }
 
     fn unshift(&self, x: u64) -> u64 {
@@ -86,7 +101,7 @@ impl DuoramKey {
     }
 
     /// This party's additive share of `β·e_α(x)` mod 2^bits.
-    pub fn eval_point(&self, x: u64) -> u64 {
+    pub fn eval_point(&self, x: u64) -> R {
         assert!(x < self.n_size);
         self.output(self.leaf(self.unshift(x)))
     }
@@ -103,24 +118,26 @@ impl DuoramKey {
     }
 
     /// Shares of `β·e_α(x)` for `x ∈ [0, N)`.
-    pub fn eval_full(&self) -> Vec<u64> {
+    pub fn eval_full(&self) -> Vec<R> {
         let leaves = self.leaves();
-        (0..self.n_size).map(|x| self.output(leaves[self.unshift(x) as usize])).collect()
+        let mut ys = vec![R::ZERO; leaves.len()];
+        self.outputs(&leaves, |i, y| ys[i] = y);
+        (0..self.n_size).map(|x| ys[self.unshift(x) as usize]).collect()
     }
 
     /// [`eval_full`](Self::eval_full) without holding the domain: a batched
     /// walk ([`dpf_common::stream`]) over the unshifted tree that calls
     /// `visit(x, y)` with this party's share `y` at every `x < N`. The points
     /// arrive in the order of their unshifted index `x − shift mod 2^n`.
-    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, u64)) {
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, R)) {
         let m = mask(self.depth());
         StreamTree::with_cws(self.root, self.cws.clone(), batch).visit_level(self.depth(), |xp0, leaves| {
-            for (i, leaf) in leaves.iter().enumerate() {
+            self.outputs(leaves, |i, y| {
                 let x = (xp0 + i as u64).wrapping_add(self.shift) & m;
                 if x < self.n_size {
-                    visit(x, self.output(*leaf));
+                    visit(x, y);
                 }
-            }
+            });
         });
     }
 }

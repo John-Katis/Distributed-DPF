@@ -24,6 +24,7 @@
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::Aes128;
+use dpf_common::arith::Ring;
 use dpf_common::block::{expand_in_place, Block};
 use dpf_common::stream::{walk, TreeMode};
 use std::sync::OnceLock;
@@ -87,15 +88,51 @@ pub fn correct(child: Block, t_parent: bool, cw: &CorrectionWord, side: bool) ->
 }
 
 /// The two lanes of a leaf: lane 0 for the DPF word, lane 1 for the share
-/// conversion (the reference's `output[i][0]` and `output[i][1]`). Bit 0 is
-/// the flag and must stay out of both: a lane 0 whose lsb is fixed (or is the
-/// flag) makes `lsb(F) = lsb(β)` public. So lane 0 is bits 1..=64 (a full
-/// 64-bit word, since β can be 64 bits) and lane 1 is bits 65..=127 (63
-/// bits). Lane 1 only feeds `Γ'`, and `c − F̄ = pm·(1 − Γ')` with a 63-bit
-/// `Γ'` hides pm up to statistical distance 2^-62.
-#[inline]
-pub fn lanes(leaf: Block) -> (u64, u64) {
-    ((leaf.0 >> 1) as u64, (leaf.0 >> 65) as u64)
+/// conversion (the reference's `output[i][0]` and `output[i][1]`), as words
+/// of the ring Z_2^w the protocol runs over (the reference's `value_t`).
+///
+/// * `u64`: both from the leaf. Bit 0 is the flag and must stay out of both:
+///   a lane 0 whose lsb is fixed (or is the flag) makes `lsb(F) = lsb(β)`
+///   public. So lane 0 is bits 1..=64 (a full 64-bit word, since β can be 64
+///   bits) and lane 1 is bits 65..=127 (63 bits). Lane 1 only feeds `Γ'`, and
+///   `c − F̄ = pm·(1 − Γ')` with a 63-bit `Γ'` hides pm up to statistical
+///   distance 2^-62.
+/// * `u128`: the leaf has too few bits for two 128-bit lanes, so they are
+///   `G_0(leaf)` and `G_1(leaf)`, one more expansion per leaf. Lane 1 cannot
+///   be the leaf's own bits: `c − F̄` reveals `Γ' = ±(v'_0 − v'_1)`, so the
+///   peer's leaf, and from it `Γ` and then `β = F + Γ`.
+pub trait Lanes: Ring {
+    /// Calls `f(i, lane0, lane1)` for every leaf `leaves[i]`.
+    fn for_each(leaves: &[Block], f: impl FnMut(usize, Self, Self));
+}
+
+impl Lanes for u64 {
+    #[inline]
+    fn for_each(leaves: &[Block], mut f: impl FnMut(usize, u64, u64)) {
+        for (i, leaf) in leaves.iter().enumerate() {
+            f(i, (leaf.0 >> 1) as u64, (leaf.0 >> 65) as u64);
+        }
+    }
+}
+
+impl Lanes for u128 {
+    fn for_each(leaves: &[Block], mut f: impl FnMut(usize, u128, u128)) {
+        let mut buf = [Block::ZERO; 512];
+        for (c, ls) in leaves.chunks(buf.len() / 2).enumerate() {
+            let out = &mut buf[..2 * ls.len()];
+            expand_into(ls, out);
+            for (j, g) in out.chunks(2).enumerate() {
+                f(c * 256 + j, g[0].0, g[1].0);
+            }
+        }
+    }
+}
+
+/// The lanes of one leaf.
+pub fn lanes<R: Lanes>(leaf: Block) -> (R, R) {
+    let mut v = (R::ZERO, R::ZERO);
+    R::for_each(&[leaf], |_, a, b| v = (a, b));
+    v
 }
 
 /// The per-level interface that preprocessing drives. [`StoredTree`] keeps
@@ -108,16 +145,15 @@ pub trait DuoramTree: Sized {
     fn level_sums(&mut self) -> (Block, Block);
     /// Corrects the children expanded by [`level_sums`](Self::level_sums).
     fn correct(&mut self, cw: CorrectionWord);
-    /// Over all `2^n` leaves: `(Σ lane0, Σ lane1, Σ t)` mod 2^64.
-    fn leaf_sums(&self) -> (u64, u64, u64);
+    /// Over all `2^n` leaves: `(Σ lane0, Σ lane1, Σ t)` mod 2^w.
+    fn leaf_sums<R: Lanes>(&self) -> (R, R, R);
 }
 
-/// `(Σ lane0, Σ lane1, Σ t)` of some leaves.
-fn sums_of(leaves: &[Block]) -> (u64, u64, u64) {
-    leaves.iter().fold((0u64, 0u64, 0u64), |(g, g2, pm), leaf| {
-        let (v, v2) = lanes(*leaf);
-        (g.wrapping_add(v), g2.wrapping_add(v2), pm.wrapping_add(leaf.lsb() as u64))
-    })
+/// `(Σ lane0, Σ lane1, Σ t)` of some leaves, added to `acc`.
+fn add_sums<R: Lanes>(acc: &mut (R, R, R), leaves: &[Block]) {
+    R::for_each(leaves, |i, v, v2| {
+        *acc = (acc.0.add(v), acc.1.add(v2), acc.2.add(R::from_u64(leaves[i].lsb() as u64)));
+    });
 }
 
 /// The tree as `create_dpfs` holds it: every node of the current level.
@@ -154,8 +190,10 @@ impl DuoramTree for StoredTree {
         self.parent_t = Vec::new();
     }
 
-    fn leaf_sums(&self) -> (u64, u64, u64) {
-        sums_of(&self.nodes)
+    fn leaf_sums<R: Lanes>(&self) -> (R, R, R) {
+        let mut acc = (R::ZERO, R::ZERO, R::ZERO);
+        add_sums(&mut acc, &self.nodes);
+        acc
     }
 }
 
@@ -205,12 +243,9 @@ impl DuoramTree for StreamTree {
         self.cws.push(cw);
     }
 
-    fn leaf_sums(&self) -> (u64, u64, u64) {
-        let mut acc = (0u64, 0u64, 0u64);
-        self.visit_level(self.cws.len(), |_, leaves| {
-            let (g, g2, pm) = sums_of(leaves);
-            acc = (acc.0.wrapping_add(g), acc.1.wrapping_add(g2), acc.2.wrapping_add(pm));
-        });
+    fn leaf_sums<R: Lanes>(&self) -> (R, R, R) {
+        let mut acc = (R::ZERO, R::ZERO, R::ZERO);
+        self.visit_level(self.cws.len(), |_, leaves| add_sums(&mut acc, leaves));
         acc
     }
 }

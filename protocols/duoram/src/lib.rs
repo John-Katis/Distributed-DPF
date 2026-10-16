@@ -24,6 +24,7 @@ pub mod tree;
 pub use dpf_common::stream::TreeMode;
 pub use gen::{deal, deal_mode, gen_2p, gen_2p_mode, gen_3p, gen_3p_helper, gen_3p_mode, gen_reference, gen_reference_mode, GenOutput};
 pub use key::DuoramKey;
+pub use tree::Lanes;
 
 use dpf_common::arith::mask;
 use dpf_common::block::depth_for;
@@ -32,8 +33,10 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
 
-pub struct Run {
-    pub outs: [GenOutput; 2],
+/// A generation run over words of type `R`: `u64` for an output ring of up
+/// to 64 bits, `u128` for up to 128 bits.
+pub struct Run<R: Lanes = u64> {
+    pub outs: [GenOutput<R>; 2],
     /// Wall-clock time of P0 and P1.
     pub times: [Duration; 2],
     /// P2's traffic (3P only).
@@ -41,20 +44,21 @@ pub struct Run {
     pub alpha_shares: [u64; 2],
 }
 
-fn shares(n_size: u64, bits: usize, alpha: u64, beta: u64, rng: &mut ChaCha20Rng) -> ([u64; 2], [u64; 2]) {
+fn shares<R: Lanes>(n_size: u64, bits: usize, alpha: u64, beta: R, rng: &mut ChaCha20Rng) -> ([u64; 2], [R; 2]) {
     assert!(alpha < n_size);
-    let (an, m) = (mask(depth_for(n_size)), mask(bits));
-    let (a0, b0) = (rng.gen::<u64>() & an, rng.gen::<u64>() & m);
-    ([a0, alpha.wrapping_sub(a0) & an], [b0, beta.wrapping_sub(b0) & m])
+    let (an, m) = (mask(depth_for(n_size)), R::mask(bits));
+    let a0 = rng.gen::<u64>() & an;
+    let b0 = R::random(rng).and(m);
+    ([a0, alpha.wrapping_sub(a0) & an], [b0, beta.sub(b0).and(m)])
 }
 
 /// Additively shares α (mod 2^n) and β (mod 2^bits) and runs 2P-Duoram.
-pub fn run_gen_2p(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64) -> Run {
+pub fn run_gen_2p<R: Lanes>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: u64) -> Run<R> {
     run_gen_2p_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
 }
 
 /// [`run_gen_2p`] with the tree held as `mode` says.
-pub fn run_gen_2p_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64, mode: TreeMode) -> Run {
+pub fn run_gen_2p_mode<R: Lanes>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: u64, mode: TreeMode) -> Run<R> {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let (a, b) = shares(n_size, bits, alpha, beta, &mut rng);
@@ -72,12 +76,12 @@ pub fn run_gen_2p_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u6
 }
 
 /// Additively shares α and β and runs 3P-Duoram with the helper P2.
-pub fn run_gen_3p(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64) -> Run {
+pub fn run_gen_3p<R: Lanes>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: u64) -> Run<R> {
     run_gen_3p_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
 }
 
 /// [`run_gen_3p`] with the tree held as `mode` says.
-pub fn run_gen_3p_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u64, mode: TreeMode) -> Run {
+pub fn run_gen_3p_mode<R: Lanes>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: u64, mode: TreeMode) -> Run<R> {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 3] = [rng.gen(), rng.gen(), rng.gen()];
     let (a, b) = shares(n_size, bits, alpha, beta, &mut rng);
@@ -90,7 +94,7 @@ pub fn run_gen_3p_mode(n_size: u64, bits: usize, alpha: u64, beta: u64, seed: u6
             let t = Instant::now();
             (gen_3p_mode(p, n_size, bits, a[1], b[1], seeds[1], mode), t.elapsed())
         },
-        |p| gen_3p_helper(p, n_size, seeds[2]),
+        |p| gen_3p_helper::<R>(p, n_size, seeds[2]),
     );
     Run { outs: [r0.0, r1.0], times: [r0.1, r1.1], helper: Some(h), alpha_shares: a }
 }
