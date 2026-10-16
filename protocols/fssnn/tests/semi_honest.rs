@@ -2,7 +2,7 @@
 //! `{0,1}^ℓ` (XOR) and Z_2^ℓ, for ℓ up to 256 (ℓ > 127 takes `Conv` from G).
 
 use dpf_common::block::Block;
-use fssnn::run_gen;
+use fssnn::{run_gen, FerretConfig};
 use fssnn::semi_honest::{deal, gen_reference, FssKey};
 use fssnn::{Group, Word};
 use rand::{Rng, SeedableRng};
@@ -85,7 +85,7 @@ fn two_party_gen_matches_cleartext_function() {
             for alpha in [0, n - 1, rng.gen_range(0..n)] {
                 for beta in betas(&mut rng, bits) {
                     seed += 1;
-                    let run = run_gen(n, group, bits, alpha, beta, seed);
+                    let run = run_gen(n, group, bits, alpha, beta, seed, FerretConfig::TOY);
                     let [o0, o1] = run.outs;
                     assert_eq!(o0.prg_calls, 2 * o0.key.depth() + if bits > 127 { 2 } else { 0 });
                     let keys = [o0.key, o1.key];

@@ -138,6 +138,14 @@ fn kos_chi(seed: Block, recv_party: usize, n: usize) -> Vec<Block> {
     CtrPrg::new(seed ^ Block(recv_party as u128 + 1)).next_words(n).into_iter().map(Block).collect()
 }
 
+/// One party's end of a batch of random COTs ([`CotPair::random_cots`]).
+pub enum RandomCots {
+    /// Keys `K`; the peer holds `M = K ⊕ r·Δ`.
+    Sender(Vec<Block>),
+    /// Random choices `r` and `M`.
+    Receiver(Vec<bool>, Vec<Block>),
+}
+
 /// Both COT directions of one party.
 pub struct CotPair {
     party: usize,
@@ -187,6 +195,34 @@ impl CotPair {
 
     pub fn is_malicious(&self) -> bool {
         self.malicious
+    }
+
+    /// `m` random COTs in one direction, the one where party `sender` holds
+    /// Δ: that party gets the keys `K`, the other one random choice bits `r`
+    /// and `M = K ⊕ r·Δ`. With Ferret this is silent (no traffic unless a
+    /// refill iteration runs) and needs no derandomisation, since the choices
+    /// are Ferret's own random bits. Without Ferret it is one round of IKNP on
+    /// random choices.
+    pub fn random_cots<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, sender: usize, m: usize, rng: &mut R) -> Result<RandomCots, Abort> {
+        let me = self.party == sender;
+        if let Some(f) = self.ferret.as_mut() {
+            self.produced += m;
+            return Ok(if me {
+                f.sender.ensure(ch, m, rng)?;
+                RandomCots::Sender(f.sender.take(m))
+            } else {
+                f.receiver.ensure(ch, m, rng)?;
+                let (r, macs) = f.receiver.take(m);
+                RandomCots::Receiver(r, macs)
+            });
+        }
+        Ok(if me {
+            RandomCots::Sender(self.extend(ch, &[], m, rng)?.0)
+        } else {
+            let r: Vec<bool> = (0..m).map(|_| rng.gen()).collect();
+            let macs = self.extend(ch, &r, 0, rng)?.1;
+            RandomCots::Receiver(r, macs)
+        })
     }
 
     /// Runs both directions at once. This party receives COTs on its choice bits

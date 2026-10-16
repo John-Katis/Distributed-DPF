@@ -67,18 +67,29 @@ implemented.
    Lin₂, then Convert(2,3) (open 128 bits), then Lin₃, then Convert(3,2) (open
    512 trits, packed 5 per byte), then Lin₂. That is two rounds and the 1880
    online bits of Table 3 per call.
-5. **No dealer** (DGH+21 §5.5):
-   - (2,3)-correlations (Protocol 5.2) come from hashed IKNP COTs, i.e. random
-     1-of-2 OTs over Z3, plus one keep/discard bit per OT;
-   - (3,2)-correlations (Protocol 5.4) come from KK13 1-of-3 OTs of 2-bit
-     strings.
+5. **No dealer, on silent OT** (DGH+21 §5.5): DGH+21 take the OT
+   correlations behind their preprocessing from silent OT (a PCG for OT,
+   [BCG+19; YWL+20]). Here setup bootstraps Ferret (YWL+20, semi-honest,
+   `FerretConfig::B13` in the bench) on the `CotPair`, and every COT of Gen
+   comes from it, the MUXes included. All are random COTs with party 0 as
+   sender:
+   - (2,3)-correlations (Protocol 5.2): `z_j = H(K ⊕ jΔ) mod 3` is a random
+     1-of-2 OT over Z3 with Ferret's random choice bit; party 0 sends one
+     keep/discard bit per OT.
+   - (3,2)-correlations (Protocol 5.4): two random COTs give a random 1-of-4
+     OT of 2-bit strings, `z_{ab} = H(K_1 ⊕ aΔ) ⊕ H(K_2 ⊕ bΔ)`. The receiver
+     discards choice 3 (one bit per pair), which leaves a random 1-of-3 OT,
+     and party 0 sends `s_j ⊕ z_j` for `j ∈ Z3` (DGH+21's 6 bits).
 
-   All 2n calls are preprocessed in one batch at the start of Gen.
+   All 2n calls are preprocessed in one batch at the start of Gen, in two
+   rounds (keep and discard bits cross, then the masked `s_j`). The
+   bit triples of F_AND (CrypTFlow2 1-of-8 KKOT) are unchanged.
 
 | Functionality | Instantiation | Module |
 |---|---|---|
-| F_SecPRG | DGH+21 LPN-PRG, distributed 2PC with OT-generated correlations | `fssnn::lpn_prg`, `fssnn::semi_honest::sec_prg` |
-| F_2PC: MUX | two parallel λ-bit COTs | `dpf_common::bool2pc::mux_block` |
+| F_SecPRG | DGH+21 LPN-PRG, distributed 2PC with correlations from silent OT | `fssnn::lpn_prg`, `fssnn::semi_honest::sec_prg` |
+| Silent OT | Ferret COTs (semi-honest), bootstrapped from IKNP | `dpf_common::ot::ferret` |
+| F_2PC: MUX | two parallel λ-bit COTs (Ferret) | `dpf_common::bool2pc::mux_block` |
 | F_2PC: AND | CrypTFlow2 bit triples (1-of-8 KKOT) | `dpf_common::bool2pc` |
 | OT | Naor–Pinkas base OTs, IKNP COT, KK13 1-of-N OT | `dpf_common::ot` |
 
@@ -91,9 +102,10 @@ Notes and deviations:
   1..=ℓ directly, with no extra PRG call. Wider outputs take `G(s)`.
 - **Discard bits:** they are sent uncompressed (1 bit per OT). DGH+21 suggests
   entropy coding them down to about 1.377 bits per correlation.
-- **Cost profile:** Gen communication is dominated by the KK13 1-of-3 OTs
-  (256-bit codeword columns each, 512 per PRG call). DGH+21 assumes silent OT
-  (PCG) for these correlations, which is not implemented here.
+- **Cost profile:** with Ferret, Gen proper sends about 34 KB at n = 20
+  (the KK13 1-of-3 OTs used before cost about 820 KB), and the one-time
+  Ferret bootstrap (about 3 MB, about 1.4 s for one ~10M-COT batch) is in the
+  setup columns, as for malicious Half-Tree.
 - **Evaluation speed:** point evaluation is LPN-bound, about 1 µs per level
   with POPCNT. It costs 512 popcounts for A·x and 128 parities for one half of
   B·w.

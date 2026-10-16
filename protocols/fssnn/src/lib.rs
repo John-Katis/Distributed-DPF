@@ -28,6 +28,7 @@ pub mod word;
 pub use tree::{CorrectionWord, Group};
 pub use word::Word;
 
+pub use dpf_common::ot::FerretConfig;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
@@ -41,7 +42,8 @@ pub struct TwoPartyRun {
 
 /// XOR-shares α, shares β in `group` and runs [`semi_honest::gen`] for both
 /// parties.
-pub fn run_gen(n_size: u64, group: Group, bits: usize, alpha: u64, beta: Word, seed: u64) -> TwoPartyRun {
+/// `ferret` is the silent-OT parameter set ([`semi_honest::gen`]).
+pub fn run_gen(n_size: u64, group: Group, bits: usize, alpha: u64, beta: Word, seed: u64, ferret: FerretConfig) -> TwoPartyRun {
     assert!(alpha < n_size);
     assert_eq!(beta, beta.masked(bits), "β must fit in the output width");
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
@@ -55,12 +57,12 @@ pub fn run_gen(n_size: u64, group: Group, bits: usize, alpha: u64, beta: Word, s
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();
-            let o = semi_honest::gen(c, n_size, group, bits, a0, b0, seeds[0]);
+            let o = semi_honest::gen(c, n_size, group, bits, a0, b0, seeds[0], ferret);
             (o, t.elapsed())
         },
         |c| {
             let t = Instant::now();
-            let o = semi_honest::gen(c, n_size, group, bits, alpha ^ a0, b1, seeds[1]);
+            let o = semi_honest::gen(c, n_size, group, bits, alpha ^ a0, b1, seeds[1], ferret);
             (o, t.elapsed())
         },
     );

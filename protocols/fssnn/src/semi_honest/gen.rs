@@ -45,13 +45,13 @@
 //! OT (DGH+21 §5.5), so no dealer is involved anywhere.
 
 use super::key::FssKey;
-use super::sec_prg::{eval_shared, preprocess, Kk, PrgCorr};
+use super::sec_prg::{eval_shared, preprocess, PrgCorr};
 use crate::tree::{child, conv, conv_prg, expand, CorrectionWord, Group, SEED_BITS};
 use crate::word::{mux, Word};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::bool2pc::{mux_block, BoolParty};
 use dpf_common::net::{Channel, CommStats};
-use dpf_common::ot::CotPair;
+use dpf_common::ot::{CotPair, FerretConfig};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
@@ -125,7 +125,6 @@ fn final_cw(
 fn gen_with(
     bp: &mut BoolParty,
     cot: &mut CotPair,
-    kk: &mut Kk,
     rng: &mut ChaCha20Rng,
     ch: &mut Channel,
     root: Block,
@@ -139,7 +138,7 @@ fn gen_with(
     let n = depth_for(n_size);
     let mut tweak = 0;
     let calls = 2 * n + if bits > SEED_BITS { 2 } else { 0 };
-    let corr = preprocess(ch, cot, kk, calls, &mut tweak, rng);
+    let corr = preprocess(ch, cot, calls, &mut tweak, rng);
 
     // Step 2: ⟨s_j^(0)⟩, own root, zero share of the peer's.
     let mut node = [Block::ZERO; 2];
@@ -187,19 +186,22 @@ fn sample_root(rng: &mut ChaCha20Rng, party: usize) -> Block {
 /// * `group`, `bits`: the output group and its width ℓ, `1 ≤ ℓ ≤ 256`.
 /// * `alpha_share`: XOR share of `α < N` (bit `n − 1 − i` is level i).
 /// * `beta_share`: share of `β` in the output group (XOR or mod 2^ℓ).
-pub fn gen(ch: &mut Channel, n_size: u64, group: Group, bits: usize, alpha_share: u64, beta_share: Word, seed: [u8; 32]) -> GenOutput {
+/// * `ferret`: the silent-OT parameters. Setup bootstraps Ferret on the
+///   `CotPair`, so every COT of Gen (the LPN-PRG correlations and the MUXes)
+///   is a Ferret COT. `FerretConfig::B13` for benchmarks, `TOY` for tests.
+pub fn gen(ch: &mut Channel, n_size: u64, group: Group, bits: usize, alpha_share: u64, beta_share: Word, seed: [u8; 32], ferret: FerretConfig) -> GenOutput {
     let t_setup = Instant::now();
     let mut rng = ChaCha20Rng::from_seed(seed);
     let root = sample_root(&mut rng, ch.party());
     let delta = Block::random(&mut rng);
     let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
+    cot.enable_ferret(ch, ferret, &mut rng).expect("semi-honest Ferret");
     let mut bp = BoolParty::setup(ch, &mut rng);
-    let mut kk = Kk::setup(ch, &mut rng);
     ch.sync();
     let setup_stats = ch.stats();
     let setup_time = t_setup.elapsed();
     let t_gen = Instant::now();
-    let (key, prg_calls) = gen_with(&mut bp, &mut cot, &mut kk, &mut rng, ch, root, n_size, group, bits, alpha_share, beta_share);
+    let (key, prg_calls) = gen_with(&mut bp, &mut cot, &mut rng, ch, root, n_size, group, bits, alpha_share, beta_share);
     GenOutput {
         key,
         gen_stats: ch.stats().since(&setup_stats),

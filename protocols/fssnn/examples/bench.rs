@@ -21,7 +21,7 @@
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::stream::TreeMode;
 use fssnn::semi_honest;
-use fssnn::{run_gen, Group, Word};
+use fssnn::{run_gen, FerretConfig, Group, Word};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
@@ -33,7 +33,7 @@ fn gen_sh(o: &Opts, group: Group, rng: &mut ChaCha20Rng) {
         // Free the previous run (full-domain outputs) before the next one.
         drop(last.take());
         let beta = Word::random(rng, o.out_bits);
-        let run = run_gen(o.size, group, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
+        let run = run_gen(o.size, group, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen(), FerretConfig::B13);
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
         g0.push(run.outs[0].gen_time);
         g1.push(run.outs[1].gen_time);

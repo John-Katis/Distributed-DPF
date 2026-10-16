@@ -13,24 +13,20 @@
 //!    for `ŷ = 0, 1, 2`, with `u = x̃' mod 2`, `v = (x̃' + 1 mod 3) mod 2`.
 //! 5. XOR with step 1, then `Lin_2^B` locally.
 //!
-//! **Correlations without a dealer** (DGH+21 §5.5). Party 0 plays P1:
-//!
-//! * (2,3)-correlations (Protocol 5.2) from random 1-out-of-2 OTs over Z3,
-//!   which are hashed correlated OTs (`z_j = H(K ⊕ jΔ) mod 3`). Pairs with
-//!   `z_0 = z_1` are discarded; party 0 sends one bit per OT saying which to
-//!   keep (uncompressed, where the paper suggests entropy coding).
-//! * (3,2)-correlations (Protocol 5.4) from 1-out-of-3 OTs of 2-bit strings,
-//!   here KK13 with N = 3. Party 0's chosen messages `s_j` are what the
-//!   receiver's share must be if `x̃_2 = j`, which is Protocol 5.4 with the
-//!   random-OT masking folded into the OT. (Protocol 5.4 writes `x̃_i + j` for
-//!   `x̃_1 + j`, and `u_2 ∥ v_2 ← r_c` where the receiver unmasks `r_c ⊕ z_c`.)
+//! **Correlations without a dealer** (DGH+21 §5.5, [`preprocess`]): both
+//! kinds come from random COTs in which party 0 (P1) is the sender, converted
+//! by Protocols 5.2 and 5.4. DGH+21 take these OT correlations from silent OT
+//! ([BCG+19; YWL+20]); here they come from Ferret (YWL+20,
+//! [`dpf_common::ot::ferret`]) once it is enabled on the `CotPair`, which Gen
+//! does. Without Ferret the same code runs on IKNP with random choices.
+//! (Protocol 5.4 writes `x̃_i + j` for `x̃_1 + j`, and `u_2 ∥ v_2 ← r_c` where
+//! the receiver unmasks `r_c ⊕ z_c`.)
 
 use crate::lpn_prg::{lpn_prg, MW, M_MID, N_IN};
 use dpf_common::block::Block;
 use dpf_common::hash::FixedKeyHash;
 use dpf_common::net::Channel;
-use dpf_common::ot::kkot::{KkotReceiver, KkotSender};
-use dpf_common::ot::CotPair;
+use dpf_common::ot::{CotPair, RandomCots};
 use rand::{CryptoRng, Rng, RngCore};
 use std::sync::OnceLock;
 
@@ -49,23 +45,6 @@ pub struct PrgCorr {
     v: [u128; MW],
 }
 
-/// The 1-out-of-3 OT end of this party.
-pub enum Kk {
-    Sender(KkotSender),
-    Receiver(KkotReceiver),
-}
-
-impl Kk {
-    /// Base OTs; party 0 is the KK13 sender (P1 of DGH+21 §5.5).
-    pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
-        if ch.party() == 0 {
-            Kk::Sender(KkotSender::setup(ch, rng))
-        } else {
-            Kk::Receiver(KkotReceiver::setup(ch, rng))
-        }
-    }
-}
-
 fn z3_hash() -> &'static FixedKeyHash {
     static H: OnceLock<FixedKeyHash> = OnceLock::new();
     H.get_or_init(|| FixedKeyHash::new(b"fssnn/z3-ot-hash"))
@@ -75,85 +54,117 @@ fn h3(x: Block, tweak: u64) -> u8 {
     (z3_hash().h(x, tweak).0 % 3) as u8
 }
 
-/// `need` (2,3)-correlations `(w_b, r_b)` with `w_0 ⊕ w_1 = r_0 + r_1 mod 3`
-/// (Protocol 5.2). `tweak` numbers the OTs across calls.
-fn corr23<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, need: usize, tweak: &mut u64, rng: &mut R) -> Vec<(bool, u8)> {
-    let mut out = Vec::with_capacity(need);
-    while out.len() < need {
-        let left = need - out.len();
-        // 1.5 OTs per correlation on average, plus slack so one batch nearly always suffices.
-        let k = left + left / 2 + left / 8 + 64;
+/// Two bits of `H(x, tweak)`.
+fn h2(x: Block, tweak: u64) -> u8 {
+    (z3_hash().h(x, tweak).0 & 3) as u8
+}
+
+/// Expected random COTs per (2,3)-correlation (3/2) and per
+/// (3,2)-correlation (2 · 4/3), with slack so that one batch nearly always
+/// suffices.
+fn oversample(need: usize, num: usize, den: usize) -> usize {
+    if need == 0 { 0 } else { need * num / den + need / 8 + 64 }
+}
+
+/// Receiver's share `(u_2, v_2)` of a (3,2)-correlation when `x̃_2 = j`, given
+/// the sender's `(x̃_1, u_1, v_1)` (Protocol 5.4's `s_j`), as two bits.
+fn s_j(x1: u8, u1: bool, v1: bool, j: u8) -> u8 {
+    let (u2, v2) = match (x1 + j) % 3 {
+        0 => (u1, !v1),
+        1 => (!u1, v1),
+        _ => (u1, v1),
+    };
+    u2 as u8 | (v2 as u8) << 1
+}
+
+/// Correlations for `calls` 2PC evaluations of G, from random COTs in which
+/// party 0 (P1 of DGH+21 §5.5) is the sender. With Ferret enabled on `cot`
+/// these are silent OTs, as DGH+21 assume.
+///
+/// * (2,3) (Protocol 5.2): a random OT over Z3 is `z_j = H(K ⊕ jΔ) mod 3`
+///   with the receiver's random choice `c`. Party 0 discards pairs with
+///   `z_0 = z_1` and announces the kept ones with one bit per COT.
+/// * (3,2) (Protocol 5.4): two random COTs `(K_1, K_2)` give a random
+///   1-out-of-4 OT of 2-bit strings, `z_{ab} = H(K_1 ⊕ aΔ) ⊕ H(K_2 ⊕ bΔ)`,
+///   with choice `c = c_1 + 2c_2`. The receiver discards `c = 3` (one bit per
+///   pair; it reveals only the choice of a discarded OT), so the kept ones are
+///   random 1-out-of-3 OTs with `x̃_2 = c`. Party 0 then sends
+///   `s_j ⊕ z_j` for `j ∈ Z3` (6 bits, as in DGH+21).
+///
+/// Two rounds besides Ferret refills: the keep and discard bits cross in one,
+/// the masked `s_j` follow in the next.
+pub fn preprocess<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, calls: usize, tweak: &mut u64, rng: &mut R) -> Vec<PrgCorr> {
+    let (need23, need32) = (calls * N_IN, calls * M_MID);
+    let mut c23: Vec<(bool, u8)> = Vec::with_capacity(need23);
+    let mut c32: Vec<(u8, bool, bool)> = Vec::with_capacity(need32);
+    let delta = cot.delta();
+    let first = ch.party() == 0;
+    while c23.len() < need23 || c32.len() < need32 {
+        let k23 = oversample(need23 - c23.len(), 3, 2);
+        let k32 = oversample(need32 - c32.len(), 4, 3);
         let base = *tweak;
-        *tweak += k as u64;
-        if ch.party() == 0 {
-            let (keys, _) = cot.extend(ch, &[], k, rng).expect("semi-honest COT");
-            let d = cot.delta();
-            let mut keep = Vec::with_capacity(k);
-            for (j, &kj) in keys.iter().enumerate() {
-                let (z0, z1) = (h3(kj, base + j as u64), h3(kj ^ d, base + j as u64));
-                keep.push(z0 != z1);
-                if z0 != z1 && out.len() < need {
-                    out.push(if z1 == (z0 + 2) % 3 { (false, z0) } else { (true, z1) });
+        *tweak += (k23 + 2 * k32) as u64;
+        let tw = |j: usize| base + j as u64;
+        match cot.random_cots(ch, 0, k23 + 2 * k32, rng).expect("semi-honest COT") {
+            RandomCots::Sender(keys) => {
+                assert!(first);
+                let (k2, k3) = keys.split_at(k23);
+                let mut keep = Vec::with_capacity(k23);
+                for (j, &kj) in k2.iter().enumerate() {
+                    let (z0, z1) = (h3(kj, tw(j)), h3(kj ^ delta, tw(j)));
+                    keep.push(z0 != z1);
+                    if z0 != z1 && c23.len() < need23 {
+                        c23.push(if z1 == (z0 + 2) % 3 { (false, z0) } else { (true, z1) });
+                    }
                 }
+                ch.send_bits(&keep);
+                let used = ch.recv_bits(k32);
+                let mut masked = Vec::new();
+                for (p, &dropped) in used.iter().enumerate() {
+                    if dropped || c32.len() >= need32 {
+                        continue;
+                    }
+                    let (a, b) = (k3[2 * p], k3[2 * p + 1]);
+                    let t = tw(k23 + 2 * p);
+                    let z = |c: u8| h2(a ^ delta.and_bit(c & 1 == 1), t) ^ h2(b ^ delta.and_bit(c & 2 == 2), t + 1);
+                    let (x1, u1, v1): (u8, bool, bool) = (rng.gen_range(0..3), rng.gen(), rng.gen());
+                    for j in 0..3u8 {
+                        let m = s_j(x1, u1, v1, j) ^ z(j);
+                        masked.extend([m & 1 == 1, m & 2 == 2]);
+                    }
+                    c32.push((x1, u1, v1));
+                }
+                ch.send_bits(&masked);
             }
-            ch.send_bits(&keep);
-        } else {
-            let c: Vec<bool> = (0..k).map(|_| rng.gen()).collect();
-            let (_, macs) = cot.extend(ch, &c, 0, rng).expect("semi-honest COT");
-            let keep = ch.recv_bits(k);
-            for j in 0..k {
-                if keep[j] && out.len() < need {
-                    out.push((c[j], (3 - h3(macs[j], base + j as u64)) % 3));
+            RandomCots::Receiver(r, macs) => {
+                assert!(!first);
+                let (r3, m3) = (&r[k23..], &macs[k23..]);
+                let dropped: Vec<bool> = (0..k32).map(|p| r3[2 * p] && r3[2 * p + 1]).collect();
+                ch.send_bits(&dropped);
+                let keep = ch.recv_bits(k23);
+                for j in 0..k23 {
+                    if keep[j] && c23.len() < need23 {
+                        c23.push((r[j], (3 - h3(macs[j], tw(j))) % 3));
+                    }
+                }
+                let mut kept = Vec::new();
+                for (p, &d) in dropped.iter().enumerate() {
+                    if !d && c32.len() + kept.len() < need32 {
+                        kept.push(p);
+                    }
+                }
+                let masked = ch.recv_bits(6 * kept.len());
+                for (i, &p) in kept.iter().enumerate() {
+                    let c = r3[2 * p] as u8 | (r3[2 * p + 1] as u8) << 1;
+                    let t = tw(k23 + 2 * p);
+                    let z = h2(m3[2 * p], t) ^ h2(m3[2 * p + 1], t + 1);
+                    let m = masked[6 * i + 2 * c as usize] as u8 | (masked[6 * i + 2 * c as usize + 1] as u8) << 1;
+                    let s = m ^ z;
+                    c32.push((c, s & 1 == 1, s & 2 == 2));
                 }
             }
         }
     }
-    out
-}
-
-/// `need` (3,2)-correlations `(x̃_b, u_b, v_b)` with `u = x̃ mod 2`,
-/// `v = (x̃ + 1 mod 3) mod 2` (Protocol 5.4).
-fn corr32<R: RngCore + CryptoRng>(ch: &mut Channel, kk: &mut Kk, need: usize, rng: &mut R) -> Vec<(u8, bool, bool)> {
-    match kk {
-        Kk::Sender(s) => {
-            let mine: Vec<(u8, bool, bool)> = (0..need).map(|_| (rng.gen_range(0..3), rng.gen(), rng.gen())).collect();
-            let msgs: Vec<Vec<u8>> = mine
-                .iter()
-                .map(|&(x1, u1, v1)| {
-                    (0..3u8)
-                        .map(|j| {
-                            let (u2, v2) = match (x1 + j) % 3 {
-                                0 => (u1, !v1),
-                                1 => (!u1, v1),
-                                _ => (u1, v1),
-                            };
-                            u2 as u8 | (v2 as u8) << 1
-                        })
-                        .collect()
-                })
-                .collect();
-            s.send(ch, &msgs, 3, 2);
-            mine
-        }
-        Kk::Receiver(r) => {
-            let c: Vec<u8> = (0..need).map(|_| rng.gen_range(0..3)).collect();
-            let got = r.recv(ch, &c, 3, 2);
-            c.iter().zip(got).map(|(&x2, s)| (x2, s & 1 == 1, s & 2 == 2)).collect()
-        }
-    }
-}
-
-/// Correlations for `calls` 2PC evaluations of G, in two rounds.
-pub fn preprocess<R: RngCore + CryptoRng>(
-    ch: &mut Channel,
-    cot: &mut CotPair,
-    kk: &mut Kk,
-    calls: usize,
-    tweak: &mut u64,
-    rng: &mut R,
-) -> Vec<PrgCorr> {
-    let c23 = corr23(ch, cot, calls * N_IN, tweak, rng);
-    let c32 = corr32(ch, kk, calls * M_MID, rng);
     (0..calls)
         .map(|k| {
             let (mut w, mut r1, mut r2) = (0u128, 0u128, 0u128);
@@ -253,6 +264,7 @@ pub fn eval_shared(ch: &mut Channel, corr: &[PrgCorr], xs: &[u128]) -> Vec<[u128
 mod tests {
     use super::*;
     use dpf_common::net::run_two_party;
+    use dpf_common::ot::FerretConfig;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -268,7 +280,7 @@ mod tests {
     /// Both parties' correlations and output shares, and the inputs.
     type PairRun = ([Vec<PrgCorr>; 2], [Vec<[u128; 2]>; 2], Vec<u128>);
 
-    fn run_pair(calls: usize, seed: u64) -> PairRun {
+    fn run_pair(calls: usize, seed: u64, ferret: bool) -> PairRun {
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let x: Vec<u128> = (0..calls).map(|_| rng.gen()).collect();
         let x0: Vec<u128> = (0..calls).map(|_| rng.gen()).collect();
@@ -278,9 +290,11 @@ mod tests {
                 let mut r = ChaCha20Rng::seed_from_u64(seed * 10 + me);
                 let d = Block::random(&mut r);
                 let mut cot = CotPair::setup(ch, &mut r, d, false).unwrap();
-                let mut kk = Kk::setup(ch, &mut r);
+                if ferret {
+                    cot.enable_ferret(ch, FerretConfig::TOY, &mut r).unwrap();
+                }
                 let mut tw = 0;
-                let corr = preprocess(ch, &mut cot, &mut kk, calls, &mut tw, &mut r);
+                let corr = preprocess(ch, &mut cot, calls, &mut tw, &mut r);
                 let y = eval_shared(ch, &corr, &xs);
                 (corr, y)
             }
@@ -291,7 +305,13 @@ mod tests {
 
     #[test]
     fn correlations_hold() {
-        let ([c0, c1], ..) = run_pair(3, 2);
+        for ferret in [false, true] {
+            correlations_hold_with(ferret);
+        }
+    }
+
+    fn correlations_hold_with(ferret: bool) {
+        let ([c0, c1], ..) = run_pair(3, 2, ferret);
         for (a, b) in c0.iter().zip(&c1) {
             for j in 0..N_IN {
                 let w = ((a.w ^ b.w) >> j) & 1;
@@ -309,7 +329,7 @@ mod tests {
 
     #[test]
     fn shared_eval_matches_clear() {
-        let (_, [y0, y1], x) = run_pair(5, 3);
+        let (_, [y0, y1], x) = run_pair(5, 3, true);
         for k in 0..x.len() {
             let want = lpn_prg().eval(x[k]);
             assert_eq!([y0[k][0] ^ y1[k][0], y0[k][1] ^ y1[k][1]], want, "call {k}");

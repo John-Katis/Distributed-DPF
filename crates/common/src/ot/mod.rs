@@ -12,7 +12,7 @@ pub mod kkot;
 pub mod np;
 
 pub use ferret::{FerretConfig, LpnParams};
-pub use cot::{BaseOt, CotPair, CotReceiver, CotSender, COT_KEY_BITS, KOS_EXTRA};
+pub use cot::{BaseOt, CotPair, CotReceiver, CotSender, RandomCots, COT_KEY_BITS, KOS_EXTRA};
 pub use iknp::{IknpReceiver, IknpSender, OT_KEY_BITS};
 
 #[cfg(test)]
