@@ -2,6 +2,7 @@
 //! n level CWs and the final word, with point and full-domain evaluation.
 
 use crate::tree::{child, expand, CorrectionWord, Group};
+use crate::word::Word;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::stream::walk;
 
@@ -14,7 +15,7 @@ pub struct FssKey {
     pub bits: usize,
     pub root: Block,
     pub cws: Vec<CorrectionWord>,
-    pub fcw: u64,
+    pub fcw: Word,
 }
 
 impl FssKey {
@@ -24,7 +25,7 @@ impl FssKey {
     }
 
     /// The part both parties share.
-    pub fn public_part(&self) -> (&[CorrectionWord], u64) {
+    pub fn public_part(&self) -> (&[CorrectionWord], Word) {
         (&self.cws, self.fcw)
     }
 
@@ -34,12 +35,12 @@ impl FssKey {
         16 + 17 * self.cws.len() + self.bits.div_ceil(8)
     }
 
-    fn output(&self, leaf: Block) -> u64 {
+    fn output(&self, leaf: Block) -> Word {
         self.group.output(self.party, self.bits, leaf, self.fcw)
     }
 
     /// This party's share of `f(x)` (XOR or additive, per [`Group`]).
-    pub fn eval_point(&self, x: u64) -> u64 {
+    pub fn eval_point(&self, x: u64) -> Word {
         assert!(x < self.n_size);
         let n = self.depth();
         let mut node = self.root;
@@ -51,7 +52,7 @@ impl FssKey {
 
     /// Shares of `f(0), …, f(N − 1)`: expands all 2^n leaves, then drops the
     /// padding positions `x ≥ N`.
-    pub fn eval_full(&self) -> Vec<u64> {
+    pub fn eval_full(&self) -> Vec<Word> {
         let mut nodes = vec![self.root];
         for cw in &self.cws {
             let mut next = Vec::with_capacity(2 * nodes.len());
@@ -69,7 +70,7 @@ impl FssKey {
     /// [`eval_full`](Self::eval_full) without holding the domain: a batched
     /// walk ([`dpf_common::stream`]) that calls `visit(x0, ys)` with this
     /// party's shares at `x0 .. x0 + ys.len()`, for all x < N.
-    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[u64])) {
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[Word])) {
         let expand_level = |l: usize, parents: &[Block], out: &mut Vec<Block>| {
             let cw = &self.cws[l - 1];
             for &v in parents {

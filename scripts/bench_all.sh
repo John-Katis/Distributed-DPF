@@ -6,8 +6,9 @@
 #   scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [--stream [--batch-log b]] [mode]
 #
 # mode is gen|eval|full|all (default all). Floram, HT and HT-mal sweep
-# out-bits over 127,128,256,512; Floram-arith, Duoram and FssNN over 16,32,64
-# (their output word is at most 64 bits).
+# out-bits over 127,128,256,512; Floram-arith and Duoram over 16,32,64 (their
+# ring Z_2^l is at most 64 bits); FssNN over 16,32,64,128,256 (from 128 on its
+# output takes one more PRG call per leaf).
 # 127 is where HT uses the PRG-free Convert.
 #
 # --stream runs every protocol with the streaming tree (dpf_common::stream):
@@ -37,7 +38,7 @@ echo "floram"       && "$BIN/bench"              "$MODE" --sweep --out-list 127,
 echo "ht"           && "$BIN/bench-half-tree"    "$MODE" --sweep --out-list 127,128,256,512 --variant ht "${ARGS[@]}"    | tee results/ht$SUFFIX.csv
 echo "ht-mal-ferret" && "$BIN/bench-half-tree"   "$MODE" --sweep --out-list 128,256,512 --variant mal-ferret "${ARGS[@]}" | tee results/ht-mal-ferret$SUFFIX.csv
 echo "floram-arith" && "$BIN/bench-floram-arith" "$MODE" --sweep --out-list 16,32,64 "${ARGS[@]}"                        | tee results/floram-arith$SUFFIX.csv
-echo "fssnn-bin"    && "$BIN/bench-fssnn"        "$MODE" --sweep --out-list 16,32,64 --variant bin "${ARGS[@]}"          | tee results/fssnn-bin$SUFFIX.csv
-echo "fssnn-arith"  && "$BIN/bench-fssnn"        "$MODE" --sweep --out-list 16,32,64 --variant arith "${ARGS[@]}"        | tee results/fssnn-arith$SUFFIX.csv
+echo "fssnn-bin"    && "$BIN/bench-fssnn"        "$MODE" --sweep --out-list 16,32,64,128,256 --variant bin "${ARGS[@]}"  | tee results/fssnn-bin$SUFFIX.csv
+echo "fssnn-arith"  && "$BIN/bench-fssnn"        "$MODE" --sweep --out-list 16,32,64,128,256 --variant arith "${ARGS[@]}" | tee results/fssnn-arith$SUFFIX.csv
 echo "duoram-2p"    && "$BIN/bench-duoram"       "$MODE" --sweep --out-list 16,32,64 --variant 2p "${ARGS[@]}"           | tee results/duoram-2p$SUFFIX.csv
 echo "duoram-3p"    && "$BIN/bench-duoram"       "$MODE" --sweep --out-list 16,32,64 --variant 3p "${ARGS[@]}"           | tee results/duoram-3p$SUFFIX.csv

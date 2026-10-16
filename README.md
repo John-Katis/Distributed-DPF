@@ -30,7 +30,7 @@ REFERENCES.md        papers and techniques this code implements
 | `half-tree` (`semi_honest`) | semi-honest | XOR shares | `F_2^m` | COT + global offset Δ (no 2PC per level) |
 | `half-tree` (`malicious`) | malicious, one-bit leakage | BDOZ-authenticated bits | `GF(2^128)^bm` + SPDZ MACs | as above, plus a batch MAC check |
 | `floram-arith` | semi-honest | additive shares mod 2^n (BitDec from bit triples) | `Z_2^ℓ`, ℓ ≤ 64 | COT-based block MUX per level, CCMP + arithmetic MUX for the last word |
-| `fssnn` (`bin`, `arith`) | semi-honest | XOR shares | `F_2^ℓ` (`bin`) or `Z_2^ℓ` (`arith`), ℓ ≤ 64 | both trees' seeds XOR-shared, LPN-PRG (DGH+21) in 2PC per level, COT MUX; correlations from IKNP + KK13 OT |
+| `fssnn` (`bin`, `arith`) | semi-honest | XOR shares | `F_2^ℓ` (`bin`) or `Z_2^ℓ` (`arith`), ℓ ≤ 256 | both trees' seeds XOR-shared, LPN-PRG (DGH+21) in 2PC per level, COT MUX; correlations from IKNP + KK13 OT |
 | `duoram` (`2p`, `3p`) | semi-honest | additive shares mod 2^n (online shift) | `Z_2^ℓ`, ℓ ≤ 64 | Du–Atallah product per level at a random target; triples from helper P2 (`3p`) or IKNP OT (`2p`); one-round online phase |
 
 ## Shared library: `dpf-common`
@@ -88,9 +88,10 @@ scripts/bench_all.sh gen --stream --max-in-bits 32   # streaming tree, results/*
 All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`); the
 first two columns are `mode,variant`. `--out-bits` sets the payload width for
 every protocol, with each one's own group: `F_2^m` (any m) for floram-cprg
-and half-tree (default 128), `Z_2^ℓ` with ℓ ≤ 64 for floram-arith, duoram and
-fssnn `arith` (default 64), and `F_2^ℓ` with ℓ ≤ 64 for fssnn `bin` (default
-64; ℓ = 1 is FssNN's own `Z_2`).
+and half-tree (default 128), `Z_2^ℓ` with ℓ ≤ 64 for floram-arith and duoram
+(default 64), and for fssnn `F_2^ℓ` (`bin`) or `Z_2^ℓ` (`arith`) with ℓ ≤ 256
+(default 64; `bin` with ℓ = 1 is FssNN's own `Z_2`, ℓ > 127 costs one more
+PRG call per leaf).
 
 Every row reports the same metrics, for Gen and for evaluation alike:
 

@@ -1,33 +1,46 @@
 //! Semi-honest FssNN-style DPF against the cleartext point function, over
-//! `{0,1}^ℓ` (XOR) and Z_2^ℓ.
+//! `{0,1}^ℓ` (XOR) and Z_2^ℓ, for ℓ up to 256 (ℓ > 127 takes `Conv` from G).
 
-use dpf_common::arith::mask;
 use dpf_common::block::Block;
 use fssnn::run_gen;
 use fssnn::semi_honest::{deal, gen_reference, FssKey};
-use fssnn::Group;
+use fssnn::{Group, Word};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 /// Powers of two and non-powers of two (padded to 2^n).
 const SIZES: &[u64] = &[2, 3, 5, 33, 64, 65, 127, 1000, 1024, (1 << 12) + 3];
-const GROUPS: &[(Group, usize)] = &[(Group::Xor, 1), (Group::Xor, 7), (Group::Xor, 64), (Group::Arith, 1), (Group::Arith, 32), (Group::Arith, 64)];
+const GROUPS: &[(Group, usize)] = &[
+    (Group::Xor, 1),
+    (Group::Xor, 7),
+    (Group::Xor, 64),
+    (Group::Xor, 127),
+    (Group::Xor, 128),
+    (Group::Xor, 256),
+    (Group::Arith, 1),
+    (Group::Arith, 32),
+    (Group::Arith, 64),
+    (Group::Arith, 127),
+    (Group::Arith, 128),
+    (Group::Arith, 200),
+    (Group::Arith, 256),
+];
 
-fn combine(group: Group, bits: usize, a: u64, b: u64) -> u64 {
+fn combine(group: Group, bits: usize, a: Word, b: Word) -> Word {
     match group {
         Group::Xor => a ^ b,
-        Group::Arith => a.wrapping_add(b) & mask(bits),
+        Group::Arith => (a + b).masked(bits),
     }
 }
 
-fn check(keys: &[FssKey; 2], n: u64, alpha: u64, beta: u64) {
+fn check(keys: &[FssKey; 2], n: u64, alpha: u64, beta: Word) {
     let (group, bits) = (keys[0].group, keys[0].bits);
-    let ctx = format!("{group:?} bits={bits} N={n} alpha={alpha} beta={beta}");
+    let ctx = format!("{group:?} bits={bits} N={n} alpha={alpha} beta={beta:?}");
     assert_eq!(keys[0].public_part(), keys[1].public_part(), "{ctx}");
     assert_eq!(keys[0].cws.len(), keys[0].depth(), "{ctx}");
     let ev = [keys[0].eval_full(), keys[1].eval_full()];
     for x in 0..n {
-        let want = if x == alpha { beta } else { 0 };
+        let want = if x == alpha { beta } else { Word::ZERO };
         let p = [keys[0].eval_point(x), keys[1].eval_point(x)];
         assert_eq!(combine(group, bits, p[0], p[1]), want, "eval_point at x={x}: {ctx}");
         assert_eq!((ev[0][x as usize], ev[1][x as usize]), (p[0], p[1]), "eval_full != eval_point at x={x}: {ctx}");
@@ -45,8 +58,8 @@ fn check(keys: &[FssKey; 2], n: u64, alpha: u64, beta: u64) {
 }
 
 /// β = 0, the all-ones word and a random one.
-fn betas(rng: &mut ChaCha20Rng, bits: usize) -> [u64; 3] {
-    [0, mask(bits), rng.gen::<u64>() & mask(bits)]
+fn betas(rng: &mut ChaCha20Rng, bits: usize) -> [Word; 3] {
+    [Word::ZERO, Word::mask(bits), Word::random(rng, bits)]
 }
 
 #[test]
@@ -74,7 +87,7 @@ fn two_party_gen_matches_cleartext_function() {
                     seed += 1;
                     let run = run_gen(n, group, bits, alpha, beta, seed);
                     let [o0, o1] = run.outs;
-                    assert_eq!(o0.prg_calls, 2 * o0.key.depth());
+                    assert_eq!(o0.prg_calls, 2 * o0.key.depth() + if bits > 127 { 2 } else { 0 });
                     let keys = [o0.key, o1.key];
                     check(&keys, n, alpha, beta);
                     // Same keys as the dealer on the same roots.
@@ -88,6 +101,6 @@ fn two_party_gen_matches_cleartext_function() {
 
 #[test]
 fn deal_rejects_bad_roots() {
-    let r = std::panic::catch_unwind(|| deal([Block(1), Block(1)], 8, Group::Xor, 1, 3, 1));
+    let r = std::panic::catch_unwind(|| deal([Block(1), Block(1)], 8, Group::Xor, 1, 3, Word::from(1)));
     assert!(r.is_err());
 }

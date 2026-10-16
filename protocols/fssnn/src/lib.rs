@@ -6,7 +6,7 @@
 //! without a dealer by evaluating the PRG in 2PC (Alg. 5, F_SecPRG via the
 //! MPC-friendly PRG of DGH+21). This crate keeps that key generation and the
 //! tree (Alg. 4) but drops the comparison bit, so the result is a DPF that can
-//! be compared with the other protocols. Its output is ℓ ≤ 64 bits, either
+//! be compared with the other protocols. Its output is ℓ ≤ 256 bits ([`Word`]), either
 //! under XOR (`bin`, FssNN's Z2 widened to `{0,1}^ℓ`) or in the ring Z_2^ℓ
 //! (`arith`), see [`Group`]. Like the other protocols it expands the full 2^n
 //! tree; FssNN's early termination (§3.3.2) is not used.
@@ -23,8 +23,10 @@
 pub mod lpn_prg;
 pub mod semi_honest;
 pub mod tree;
+pub mod word;
 
 pub use tree::{CorrectionWord, Group};
+pub use word::Word;
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -39,17 +41,16 @@ pub struct TwoPartyRun {
 
 /// XOR-shares α, shares β in `group` and runs [`semi_honest::gen`] for both
 /// parties.
-pub fn run_gen(n_size: u64, group: Group, bits: usize, alpha: u64, beta: u64, seed: u64) -> TwoPartyRun {
+pub fn run_gen(n_size: u64, group: Group, bits: usize, alpha: u64, beta: Word, seed: u64) -> TwoPartyRun {
     assert!(alpha < n_size);
-    let m = dpf_common::arith::mask(bits);
-    assert!(beta <= m);
+    assert_eq!(beta, beta.masked(bits), "β must fit in the output width");
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let a0: u64 = rng.gen::<u64>() & dpf_common::arith::mask(dpf_common::block::depth_for(n_size));
-    let b0: u64 = rng.gen::<u64>() & m;
+    let b0 = Word::random(&mut rng, bits);
     let b1 = match group {
         Group::Xor => beta ^ b0,
-        Group::Arith => beta.wrapping_sub(b0) & m,
+        Group::Arith => (beta - b0).masked(bits),
     };
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {

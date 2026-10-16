@@ -10,17 +10,18 @@
 //! * `bin`: `{0,1}^ℓ` under XOR, FssNN's Z2 for `--out-bits 1`;
 //! * `arith`: the ring Z_2^ℓ.
 //!
-//! `--out-bits ℓ` is 1..=64 (default 64; the sweep uses 16,32,64). Options
-//! and CSV columns are those of `dpf_common::bench`. Setup (base OTs of the
+//! `--out-bits ℓ` is 1..=256 (default 64; the sweep uses 16,32,64,128,256).
+//! Up to ℓ = 127 the output is read from the leaf seed; beyond that it takes
+//! one more PRG call per leaf (two more 2PC PRG calls in Gen). Options and CSV
+//! columns are those of `dpf_common::bench`. Setup (base OTs of the
 //! COT, bit-triple and 1-of-3 OT instances) is reported apart from
 //! generation; the PRG correlations are part of generation, and `cots` also
 //! counts the random OTs behind them. `eval` and `full` use dealer keys.
 
-use dpf_common::arith::mask;
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::stream::TreeMode;
 use fssnn::semi_honest;
-use fssnn::{run_gen, Group};
+use fssnn::{run_gen, Group, Word};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
@@ -31,7 +32,7 @@ fn gen_sh(o: &Opts, group: Group, rng: &mut ChaCha20Rng) {
     for _ in 0..o.reps {
         // Free the previous run (full-domain outputs) before the next one.
         drop(last.take());
-        let beta = rng.gen::<u64>() & mask(o.out_bits);
+        let beta = Word::random(rng, o.out_bits);
         let run = run_gen(o.size, group, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
         g0.push(run.outs[0].gen_time);
@@ -64,8 +65,8 @@ fn gen_sh(o: &Opts, group: Group, rng: &mut ChaCha20Rng) {
 }
 
 fn main() {
-    let opts = Opts::parse(&["bin", "arith"], 64, &[16, 32, 64]);
-    assert!((1..=64).contains(&opts.out_bits) && opts.out_list.iter().all(|b| (1..=64).contains(b)), "out-bits must be 1..=64");
+    let opts = Opts::parse(&["bin", "arith"], 64, &[16, 32, 64, 128, 256]);
+    assert!((1..=256).contains(&opts.out_bits) && opts.out_list.iter().all(|b| (1..=256).contains(b)), "out-bits must be 1..=256");
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
         let group = match o.variant.as_str() {
@@ -80,7 +81,7 @@ fn main() {
             return;
         }
         let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
-        let beta = rng.gen::<u64>() & mask(o.out_bits);
+        let beta = Word::random(&mut rng, o.out_bits);
         let keys = semi_honest::gen_reference(o.size, group, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
         let k = &keys[0];
         if o.runs("eval") {
@@ -94,8 +95,8 @@ fn main() {
                     black_box(k.eval_full());
                 }
                 TreeMode::Stream { batch } => {
-                    let mut acc = 0u64;
-                    k.eval_full_stream(batch, |_, ys| acc = ys.iter().fold(acc, |a, y| a ^ y));
+                    let mut acc = Word::ZERO;
+                    k.eval_full_stream(batch, |_, ys| acc = ys.iter().fold(acc, |a, &y| a ^ y));
                     black_box(acc);
                 }
             });

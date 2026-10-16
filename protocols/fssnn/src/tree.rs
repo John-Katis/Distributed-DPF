@@ -10,8 +10,10 @@
 //! the right child `s^R ∥ t^R`, so `G : {0,1}^λ → {0,1}^{2(λ+1)}`.
 //!
 //! The key holds n correction words `CW^(i) = s_CW ∥ t^L_CW ∥ t^R_CW` and a
-//! final word `CW^(n+1)`. `Conv(s)` is the ℓ seed bits above the state bit
-//! (bits 1..=ℓ; for ℓ = 1 FssNN's single output bit). At α the two leaves have
+//! final word `CW^(n+1)` of ℓ ≤ 256 bits ([`Word`]). `Conv(s)` is the ℓ seed
+//! bits above the state bit (bits 1..=ℓ; for ℓ = 1 FssNN's single output bit)
+//! while ℓ ≤ λ = 127, and the first ℓ bits of `G(s)` beyond that (one more
+//! PRG call per leaf, in Gen one more 2PC of G per tree). At α the two leaves have
 //! `t_0 ⊕ t_1 = 1`; at every other leaf the two nodes are equal.
 //!
 //! * [`Group::Xor`]: the share is `Conv(s) ⊕ t·CW^(n+1)` and
@@ -21,8 +23,11 @@
 //!   `floram-arith`).
 
 use crate::lpn_prg::lpn_prg;
-use dpf_common::arith::{convert, mask, signed};
+use crate::word::Word;
 use dpf_common::block::Block;
+
+/// The seed bits λ; wider outputs take `Conv` from `G`.
+pub const SEED_BITS: usize = 127;
 
 /// The output group of the DPF.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,20 +41,20 @@ pub enum Group {
 impl Group {
     /// Party `party`'s share at a leaf, with `bits` = ℓ and final word `fcw`.
     #[inline]
-    pub fn output(self, party: usize, bits: usize, leaf: Block, fcw: u64) -> u64 {
-        let corr = if leaf.lsb() { fcw } else { 0 };
+    pub fn output(self, party: usize, bits: usize, leaf: Block, fcw: Word) -> Word {
+        let corr = if leaf.lsb() { fcw } else { Word::ZERO };
         match self {
             Group::Xor => conv(leaf, bits) ^ corr,
-            Group::Arith => signed(party == 1, conv(leaf, bits).wrapping_add(corr) & mask(bits), bits),
+            Group::Arith => (conv(leaf, bits) + corr).signed(party == 1, bits),
         }
     }
 
     /// The final word from the two α-leaves (cleartext).
-    pub fn final_cw(self, bits: usize, leaves: [Block; 2], beta: u64) -> u64 {
+    pub fn final_cw(self, bits: usize, leaves: [Block; 2], beta: Word) -> Word {
         let (c0, c1) = (conv(leaves[0], bits), conv(leaves[1], bits));
         match self {
             Group::Xor => c0 ^ c1 ^ beta,
-            Group::Arith => signed(leaves[1].lsb(), beta.wrapping_sub(c0).wrapping_add(c1) & mask(bits), bits),
+            Group::Arith => (beta - c0 + c1).signed(leaves[1].lsb(), bits),
         }
     }
 }
@@ -79,7 +84,17 @@ pub fn child(node: Block, cw: &CorrectionWord, right: bool) -> Block {
     }
 }
 
-/// `Conv`: the ℓ = `bits` output bits of a leaf's seed (bits 1..=ℓ).
-pub fn conv(node: Block, bits: usize) -> u64 {
-    convert(node, bits)
+/// `Conv`: the ℓ = `bits` output bits of a leaf: seed bits 1..=ℓ for
+/// ℓ ≤ [`SEED_BITS`], else the first ℓ bits of `G(s)`.
+pub fn conv(node: Block, bits: usize) -> Word {
+    if bits <= SEED_BITS {
+        Word([node.0 >> 1, 0]).masked(bits)
+    } else {
+        conv_prg(expand(node), bits)
+    }
+}
+
+/// `Conv` from `G(s)` (or from XOR shares of it, which it maps to shares).
+pub fn conv_prg(y: [Block; 2], bits: usize) -> Word {
+    Word([y[0].0, y[1].0]).masked(bits)
 }
