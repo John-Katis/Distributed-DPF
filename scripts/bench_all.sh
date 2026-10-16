@@ -35,7 +35,6 @@ cargo build --release -p floram-cprg -p half-tree -p floram-arith -p fssnn -p du
 BIN=target/release/examples
 echo "floram"       && "$BIN/bench"              "$MODE" --sweep --out-list 127,128,256,512 "${ARGS[@]}"                 | tee results/floram$SUFFIX.csv
 echo "ht"           && "$BIN/bench-half-tree"    "$MODE" --sweep --out-list 127,128,256,512 --variant ht "${ARGS[@]}"    | tee results/ht$SUFFIX.csv
-echo "ht-mal"       && "$BIN/bench-half-tree"    "$MODE" --sweep --out-list 128,256,512 --variant mal "${ARGS[@]}"       | tee results/ht-mal$SUFFIX.csv
 echo "ht-mal-ferret" && "$BIN/bench-half-tree"   "$MODE" --sweep --out-list 128,256,512 --variant mal-ferret "${ARGS[@]}" | tee results/ht-mal-ferret$SUFFIX.csv
 echo "floram-arith" && "$BIN/bench-floram-arith" "$MODE" --sweep --out-list 16,32,64 "${ARGS[@]}"                        | tee results/floram-arith$SUFFIX.csv
 echo "fssnn"        && "$BIN/bench-fssnn"        "$MODE" --sweep --out-list 1 "${ARGS[@]}"                               | tee results/fssnn$SUFFIX.csv

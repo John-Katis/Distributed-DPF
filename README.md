@@ -75,7 +75,7 @@ cargo test --workspace --release                 # everything
 cargo test -p floram-cprg --release              # one protocol
 cargo run --release -p floram-cprg --example bench -- all --in-bits 16 --out-bits 128
 cargo run --release -p half-tree --example bench-half-tree -- all --variant ht --in-bits 16 --out-bits 128
-cargo run --release -p half-tree --example bench-half-tree -- all --variant mal --in-bits 16 --out-bits 128
+cargo run --release -p half-tree --example bench-half-tree -- all --variant mal-ferret --in-bits 16 --out-bits 128
 cargo run --release -p floram-arith --example bench-floram-arith -- all --in-bits 16 --out-bits 64
 cargo run --release -p fssnn --example bench-fssnn -- all --in-bits 16 --out-bits 1
 cargo run --release -p duoram --example bench-duoram -- all --variant 2p --in-bits 16 --out-bits 64

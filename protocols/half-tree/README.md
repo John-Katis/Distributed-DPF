@@ -57,10 +57,11 @@ MAC check. `Fault` injects a deviation for tests.
 
 ```
 cargo run --release -p half-tree --example bench-half-tree -- all --variant ht  --in-bits 20 --out-bits 127
-cargo run --release -p half-tree --example bench-half-tree -- all --variant mal --in-bits 20 --out-bits 128
 cargo run --release -p half-tree --example bench-half-tree -- all --variant mal-ferret --in-bits 20 --out-bits 128
 ```
 
-Options and columns follow `dpf_common::bench`. For `mal`, `gen` covers input
-authentication, generation and the MAC check, and `cots` includes the KOS
-padding.
+Options and columns follow `dpf_common::bench`. For `mal-ferret`, `gen` covers
+input authentication, generation and the MAC check, and `cots` is the number of
+COTs the generation consumes. The malicious DPF is benchmarked with Ferret only,
+as in the paper; the KOS-checked IKNP COT stays the library default (and is what
+Ferret bootstraps from).
