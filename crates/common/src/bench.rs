@@ -18,6 +18,8 @@
 //!   --stream           streaming tree ([`crate::stream`]): O(batch·n) memory,
 //!                      ~2× Gen compute, same messages; variant gets `+stream`
 //!   --batch-log b      nodes per streaming batch, 2^b (default 16)
+//!   --stream-from n    stored tree below 2^n, streaming tree from 2^n on
+//!                      (for sweeps whose large domains do not fit in memory)
 //! ```
 //!
 //! Every row has the same metric columns after the parameters:
@@ -88,6 +90,8 @@ pub struct Opts {
     pub wan: Link,
     pub stream: bool,
     pub batch_log: u32,
+    /// In-bits from which the streaming tree is used even without `--stream`.
+    pub stream_from: u32,
 }
 
 impl Opts {
@@ -108,6 +112,7 @@ impl Opts {
             wan: WAN,
             stream: false,
             batch_log: 16,
+            stream_from: u32::MAX,
         };
         let args: Vec<String> = std::env::args().skip(1).collect();
         let mut i = 0;
@@ -132,8 +137,9 @@ impl Opts {
                 "--sweep" => o.sweep = true,
                 "--stream" => o.stream = true,
                 "--batch-log" => { o.batch_log = val(i).parse().unwrap(); i += 1; }
+                "--stream-from" => { o.stream_from = in_bits(val(i)); i += 1; }
                 "-h" | "--help" => {
-                    eprintln!("usage: bench <gen|eval|full|all> [--variant {}] [--in-bits n | --size N] [--out-bits m] [--reps R] [--points P] [--sweep [--max-in-bits n] [--out-list a,b]] [--lan ms,mbps] [--wan ms,mbps] [--stream [--batch-log b]]", variants.join("|"));
+                    eprintln!("usage: bench <gen|eval|full|all> [--variant {}] [--in-bits n | --size N] [--out-bits m] [--reps R] [--points P] [--sweep [--max-in-bits n] [--out-list a,b]] [--lan ms,mbps] [--wan ms,mbps] [--stream] [--stream-from n] [--batch-log b]", variants.join("|"));
                     std::process::exit(0);
                 }
                 other => panic!("unknown argument {other}"),
@@ -176,11 +182,14 @@ impl Opts {
                     let mut p = self.clone();
                     p.size = 1u64 << n;
                     p.out_bits = m;
+                    p.stream |= n >= p.stream_from;
                     f(&p);
                 }
             }
         } else {
-            f(self);
+            let mut p = self.clone();
+            p.stream |= p.in_bits() >= p.stream_from as f64;
+            f(&p);
         }
     }
 

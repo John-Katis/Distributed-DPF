@@ -81,8 +81,7 @@ cargo run --release -p fssnn --example bench-fssnn -- all --variant bin --in-bit
 cargo run --release -p fssnn --example bench-fssnn -- all --variant arith --in-bits 16 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 2p --in-bits 16 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 3p --in-bits 16 --out-bits 128
-scripts/bench_all.sh --max-in-bits 20         # all six at out-bits 64 and 128, CSV into results/
-scripts/bench_all.sh gen --stream --max-in-bits 32   # streaming tree, results/*-stream.csv
+scripts/bench_all.sh                          # Gen, n = 8..32, out-bits 64 and 128, one CSV per protocol in results/
 ```
 
 All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`); the
@@ -134,6 +133,10 @@ FssNN only the full-domain eval streams.
 - The messages, bytes and rounds are identical to the stored mode (each crate's
   `tests/stream.rs` checks this), so only the timing columns differ.
 - The variant column reads `<variant>+stream`.
+- `--stream-from n` keeps the stored tree below 2^n and streams from 2^n on.
+  `scripts/bench_all.sh` uses it so each protocol runs stored for as long as
+  it fits in memory: streaming from n = 29 (Floram, HT, Floram-arith), 27
+  (HT-mal) and 30 (Duoram); FssNN always runs stored.
 
 The stored code paths are unchanged and remain the default. In code, the
 `*_mode` entry points take a `dpf_common::stream::TreeMode`, and keys have an
