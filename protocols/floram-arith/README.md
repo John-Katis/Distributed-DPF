@@ -65,7 +65,15 @@ Differences from the reference code:
 The Half-Tree optimisation the paper mentions is not applied; that is what the
 `half-tree` crate is for.
 
+**Output width.** The reference fixes Z_2^ℓ to `uint64_t`. Here the ring word
+is a type parameter (`dpf_common::arith::Ring`): ℓ ≤ 64 runs on `u64`, exactly
+as before, and 64 < ℓ ≤ 128 on `u128`. Every ℓ-dependent message (the
+F_MUX^{A,ℓ} words and the W_CW opening) then carries 16 instead of 8 bytes.
+For ℓ = 128, Convert needs more bits than the 127 above the control bit, so it
+takes `AES_s(0)`, one more PRG call per leaf.
+
 ```
 cargo test -p floram-arith --release
 cargo run --release -p floram-arith --example bench-floram-arith -- all --in-bits 20 --out-bits 64
+cargo run --release -p floram-arith --example bench-floram-arith -- all --in-bits 20 --out-bits 128
 ```
