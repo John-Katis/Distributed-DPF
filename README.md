@@ -76,22 +76,26 @@ cargo test -p floram-cprg --release              # one protocol
 cargo run --release -p floram-cprg --example bench -- all --in-bits 16 --out-bits 128
 cargo run --release -p half-tree --example bench-half-tree -- all --variant ht --in-bits 16 --out-bits 128
 cargo run --release -p half-tree --example bench-half-tree -- all --variant mal-ferret --in-bits 16 --out-bits 128
-cargo run --release -p floram-arith --example bench-floram-arith -- all --in-bits 16 --out-bits 64
+cargo run --release -p floram-arith --example bench-floram-arith -- all --in-bits 16 --out-bits 128
 cargo run --release -p fssnn --example bench-fssnn -- all --variant bin --in-bits 16 --out-bits 64
 cargo run --release -p fssnn --example bench-fssnn -- all --variant arith --in-bits 16 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 2p --in-bits 16 --out-bits 64
-cargo run --release -p duoram --example bench-duoram -- all --variant 3p --in-bits 16 --out-bits 64
-scripts/bench_all.sh --max-in-bits 20         # all six, CSV into results/
+cargo run --release -p duoram --example bench-duoram -- all --variant 3p --in-bits 16 --out-bits 128
+scripts/bench_all.sh --max-in-bits 20         # all six at out-bits 64 and 128, CSV into results/
 scripts/bench_all.sh gen --stream --max-in-bits 32   # streaming tree, results/*-stream.csv
 ```
 
 All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`); the
 first two columns are `mode,variant`. `--out-bits` sets the payload width for
 every protocol, with each one's own group: `F_2^m` (any m) for floram-cprg
-and half-tree (default 128), `Z_2^ℓ` with ℓ ≤ 64 for floram-arith and duoram
+and half-tree (default 128), `Z_2^ℓ` with ℓ ≤ 128 for floram-arith and duoram
 (default 64), and for fssnn `F_2^ℓ` (`bin`) or `Z_2^ℓ` (`arith`) with ℓ ≤ 256
-(default 64; `bin` with ℓ = 1 is FssNN's own `Z_2`, ℓ > 127 costs one more
-PRG call per leaf).
+(default 64; `bin` with ℓ = 1 is FssNN's own `Z_2`). floram-arith and duoram
+compute and send Z_2^ℓ in 64-bit words for ℓ ≤ 64 and in 128-bit words above,
+so ℓ = 64 and ℓ = 128 each pay their own word size. From ℓ = 128 on, every
+protocol takes one more PRG call per leaf for the output, because a leaf has
+only 127 bits above its control bit. `scripts/bench_all.sh` sweeps every
+protocol over ℓ ∈ {64, 128} (`OUT_LIST=…` overrides).
 
 Every row reports the same metrics, for Gen and for evaluation alike:
 

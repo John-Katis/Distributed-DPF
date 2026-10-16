@@ -3,13 +3,13 @@
 # Floram-arith, FssNN bin/arith, Duoram 2P/3P) over the same sweep and writes one CSV
 # per protocol into results/.
 #
-#   scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [--stream [--batch-log b]] [mode]
+#   [OUT_LIST=a,b,..] scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [--stream [--batch-log b]] [mode]
 #
-# mode is gen|eval|full|all (default all). Floram, HT and HT-mal sweep
-# out-bits over 127,128,256,512; Floram-arith and Duoram over 16,32,64 (their
-# ring Z_2^l is at most 64 bits); FssNN over 16,32,64,128,256 (from 128 on its
-# output takes one more PRG call per leaf).
-# 127 is where HT uses the PRG-free Convert.
+# mode is gen|eval|full|all (default all). Every protocol sweeps out-bits over
+# OUT_LIST (default 64,128), so each output width has all protocols side by
+# side. Floram-arith and Duoram run Z_2^l on 64-bit words for l <= 64 and on
+# 128-bit words above; at l = 128 every protocol takes one more PRG call per
+# leaf for the output, since a 128-bit leaf has only 127 bits above its t-bit.
 #
 # --stream runs every protocol with the streaming tree (dpf_common::stream):
 # memory O(batch·n) instead of a few × 2^n blocks, about 2× the Gen compute,
@@ -18,6 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 MODE=all
+OUT_LIST=${OUT_LIST:-64,128}
 ARGS=()
 SUFFIX=""
 while [[ $# -gt 0 ]]; do
@@ -34,11 +35,11 @@ mkdir -p results
 cargo build --release -p floram-cprg -p half-tree -p floram-arith -p fssnn -p duoram --examples
 
 BIN=target/release/examples
-echo "floram"       && "$BIN/bench"              "$MODE" --sweep --out-list 127,128,256,512 "${ARGS[@]}"                 | tee results/floram$SUFFIX.csv
-echo "ht"           && "$BIN/bench-half-tree"    "$MODE" --sweep --out-list 127,128,256,512 --variant ht "${ARGS[@]}"    | tee results/ht$SUFFIX.csv
-echo "ht-mal-ferret" && "$BIN/bench-half-tree"   "$MODE" --sweep --out-list 128,256,512 --variant mal-ferret "${ARGS[@]}" | tee results/ht-mal-ferret$SUFFIX.csv
-echo "floram-arith" && "$BIN/bench-floram-arith" "$MODE" --sweep --out-list 16,32,64 "${ARGS[@]}"                        | tee results/floram-arith$SUFFIX.csv
-echo "fssnn-bin"    && "$BIN/bench-fssnn"        "$MODE" --sweep --out-list 16,32,64,128,256 --variant bin "${ARGS[@]}"  | tee results/fssnn-bin$SUFFIX.csv
-echo "fssnn-arith"  && "$BIN/bench-fssnn"        "$MODE" --sweep --out-list 16,32,64,128,256 --variant arith "${ARGS[@]}" | tee results/fssnn-arith$SUFFIX.csv
-echo "duoram-2p"    && "$BIN/bench-duoram"       "$MODE" --sweep --out-list 16,32,64 --variant 2p "${ARGS[@]}"           | tee results/duoram-2p$SUFFIX.csv
-echo "duoram-3p"    && "$BIN/bench-duoram"       "$MODE" --sweep --out-list 16,32,64 --variant 3p "${ARGS[@]}"           | tee results/duoram-3p$SUFFIX.csv
+echo "floram"       && "$BIN/bench"              "$MODE" --sweep --out-list "$OUT_LIST" "${ARGS[@]}"                 | tee results/floram$SUFFIX.csv
+echo "ht"           && "$BIN/bench-half-tree"    "$MODE" --sweep --out-list "$OUT_LIST" --variant ht "${ARGS[@]}"    | tee results/ht$SUFFIX.csv
+echo "ht-mal-ferret" && "$BIN/bench-half-tree"   "$MODE" --sweep --out-list "$OUT_LIST" --variant mal-ferret "${ARGS[@]}" | tee results/ht-mal-ferret$SUFFIX.csv
+echo "floram-arith" && "$BIN/bench-floram-arith" "$MODE" --sweep --out-list "$OUT_LIST" "${ARGS[@]}"                        | tee results/floram-arith$SUFFIX.csv
+echo "fssnn-bin"    && "$BIN/bench-fssnn"        "$MODE" --sweep --out-list "$OUT_LIST" --variant bin "${ARGS[@]}"  | tee results/fssnn-bin$SUFFIX.csv
+echo "fssnn-arith"  && "$BIN/bench-fssnn"        "$MODE" --sweep --out-list "$OUT_LIST" --variant arith "${ARGS[@]}" | tee results/fssnn-arith$SUFFIX.csv
+echo "duoram-2p"    && "$BIN/bench-duoram"       "$MODE" --sweep --out-list "$OUT_LIST" --variant 2p "${ARGS[@]}"           | tee results/duoram-2p$SUFFIX.csv
+echo "duoram-3p"    && "$BIN/bench-duoram"       "$MODE" --sweep --out-list "$OUT_LIST" --variant 3p "${ARGS[@]}"           | tee results/duoram-3p$SUFFIX.csv
