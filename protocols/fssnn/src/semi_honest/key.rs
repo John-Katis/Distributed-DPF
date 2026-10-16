@@ -1,7 +1,7 @@
 //! The semi-honest key ([`crate::tree`] for the tree it walks): root, the
-//! n level CWs and the final bit, with point and full-domain evaluation.
+//! n level CWs and the final word, with point and full-domain evaluation.
 
-use crate::tree::{child, conv, expand, CorrectionWord};
+use crate::tree::{child, expand, CorrectionWord, Group};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::stream::walk;
 
@@ -9,9 +9,12 @@ use dpf_common::stream::walk;
 pub struct FssKey {
     pub party: usize,
     pub n_size: u64,
+    pub group: Group,
+    /// ℓ, the output width.
+    pub bits: usize,
     pub root: Block,
     pub cws: Vec<CorrectionWord>,
-    pub fcw: bool,
+    pub fcw: u64,
 }
 
 impl FssKey {
@@ -21,22 +24,22 @@ impl FssKey {
     }
 
     /// The part both parties share.
-    pub fn public_part(&self) -> (&[CorrectionWord], bool) {
+    pub fn public_part(&self) -> (&[CorrectionWord], u64) {
         (&self.cws, self.fcw)
     }
 
-    /// Root (16) + per level 16 + 1 bytes + final bit (1 byte). In bits this
-    /// is FssNN's `n(λ + 3) + λ + 1` without the `v` bit per level.
+    /// Root (16) + per level 16 + 1 bytes + final word (ℓ bits). In bits this
+    /// is FssNN's `n(λ + 3) + λ + 1` without the `v` bit per level, for ℓ = 1.
     pub fn size_bytes(&self) -> usize {
-        16 + 17 * self.cws.len() + 1
+        16 + 17 * self.cws.len() + self.bits.div_ceil(8)
     }
 
-    fn output(&self, leaf: Block) -> bool {
-        conv(leaf) ^ (leaf.lsb() & self.fcw)
+    fn output(&self, leaf: Block) -> u64 {
+        self.group.output(self.party, self.bits, leaf, self.fcw)
     }
 
-    /// This party's XOR share of `f(x)`.
-    pub fn eval_point(&self, x: u64) -> bool {
+    /// This party's share of `f(x)` (XOR or additive, per [`Group`]).
+    pub fn eval_point(&self, x: u64) -> u64 {
         assert!(x < self.n_size);
         let n = self.depth();
         let mut node = self.root;
@@ -48,7 +51,7 @@ impl FssKey {
 
     /// Shares of `f(0), …, f(N − 1)`: expands all 2^n leaves, then drops the
     /// padding positions `x ≥ N`.
-    pub fn eval_full(&self) -> Vec<bool> {
+    pub fn eval_full(&self) -> Vec<u64> {
         let mut nodes = vec![self.root];
         for cw in &self.cws {
             let mut next = Vec::with_capacity(2 * nodes.len());
@@ -66,7 +69,7 @@ impl FssKey {
     /// [`eval_full`](Self::eval_full) without holding the domain: a batched
     /// walk ([`dpf_common::stream`]) that calls `visit(x0, ys)` with this
     /// party's shares at `x0 .. x0 + ys.len()`, for all x < N.
-    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[bool])) {
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[u64])) {
         let expand_level = |l: usize, parents: &[Block], out: &mut Vec<Block>| {
             let cw = &self.cws[l - 1];
             for &v in parents {

@@ -18,18 +18,29 @@
 //!    `t_j^(i) = t_j^Keep ⊕ t_j^(i−1)·t^Keep_CW` (one F_AND per tree, since
 //!    `t^Keep_CW` is public but selected by the shared α_i).
 //!
-//! After all n levels the final bit `Conv(s_0) ⊕ Conv(s_1) ⊕ β` is opened;
-//! it is linear in the shares, so it costs no AND. FssNN's DCF output bit `v`
-//! becomes this BGI16-style final bit for the DPF. FssNN's early termination
-//! (§3.3.2) is not used, so the full tree is expanded as in the other
-//! protocols.
+//! After all n levels the final word ([`crate::tree::Group`]) is opened. FssNN's
+//! DCF output bit `v` becomes this BGI16-style final word for the DPF:
+//!
+//! * [`Group::Xor`]: `Conv(s_0) ⊕ Conv(s_1) ⊕ β` is linear in the shares, so it
+//!   costs no AND, only the ℓ-bit opening (FssNN's final bit for ℓ = 1).
+//! * [`Group::Arith`]: `(−1)^{t_1}·(β − Conv(s_0) + Conv(s_1))` with β
+//!   additively shared in Z_2^ℓ. The α-leaves are XOR-shared, so each of the
+//!   2ℓ bits of `Conv(s_0)`, `Conv(s_1)` is converted to an additive share of
+//!   `2^i·bit` with one F_MUX^{A,ℓ} (selector the shared bit, `W0 = 0`,
+//!   `W1 = 2^i`); a second F_MUX^{A,ℓ} on `t_1` picks `W` or `−W`. Both are
+//!   SIRNN's MUX ([`dpf_common::arith::mux`]), as in `floram-arith`. This
+//!   output group is not in FssNN.
+//!
+//! FssNN's early termination (§3.3.2) is not used, so the full tree is
+//! expanded as in the other protocols.
 //!
 //! Correlations for all `2n` PRG evaluations are generated up front from
 //! OT (DGH+21 §5.5), so no dealer is involved anywhere.
 
 use super::key::FssKey;
 use super::sec_prg::{eval_shared, preprocess, Kk};
-use crate::tree::{child, conv, expand, CorrectionWord};
+use crate::tree::{child, conv, expand, CorrectionWord, Group};
+use dpf_common::arith::{mask, mux};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::bool2pc::{mux_block, BoolParty};
 use dpf_common::net::{Channel, CommStats};
@@ -53,12 +64,48 @@ pub struct GenOutput {
     pub gen_time: Duration,
 }
 
-/// Opens an XOR-shared bit.
-fn open_bit(ch: &mut Channel, x: bool) -> bool {
-    ch.send(vec![x as u8]);
+/// Opens an ℓ-bit word, XOR- or additively shared per `group`.
+fn open_word(ch: &mut Channel, group: Group, bits: usize, x: u64) -> u64 {
+    let len = bits.div_ceil(8);
+    ch.send(x.to_le_bytes()[..len].to_vec());
     let theirs = ch.recv();
-    assert_eq!(theirs.len(), 1, "malformed bit share");
-    x ^ (theirs[0] & 1 == 1)
+    assert_eq!(theirs.len(), len, "malformed final-word share");
+    let mut buf = [0u8; 8];
+    buf[..len].copy_from_slice(&theirs);
+    let y = u64::from_le_bytes(buf);
+    match group {
+        Group::Xor => x ^ y,
+        Group::Arith => x.wrapping_add(y) & mask(bits),
+    }
+}
+
+/// This party's share of the final word from its shares of both α-leaves.
+fn final_cw(
+    ch: &mut Channel,
+    cot: &mut CotPair,
+    rng: &mut ChaCha20Rng,
+    group: Group,
+    bits: usize,
+    leaves: [Block; 2],
+    beta_share: u64,
+) -> u64 {
+    let (c0, c1) = (conv(leaves[0], bits), conv(leaves[1], bits));
+    let share = match group {
+        Group::Xor => c0 ^ c1 ^ beta_share,
+        Group::Arith => {
+            let m = mask(bits);
+            let b = ch.party();
+            // B2A: additive shares of 2^i·bit_i, party 0 holding W1 = 2^i.
+            let g: Vec<bool> = [c0, c1].iter().flat_map(|&c| (0..bits).map(move |i| (c >> i) & 1 == 1)).collect();
+            let w1: Vec<u64> = (0..2 * bits).map(|k| if b == 0 { 1u64 << (k % bits) } else { 0 }).collect();
+            let y = mux(ch, cot, &g, &vec![0; 2 * bits], &w1, bits, rng).expect("semi-honest MUX");
+            let sum = |ys: &[u64]| ys.iter().fold(0u64, |a, &v| a.wrapping_add(v));
+            let w = beta_share.wrapping_sub(sum(&y[..bits])).wrapping_add(sum(&y[bits..])) & m;
+            // (−1)^{t_1}·W.
+            mux(ch, cot, &[leaves[1].lsb()], &[w], &[w.wrapping_neg() & m], bits, rng).expect("semi-honest MUX")[0]
+        }
+    };
+    open_word(ch, group, bits, share)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -70,8 +117,10 @@ fn gen_with(
     ch: &mut Channel,
     root: Block,
     n_size: u64,
+    group: Group,
+    bits: usize,
     alpha_share: u64,
-    beta_share: bool,
+    beta_share: u64,
 ) -> (FssKey, usize) {
     let b = ch.party();
     let n = depth_for(n_size);
@@ -110,8 +159,8 @@ fn gen_with(
         cws.push(cw);
     }
 
-    let fcw = open_bit(ch, conv(node[0]) ^ conv(node[1]) ^ beta_share);
-    (FssKey { party: b, n_size, root, cws, fcw }, 2 * n)
+    let fcw = final_cw(ch, cot, rng, group, bits, node, beta_share);
+    (FssKey { party: b, n_size, group, bits, root, cws, fcw }, 2 * n)
 }
 
 /// A root with `t = party` (Alg. 4 line 2).
@@ -121,9 +170,10 @@ fn sample_root(rng: &mut ChaCha20Rng, party: usize) -> Block {
 
 /// Runs this party's side of the generation.
 ///
+/// * `group`, `bits`: the output group and its width ℓ, `1 ≤ ℓ ≤ 64`.
 /// * `alpha_share`: XOR share of `α < N` (bit `n − 1 − i` is level i).
-/// * `beta_share`: XOR share of `β ∈ Z2`.
-pub fn gen(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: bool, seed: [u8; 32]) -> GenOutput {
+/// * `beta_share`: share of `β` in the output group (XOR or mod 2^ℓ).
+pub fn gen(ch: &mut Channel, n_size: u64, group: Group, bits: usize, alpha_share: u64, beta_share: u64, seed: [u8; 32]) -> GenOutput {
     let t_setup = Instant::now();
     let mut rng = ChaCha20Rng::from_seed(seed);
     let root = sample_root(&mut rng, ch.party());
@@ -135,7 +185,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: bool, se
     let setup_stats = ch.stats();
     let setup_time = t_setup.elapsed();
     let t_gen = Instant::now();
-    let (key, prg_calls) = gen_with(&mut bp, &mut cot, &mut kk, &mut rng, ch, root, n_size, alpha_share, beta_share);
+    let (key, prg_calls) = gen_with(&mut bp, &mut cot, &mut kk, &mut rng, ch, root, n_size, group, bits, alpha_share, beta_share);
     GenOutput {
         key,
         gen_stats: ch.stats().since(&setup_stats),
@@ -150,8 +200,9 @@ pub fn gen(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: bool, se
 
 /// Trusted-dealer generation for given roots (bit 0 of root b must be b): the
 /// cleartext Gen, and the bit-exact oracle of [`gen`].
-pub fn deal(roots: [Block; 2], n_size: u64, alpha: u64, beta: bool) -> [FssKey; 2] {
+pub fn deal(roots: [Block; 2], n_size: u64, group: Group, bits: usize, alpha: u64, beta: u64) -> [FssKey; 2] {
     assert!(alpha < n_size);
+    assert!(beta <= mask(bits));
     assert!(!roots[0].lsb() && roots[1].lsb(), "t_b^(0) = b");
     let n = depth_for(n_size);
     let mut node = roots;
@@ -166,14 +217,14 @@ pub fn deal(roots: [Block; 2], n_size: u64, alpha: u64, beta: bool) -> [FssKey; 
         cws.push(cw);
     }
     assert!(node[0].lsb() ^ node[1].lsb(), "α-node state bits must differ");
-    let fcw = conv(node[0]) ^ conv(node[1]) ^ beta;
-    let mk = |party: usize| FssKey { party, n_size, root: roots[party], cws: cws.clone(), fcw };
+    let fcw = group.final_cw(bits, node, beta);
+    let mk = |party: usize| FssKey { party, n_size, group, bits, root: roots[party], cws: cws.clone(), fcw };
     [mk(0), mk(1)]
 }
 
 /// Trusted-dealer generation from a seed.
-pub fn gen_reference(n_size: u64, alpha: u64, beta: bool, seed: [u8; 32]) -> [FssKey; 2] {
+pub fn gen_reference(n_size: u64, group: Group, bits: usize, alpha: u64, beta: u64, seed: [u8; 32]) -> [FssKey; 2] {
     let mut rng = ChaCha20Rng::from_seed(seed);
     let roots = [sample_root(&mut rng, 0), sample_root(&mut rng, 1)];
-    deal(roots, n_size, alpha, beta)
+    deal(roots, n_size, group, bits, alpha, beta)
 }

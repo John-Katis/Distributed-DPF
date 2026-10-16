@@ -1,6 +1,6 @@
 [package]
 name = "fssnn"
-description = "Distributed DPF key generation in the style of FssNN (Yang et al., ProvSec'24, Alg. 5): both trees' seeds secret-shared, the PRG evaluated in 2PC with the DGH+21 LPN-PRG; Z2 output with early termination."
+description = "Distributed DPF key generation in the style of FssNN (Yang et al., ProvSec'24, Alg. 5): both trees' seeds secret-shared, the PRG evaluated in 2PC with the DGH+21 LPN-PRG; output in F_2^l (XOR) or Z_2^l, full tree."
 version.workspace = true
 edition.workspace = true
 

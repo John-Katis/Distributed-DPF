@@ -30,7 +30,7 @@ REFERENCES.md        papers and techniques this code implements
 | `half-tree` (`semi_honest`) | semi-honest | XOR shares | `F_2^m` | COT + global offset Δ (no 2PC per level) |
 | `half-tree` (`malicious`) | malicious, one-bit leakage | BDOZ-authenticated bits | `GF(2^128)^bm` + SPDZ MACs | as above, plus a batch MAC check |
 | `floram-arith` | semi-honest | additive shares mod 2^n (BitDec from bit triples) | `Z_2^ℓ`, ℓ ≤ 64 | COT-based block MUX per level, CCMP + arithmetic MUX for the last word |
-| `fssnn` | semi-honest | XOR shares | `Z_2` | both trees' seeds XOR-shared, LPN-PRG (DGH+21) in 2PC per level, COT MUX; correlations from IKNP + KK13 OT |
+| `fssnn` (`bin`, `arith`) | semi-honest | XOR shares | `F_2^ℓ` (`bin`) or `Z_2^ℓ` (`arith`), ℓ ≤ 64 | both trees' seeds XOR-shared, LPN-PRG (DGH+21) in 2PC per level, COT MUX; correlations from IKNP + KK13 OT |
 | `duoram` (`2p`, `3p`) | semi-honest | additive shares mod 2^n (online shift) | `Z_2^ℓ`, ℓ ≤ 64 | Du–Atallah product per level at a random target; triples from helper P2 (`3p`) or IKNP OT (`2p`); one-round online phase |
 
 ## Shared library: `dpf-common`
@@ -77,7 +77,8 @@ cargo run --release -p floram-cprg --example bench -- all --in-bits 16 --out-bit
 cargo run --release -p half-tree --example bench-half-tree -- all --variant ht --in-bits 16 --out-bits 128
 cargo run --release -p half-tree --example bench-half-tree -- all --variant mal-ferret --in-bits 16 --out-bits 128
 cargo run --release -p floram-arith --example bench-floram-arith -- all --in-bits 16 --out-bits 64
-cargo run --release -p fssnn --example bench-fssnn -- all --in-bits 16 --out-bits 1
+cargo run --release -p fssnn --example bench-fssnn -- all --variant bin --in-bits 16 --out-bits 64
+cargo run --release -p fssnn --example bench-fssnn -- all --variant arith --in-bits 16 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 2p --in-bits 16 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 3p --in-bits 16 --out-bits 64
 scripts/bench_all.sh --max-in-bits 20         # all six, CSV into results/
@@ -87,8 +88,9 @@ scripts/bench_all.sh gen --stream --max-in-bits 32   # streaming tree, results/*
 All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`); the
 first two columns are `mode,variant`. `--out-bits` sets the payload width for
 every protocol, with each one's own group: `F_2^m` (any m) for floram-cprg
-and half-tree (default 128), `Z_2^ℓ` with ℓ ≤ 64 for floram-arith and duoram
-(default 64), and only 1 for fssnn (`Z_2`).
+and half-tree (default 128), `Z_2^ℓ` with ℓ ≤ 64 for floram-arith, duoram and
+fssnn `arith` (default 64), and `F_2^ℓ` with ℓ ≤ 64 for fssnn `bin` (default
+64; ℓ = 1 is FssNN's own `Z_2`).
 
 Every row reports the same metrics, for Gen and for evaluation alike:
 

@@ -5,9 +5,11 @@
 //! FssNN builds a key-reduced DCF with output group Z2 and generates its keys
 //! without a dealer by evaluating the PRG in 2PC (Alg. 5, F_SecPRG via the
 //! MPC-friendly PRG of DGH+21). This crate keeps that key generation and the
-//! tree (Alg. 4) but drops the comparison bit, so the result is a DPF over Z2
-//! that can be compared with the other protocols. Like them, it expands the
-//! full 2^n tree; FssNN's early termination (§3.3.2) is not used.
+//! tree (Alg. 4) but drops the comparison bit, so the result is a DPF that can
+//! be compared with the other protocols. Its output is ℓ ≤ 64 bits, either
+//! under XOR (`bin`, FssNN's Z2 widened to `{0,1}^ℓ`) or in the ring Z_2^ℓ
+//! (`arith`), see [`Group`]. Like the other protocols it expands the full 2^n
+//! tree; FssNN's early termination (§3.3.2) is not used.
 //!
 //! * [`lpn_prg`]: the DGH+21 LPN-PRG (public matrices, cleartext evaluation).
 //! * [`tree`]: the tree of Alg. 4 without `v`.
@@ -22,7 +24,7 @@ pub mod lpn_prg;
 pub mod semi_honest;
 pub mod tree;
 
-pub use tree::CorrectionWord;
+pub use tree::{CorrectionWord, Group};
 
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -35,22 +37,29 @@ pub struct TwoPartyRun {
     pub seeds: [[u8; 32]; 2],
 }
 
-/// XOR-shares α and β and runs [`semi_honest::gen`] for both parties.
-pub fn run_gen(n_size: u64, alpha: u64, beta: bool, seed: u64) -> TwoPartyRun {
+/// XOR-shares α, shares β in `group` and runs [`semi_honest::gen`] for both
+/// parties.
+pub fn run_gen(n_size: u64, group: Group, bits: usize, alpha: u64, beta: u64, seed: u64) -> TwoPartyRun {
     assert!(alpha < n_size);
+    let m = dpf_common::arith::mask(bits);
+    assert!(beta <= m);
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let a0: u64 = rng.gen::<u64>() & dpf_common::arith::mask(dpf_common::block::depth_for(n_size));
-    let b0: bool = rng.gen();
+    let b0: u64 = rng.gen::<u64>() & m;
+    let b1 = match group {
+        Group::Xor => beta ^ b0,
+        Group::Arith => beta.wrapping_sub(b0) & m,
+    };
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();
-            let o = semi_honest::gen(c, n_size, a0, b0, seeds[0]);
+            let o = semi_honest::gen(c, n_size, group, bits, a0, b0, seeds[0]);
             (o, t.elapsed())
         },
         |c| {
             let t = Instant::now();
-            let o = semi_honest::gen(c, n_size, alpha ^ a0, beta ^ b0, seeds[1]);
+            let o = semi_honest::gen(c, n_size, group, bits, alpha ^ a0, b1, seeds[1]);
             (o, t.elapsed())
         },
     );

@@ -1,33 +1,38 @@
 //! Benchmarks for the FssNN-style distributed DPF.
 //!
 //! ```text
-//! cargo run --release -p fssnn --example bench-fssnn -- <gen|eval|full|all> [--variant fssnn] [options]
+//! cargo run --release -p fssnn --example bench-fssnn -- <gen|eval|full|all> [--variant bin|arith] [options]
 //! ```
 //!
-//! * `fssnn`: semi-honest (Alg. 5 with the DGH+21 LPN-PRG in 2PC, correlations
-//!   from IKNP and KK13 OT).
+//! Both are semi-honest (Alg. 5 with the DGH+21 LPN-PRG in 2PC, correlations
+//! from IKNP and KK13 OT) and differ only in the output group:
 //!
-//! The output group is Z2, so `--out-bits` must be 1 (the default). Options
+//! * `bin`: `{0,1}^ℓ` under XOR, FssNN's Z2 for `--out-bits 1`;
+//! * `arith`: the ring Z_2^ℓ.
+//!
+//! `--out-bits ℓ` is 1..=64 (default 64; the sweep uses 16,32,64). Options
 //! and CSV columns are those of `dpf_common::bench`. Setup (base OTs of the
 //! COT, bit-triple and 1-of-3 OT instances) is reported apart from
 //! generation; the PRG correlations are part of generation, and `cots` also
 //! counts the random OTs behind them. `eval` and `full` use dealer keys.
 
+use dpf_common::arith::mask;
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::stream::TreeMode;
-use fssnn::run_gen;
 use fssnn::semi_honest;
+use fssnn::{run_gen, Group};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
 
-fn gen_sh(o: &Opts, rng: &mut ChaCha20Rng) {
+fn gen_sh(o: &Opts, group: Group, rng: &mut ChaCha20Rng) {
     let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
         // Free the previous run (full-domain outputs) before the next one.
         drop(last.take());
-        let run = run_gen(o.size, rng.gen_range(0..o.size), rng.gen(), rng.gen());
+        let beta = rng.gen::<u64>() & mask(o.out_bits);
+        let run = run_gen(o.size, group, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
         g0.push(run.outs[0].gen_time);
         g1.push(run.outs[1].gen_time);
@@ -59,40 +64,41 @@ fn gen_sh(o: &Opts, rng: &mut ChaCha20Rng) {
 }
 
 fn main() {
-    let opts = Opts::parse(&["fssnn"], 1, &[1]);
-    assert!(opts.out_bits == 1 && opts.out_list.iter().all(|&b| b == 1), "FssNN's output group is Z2: --out-bits 1");
+    let opts = Opts::parse(&["bin", "arith"], 64, &[16, 32, 64]);
+    assert!((1..=64).contains(&opts.out_bits) && opts.out_list.iter().all(|b| (1..=64).contains(b)), "out-bits must be 1..=64");
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
-        match o.variant.as_str() {
-            "fssnn" => {
-                if o.runs("gen") {
-                    gen_sh(o, &mut rng);
-                }
-                if !(o.runs("eval") || o.runs("full")) {
-                    return;
-                }
-                let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
-                let keys = semi_honest::gen_reference(o.size, rng.gen_range(0..o.size), true, rng.gen());
-                let k = &keys[0];
-                if o.runs("eval") {
-                    bench_eval(o, 1, &xs, |x| {
-                        black_box(k.eval_point(x));
-                    });
-                }
-                if o.runs("full") {
-                    bench_full(o, 1, || match o.tree_mode() {
-                        TreeMode::Stored => {
-                            black_box(k.eval_full());
-                        }
-                        TreeMode::Stream { batch } => {
-                            let mut acc = false;
-                            k.eval_full_stream(batch, |_, ys| acc = ys.iter().fold(acc, |a, y| a ^ y));
-                            black_box(acc);
-                        }
-                    });
-                }
-            }
+        let group = match o.variant.as_str() {
+            "bin" => Group::Xor,
+            "arith" => Group::Arith,
             v => unreachable!("unknown variant {v}"),
+        };
+        if o.runs("gen") {
+            gen_sh(o, group, &mut rng);
+        }
+        if !(o.runs("eval") || o.runs("full")) {
+            return;
+        }
+        let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
+        let beta = rng.gen::<u64>() & mask(o.out_bits);
+        let keys = semi_honest::gen_reference(o.size, group, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
+        let k = &keys[0];
+        if o.runs("eval") {
+            bench_eval(o, 1, &xs, |x| {
+                black_box(k.eval_point(x));
+            });
+        }
+        if o.runs("full") {
+            bench_full(o, 1, || match o.tree_mode() {
+                TreeMode::Stored => {
+                    black_box(k.eval_full());
+                }
+                TreeMode::Stream { batch } => {
+                    let mut acc = 0u64;
+                    k.eval_full_stream(batch, |_, ys| acc = ys.iter().fold(acc, |a, y| a ^ y));
+                    black_box(acc);
+                }
+            });
         }
     });
 }
