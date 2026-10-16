@@ -37,6 +37,8 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut g0, mut g1, mut total, mut onl) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
+        // Free the previous run (full-domain outputs) before the next one.
+        drop(last.take());
         let beta = rng.gen::<u64>() & mask(o.out_bits);
         let (alpha, seed) = (rng.gen_range(0..o.size), rng.gen());
         let run = if o.variant == "3p" {

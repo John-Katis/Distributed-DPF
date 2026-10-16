@@ -25,6 +25,8 @@ fn gen_sh(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
+        // Free the previous run (full-domain outputs) before the next one.
+        drop(last.take());
         let run = run_gen(o.size, rng.gen_range(0..o.size), rng.gen(), rng.gen());
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
         g0.push(run.outs[0].gen_time);

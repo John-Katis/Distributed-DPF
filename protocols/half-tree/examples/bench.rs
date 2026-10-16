@@ -33,6 +33,8 @@ fn gen_ht(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
+        // Free the previous run (full-domain outputs) before the next one.
+        drop(last.take());
         let beta = random_beta(rng, o.out_bits);
         let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen(), o.tree_mode());
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
@@ -70,6 +72,8 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng, ferret: Option<FerretConfig>) {
     let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
+        // Free the previous run (full-domain outputs) before the next one.
+        drop(last.take());
         let beta: Vec<Block> = (0..bm).map(|_| Block::random(rng)).collect();
         let run = run_mal_gen_mode(o.size, rng.gen_range(0..o.size), &beta, rng.gen(), [None, None], ferret, o.tree_mode());
         let [r0, r1] = run.outs.map(|r| r.expect("honest run aborted"));

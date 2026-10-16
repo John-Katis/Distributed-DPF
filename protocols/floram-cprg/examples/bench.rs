@@ -20,6 +20,8 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut gen0, mut gen1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for r in 0..o.reps {
+        // Free the previous run (full-domain outputs) before the next one.
+        drop(last.take());
         let beta = random_beta(rng, o.out_bits);
         let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen::<u64>() ^ r as u64, o.tree_mode());
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
