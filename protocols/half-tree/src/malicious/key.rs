@@ -56,18 +56,21 @@ impl MalFull {
 pub(crate) fn leaf_outputs(hash: &CcrHash, leaves: &[Block], cw_v: &[Block], cw_m: &[Block]) -> MalFull {
     let n = leaves.len();
     let u = leaves.iter().map(|x| AuthGf { x: Block(x.lsb() as u128), m: *x }).collect();
-    let mut hv = vec![Block::ZERO; n];
-    let mut hm = vec![Block::ZERO; n];
+    let mut hv = [Block::ZERO; 1024];
+    let mut hm = [Block::ZERO; 1024];
     let v = (0..cw_v.len())
         .map(|k| {
-            hash.h_many_tweak(leaves, Block(2 * k as u128), &mut hv);
-            hash.h_many_tweak(leaves, Block(2 * k as u128 + 1), &mut hm);
-            (0..n)
-                .map(|j| {
-                    let t = leaves[j].lsb();
-                    AuthGf { x: hv[j] ^ cw_v[k].and_bit(t), m: hm[j] ^ cw_m[k].and_bit(t) }
-                })
-                .collect()
+            let mut col = Vec::with_capacity(n);
+            for c in leaves.chunks(hv.len()) {
+                let (hv, hm) = (&mut hv[..c.len()], &mut hm[..c.len()]);
+                hash.h_many_tweak(c, Block(2 * k as u128), hv);
+                hash.h_many_tweak(c, Block(2 * k as u128 + 1), hm);
+                col.extend(c.iter().zip(hv.iter().zip(hm.iter())).map(|(x, (hv, hm))| {
+                    let t = x.lsb();
+                    AuthGf { x: *hv ^ cw_v[k].and_bit(t), m: *hm ^ cw_m[k].and_bit(t) }
+                }));
+            }
+            col
         })
         .collect();
     MalFull { n, u, v }
@@ -75,10 +78,15 @@ pub(crate) fn leaf_outputs(hash: &CcrHash, leaves: &[Block], cw_v: &[Block], cw_
 
 /// `⊕_j H_1(X^j)` over the leaves, as `(payload sums, MAC sums)`.
 pub(crate) fn leaf_sums(hash: &CcrHash, leaves: &[Block], bm: usize) -> (Vec<Block>, Vec<Block>) {
-    let mut buf = vec![Block::ZERO; leaves.len()];
+    let mut buf = [Block::ZERO; 1024];
     let mut sum = |tw: u128| {
-        hash.h_many_tweak(leaves, Block(tw), &mut buf);
-        buf.iter().fold(Block::ZERO, |a, b| a ^ *b)
+        let mut acc = Block::ZERO;
+        for c in leaves.chunks(buf.len()) {
+            let buf = &mut buf[..c.len()];
+            hash.h_many_tweak(c, Block(tw), buf);
+            acc = buf.iter().fold(acc, |a, b| a ^ *b);
+        }
+        acc
     };
     let v = (0..bm).map(|k| sum(2 * k as u128)).collect();
     let m = (0..bm).map(|k| sum(2 * k as u128 + 1)).collect();

@@ -20,7 +20,7 @@ use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::Aes128;
 use dpf_common::arith::convert;
-use dpf_common::block::{depth_for, Block};
+use dpf_common::block::{depth_for, expand_in_place, Block};
 use dpf_common::stream::{walk, TreeMode};
 
 /// `G(s) = (AES_s(0), AES_s(1))`.
@@ -44,17 +44,21 @@ pub struct CorrectionWord {
 pub struct Tree {
     depth: usize,
     level: usize,
+    /// The current level, allocated once for `2^n` nodes. [`expand_level`]
+    /// (Self::expand_level) replaces it in place by the uncorrected children,
+    /// [`correct`](Self::correct) corrects them in place.
     nodes: Vec<Block>,
+    /// Control bits of the last corrected level.
     t: Vec<bool>,
-    /// Uncorrected children of `nodes`, filled by [`expand_level`](Self::expand_level).
-    raw: Vec<Block>,
 }
 
 impl Tree {
     /// Root seed `s^{0,0}` with control bit `t^{0,0} = b` (Alg. 2 line 2).
     pub fn new(n_size: u64, root: Block, t0: bool) -> Self {
         let depth = depth_for(n_size);
-        Tree { depth, level: 0, nodes: vec![root], t: vec![t0], raw: Vec::with_capacity(1 << depth) }
+        let mut nodes = Vec::with_capacity(1 << depth);
+        nodes.push(root);
+        Tree { depth, level: 0, nodes, t: vec![t0] }
     }
 
     pub fn depth(&self) -> usize {
@@ -65,27 +69,30 @@ impl Tree {
     /// of all left and of all right children.
     pub fn expand_level(&mut self) -> (Block, Block) {
         assert!(self.level < self.depth);
-        self.raw.clear();
+        assert_eq!(self.nodes.len(), self.t.len());
         let (mut l, mut r) = (Block::ZERO, Block::ZERO);
-        for s in &self.nodes {
-            let kids = expand(*s);
-            self.raw.extend(kids);
-            l ^= kids[0];
-            r ^= kids[1];
-        }
+        expand_in_place(&mut self.nodes, |ps, out| {
+            for (j, s) in ps.iter().enumerate() {
+                let kids = expand(*s);
+                l ^= kids[0];
+                r ^= kids[1];
+                out[2 * j] = kids[0];
+                out[2 * j + 1] = kids[1];
+            }
+        });
         (l, r)
     }
 
     /// Lines 10–13 with the level's correction word.
     pub fn correct(&mut self, cw: CorrectionWord) {
-        let mut t = Vec::with_capacity(self.raw.len());
-        for (c, x) in self.raw.iter_mut().enumerate() {
+        assert_eq!(self.nodes.len(), 2 * self.t.len());
+        let mut t = Vec::with_capacity(self.nodes.len());
+        for (c, x) in self.nodes.iter_mut().enumerate() {
             let tp = self.t[c / 2];
             let tc = x.lsb() ^ (tp & cw.tau[c & 1]);
             t.push(tc);
             *x = (*x ^ cw.sigma.and_bit(tp)).with_lsb(tc);
         }
-        std::mem::swap(&mut self.nodes, &mut self.raw);
         self.t = t;
         self.level += 1;
     }

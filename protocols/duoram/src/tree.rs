@@ -24,7 +24,7 @@
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::Aes128;
-use dpf_common::block::Block;
+use dpf_common::block::{expand_in_place, Block};
 use dpf_common::stream::{walk, TreeMode};
 use std::sync::OnceLock;
 
@@ -46,18 +46,27 @@ fn aes() -> &'static Aes128 {
 /// Both children of each node, uncorrected: `out[2j + i] = G_i(nodes[j])`.
 pub fn expand_many(nodes: &[Block], out: &mut Vec<Block>) {
     out.clear();
-    let mut buf: Vec<_> = nodes
-        .iter()
-        .flat_map(|n| {
+    out.resize(2 * nodes.len(), Block::ZERO);
+    expand_into(nodes, out);
+}
+
+/// [`expand_many`] into a slice of length `2·nodes.len()`.
+pub fn expand_into(nodes: &[Block], out: &mut [Block]) {
+    assert_eq!(out.len(), 2 * nodes.len());
+    let mut buf = [GenericArray::default(); 512];
+    for (ns, os) in nodes.chunks(buf.len() / 2).zip(out.chunks_mut(buf.len())) {
+        let buf = &mut buf[..os.len()];
+        for (j, n) in ns.iter().enumerate() {
             let s = n.0 & !3;
-            [GenericArray::from(s.to_le_bytes()), GenericArray::from((s ^ 1).to_le_bytes())]
-        })
-        .collect();
-    aes().encrypt_blocks(&mut buf);
-    out.extend(buf.iter().enumerate().map(|(k, g)| {
-        let s = nodes[k / 2].0 & !3;
-        Block(u128::from_le_bytes(g.as_slice().try_into().unwrap()) ^ (k as u128 & 1) ^ s)
-    }));
+            buf[2 * j] = GenericArray::from(s.to_le_bytes());
+            buf[2 * j + 1] = GenericArray::from((s ^ 1).to_le_bytes());
+        }
+        aes().encrypt_blocks(buf);
+        for (k, (o, g)) in os.iter_mut().zip(buf.iter()).enumerate() {
+            let s = ns[k / 2].0 & !3;
+            *o = Block(u128::from_le_bytes(g.as_slice().try_into().unwrap()) ^ (k as u128 & 1) ^ s);
+        }
+    }
 }
 
 /// Child `side` of `node`, uncorrected.
@@ -113,19 +122,25 @@ fn sums_of(leaves: &[Block]) -> (u64, u64, u64) {
 
 /// The tree as `create_dpfs` holds it: every node of the current level.
 pub struct StoredTree {
+    /// The current level. [`level_sums`](DuoramTree::level_sums) replaces it
+    /// in place by the uncorrected children, [`correct`](DuoramTree::correct)
+    /// corrects them in place.
     nodes: Vec<Block>,
-    kids: Vec<Block>,
+    /// Flags of the parents of the uncorrected children in `nodes`.
+    parent_t: Vec<bool>,
 }
 
 impl DuoramTree for StoredTree {
     fn new(root: Block, _: TreeMode) -> Self {
-        StoredTree { nodes: vec![root], kids: Vec::new() }
+        StoredTree { nodes: vec![root], parent_t: Vec::new() }
     }
 
     fn level_sums(&mut self) -> (Block, Block) {
-        expand_many(&self.nodes, &mut self.kids);
+        self.parent_t = self.nodes.iter().map(|x| x.lsb()).collect();
+        self.nodes.reserve_exact(self.nodes.len());
+        expand_in_place(&mut self.nodes, expand_into);
         let (mut l, mut r) = (Block::ZERO, Block::ZERO);
-        for k in self.kids.chunks(2) {
+        for k in self.nodes.chunks(2) {
             l ^= k[0];
             r ^= k[1];
         }
@@ -133,7 +148,10 @@ impl DuoramTree for StoredTree {
     }
 
     fn correct(&mut self, cw: CorrectionWord) {
-        self.nodes = self.kids.iter().enumerate().map(|(k, &x)| correct(x, self.nodes[k / 2].lsb(), &cw, k & 1 == 1)).collect();
+        for (k, x) in self.nodes.iter_mut().enumerate() {
+            *x = correct(*x, self.parent_t[k / 2], &cw, k & 1 == 1);
+        }
+        self.parent_t = Vec::new();
     }
 
     fn leaf_sums(&self) -> (u64, u64, u64) {

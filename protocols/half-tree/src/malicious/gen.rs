@@ -208,6 +208,12 @@ impl MalSession {
                 }
             }
             if let Some(f) = full.as_mut() {
+                if f.n == 0 {
+                    // The stored tree visits all leaves at once: keep the
+                    // part instead of copying it.
+                    *f = part;
+                    return;
+                }
                 f.n += part.n;
                 f.u.extend(part.u);
                 for (dst, src) in f.v.iter_mut().zip(part.v) {

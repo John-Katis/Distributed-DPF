@@ -155,6 +155,27 @@ pub fn unpack_bits(bytes: &[u8], n: usize) -> Vec<bool> {
     (0..n).map(|i| (bytes[i / 8] >> (i % 8)) & 1 == 1).collect()
 }
 
+/// Replaces the `p` parents in `nodes` by their `2p` children
+/// `[L_0, R_0, L_1, R_1, …]` in place, so a tree level never needs a second
+/// level-sized buffer. `expand` maps a slice of parents to its children
+/// (`children.len() = 2·parents.len()`). Chunks run from the back: chunk
+/// `[a, b)` writes `[2a, 2b)`, which only covers parents of chunks already
+/// done (and its own, copied out first).
+pub fn expand_in_place(nodes: &mut Vec<Block>, mut expand: impl FnMut(&[Block], &mut [Block])) {
+    const CHUNK: usize = 1024;
+    let p = nodes.len();
+    nodes.resize(2 * p, Block::ZERO);
+    let mut tmp = [Block::ZERO; CHUNK];
+    let mut end = p;
+    while end > 0 {
+        let start = (end - 1) / CHUNK * CHUNK;
+        let k = end - start;
+        tmp[..k].copy_from_slice(&nodes[start..end]);
+        expand(&tmp[..k], &mut nodes[2 * start..2 * end]);
+        end = start;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +205,21 @@ mod tests {
         let mut v = vec![Block(u128::MAX); 3];
         mask_to_bits(&mut v, 130);
         assert_eq!(v, vec![Block(u128::MAX), Block(3), Block::ZERO]);
+    }
+
+    #[test]
+    fn expand_in_place_matches_out_of_place() {
+        let f = |x: Block| [Block(x.0.wrapping_mul(3)), Block(x.0.wrapping_mul(5) ^ 1)];
+        for p in [1usize, 2, 7, 1023, 1024, 1025, 3000, 4096] {
+            let parents: Vec<Block> = (0..p as u128).map(|i| Block(i * 0x9e37_79b9 + 11)).collect();
+            let want: Vec<Block> = parents.iter().flat_map(|x| f(*x)).collect();
+            let mut got = parents.clone();
+            expand_in_place(&mut got, |ps, out| {
+                for (j, x) in ps.iter().enumerate() {
+                    [out[2 * j], out[2 * j + 1]] = f(*x);
+                }
+            });
+            assert_eq!(got, want, "p = {p}");
+        }
     }
 }

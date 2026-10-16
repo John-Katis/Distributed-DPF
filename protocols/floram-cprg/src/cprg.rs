@@ -24,7 +24,7 @@
 //!   `lsb(γ) = lsb(β) ⊕ 1 ⊕ τ_{m,0} ⊕ τ_{m,1}` is public.
 
 use crate::key::{CorrectionWord, DpfKey};
-use dpf_common::block::{bits_msb_first, blocks_for_bits, depth_for, xor_blocks, Block};
+use dpf_common::block::{bits_msb_first, blocks_for_bits, depth_for, expand_in_place, xor_blocks, Block};
 use dpf_common::gc::{Evaluator, GcParty, Garbler, Wire};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::prg::Prg;
@@ -62,11 +62,11 @@ pub struct CprgLocal {
     /// Level of the nodes currently held in `nodes`.
     level: usize,
     /// Uncorrected children at `level` before `step`, corrected nodes after.
+    /// Allocated once for `2^n` nodes; every level is expanded into it in
+    /// place.
     nodes: Vec<Block>,
     /// t-bits of the corrected parents of `nodes` (level − 1).
     parent_t: Vec<bool>,
-    /// Scratch buffer for the next level, swapped with `nodes`.
-    scratch: Vec<Block>,
     /// Payload columns of the leaves. Filled by `finalize`.
     leaf_cols: Vec<Vec<Block>>,
     leaf_t: Vec<bool>,
@@ -137,7 +137,6 @@ impl CprgLocal {
             level: 1,
             nodes,
             parent_t: vec![root.lsb()],
-            scratch: Vec::with_capacity(1 << depth),
             leaf_cols: Vec::new(),
             leaf_t: Vec::new(),
         };
@@ -169,9 +168,9 @@ impl CprgLocal {
             return None;
         }
         self.level += 1;
-        let acc = expand_level(&self.prg, &self.nodes, &mut self.scratch);
-        std::mem::swap(&mut self.nodes, &mut self.scratch);
-        Some(acc)
+        let prg = &self.prg;
+        expand_in_place(&mut self.nodes, |ps, out| prg.expand_many(ps, out));
+        Some(accumulate(&self.nodes))
     }
 
     /// `fss_cprg_offline_finalize`, after the last `step`. Converts all `2^n`
@@ -180,7 +179,16 @@ impl CprgLocal {
     pub fn finalize(&mut self) -> Vec<Block> {
         assert_eq!(self.level, self.depth);
         assert_eq!(self.nodes.len(), 1 << self.depth);
-        let cols = leaf_columns(&self.prg, &self.nodes, self.out_bits);
+        let cols = if self.out_bits <= 127 {
+            // One payload column: shift the leaves in place.
+            let mut col = std::mem::take(&mut self.nodes);
+            for x in col.iter_mut() {
+                *x = Block(x.0 >> 1);
+            }
+            vec![col]
+        } else {
+            leaf_columns(&self.prg, &self.nodes, self.out_bits)
+        };
         let acc = cols.iter().map(|c| c.iter().fold(Block::ZERO, |a, b| a ^ *b)).collect();
         self.leaf_cols = cols;
         self.leaf_t = std::mem::take(&mut self.parent_t);
