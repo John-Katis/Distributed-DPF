@@ -184,10 +184,21 @@ impl CprgLocal {
 
     /// `fss_cprg_offline_finalize`, after the last `step`. Converts all `2^n`
     /// corrected leaves into payload columns ([`leaf_columns`]) and returns the
-    /// XOR of every column.
-    pub fn finalize(&mut self) -> Vec<Block> {
+    /// XOR of every column. With `keep_output` the columns are kept for
+    /// [`output`](Self::output); otherwise they are folded chunk by chunk and
+    /// dropped, and `output` must not be called.
+    pub fn finalize(&mut self, keep_output: bool) -> Vec<Block> {
         assert_eq!(self.level, self.depth);
         assert_eq!(self.nodes.len(), 1 << self.depth);
+        if !keep_output {
+            let mut acc = vec![Block::ZERO; self.bm];
+            for leaves in self.nodes.chunks(1024) {
+                for (a, col) in acc.iter_mut().zip(leaf_columns(&self.prg, leaves, self.out_bits)) {
+                    *a = col.iter().fold(*a, |x, y| x ^ *y);
+                }
+            }
+            return acc;
+        }
         let cols = if self.out_bits <= 127 {
             // One payload column: shift the leaves in place.
             let m = last_block_mask(self.out_bits);
@@ -235,8 +246,9 @@ pub trait CprgTree: Sized {
     /// Applies the current level's correction word; returns the next level's
     /// accumulators, or `None` after the leaf level.
     fn step(&mut self, z: Block, tau_l: bool, tau_r: bool) -> Option<(Block, Block)>;
-    /// The XOR of every payload column over all `2^n` leaves.
-    fn finalize(&mut self) -> Vec<Block>;
+    /// The XOR of every payload column over all `2^n` leaves. `keep_output`
+    /// asks the tree to keep the leaves for [`output`](CprgTree::output).
+    fn finalize(&mut self, keep_output: bool) -> Vec<Block>;
     /// The full-domain output, if the tree keeps one.
     fn output(self, gamma: &[Block]) -> Option<FullEval>;
 }
@@ -248,8 +260,8 @@ impl CprgTree for CprgLocal {
     fn step(&mut self, z: Block, tau_l: bool, tau_r: bool) -> Option<(Block, Block)> {
         CprgLocal::step(self, z, tau_l, tau_r)
     }
-    fn finalize(&mut self) -> Vec<Block> {
-        CprgLocal::finalize(self)
+    fn finalize(&mut self, keep_output: bool) -> Vec<Block> {
+        CprgLocal::finalize(self, keep_output)
     }
     fn output(self, gamma: &[Block]) -> Option<FullEval> {
         Some(CprgLocal::output(self, gamma))
@@ -334,7 +346,7 @@ impl CprgTree for CprgStream {
         Some(acc)
     }
 
-    fn finalize(&mut self) -> Vec<Block> {
+    fn finalize(&mut self, _: bool) -> Vec<Block> {
         let mut acc = vec![Block::ZERO; blocks_for_bits(self.out_bits)];
         self.walk_level(self.depth, |_, leaves| {
             for (a, col) in acc.iter_mut().zip(leaf_columns(&self.prg, leaves, self.out_bits)) {
@@ -370,8 +382,8 @@ fn sample_root(rng: &mut ChaCha20Rng, party: usize) -> Block {
 pub struct GenOutput {
     pub key: DpfKey,
     /// Full-domain output, computed as a by-product of generation (Floram's
-    /// `blockvector`/`bitvector`, already combined with γ). `None` with the
-    /// streaming tree.
+    /// `blockvector`/`bitvector`, already combined with γ). `None` unless
+    /// `full_output` was set, and always `None` with the streaming tree.
     pub full: Option<FullEval>,
     /// Traffic for setup: PRG-key transfer and base OTs.
     pub setup_stats: CommStats,
@@ -419,6 +431,7 @@ fn gen_with<P: GcParty, T: CprgTree>(
     alpha_share: u64,
     beta_share: &[Block],
     mode: TreeMode,
+    full_output: bool,
 ) -> (DpfKey, Option<FullEval>) {
     let depth = depth_for(n_size);
     let alpha = p.input_shared(ch, &bits_msb_first(alpha_share, depth));
@@ -432,7 +445,7 @@ fn gen_with<P: GcParty, T: CprgTree>(
             acc = next;
         }
     }
-    let leaf_acc = local.finalize();
+    let leaf_acc = local.finalize(full_output);
 
     // γ = acc^0 ⊕ acc^1 ⊕ β. Floram computes this in the circuit, but it has only
     // XOR gates, so opening the XOR shares directly gives the same result.
@@ -444,7 +457,7 @@ fn gen_with<P: GcParty, T: CprgTree>(
     let theirs = ch.recv_payload(out_bits);
     let gamma = xor_blocks(&mine, &theirs);
 
-    let full = local.output(&gamma);
+    let full = if full_output { local.output(&gamma) } else { None };
     let key = DpfKey { party: ch.party(), n_size, out_bits, bm: gamma.len(), prg, root, cws, gamma };
     (key, full)
 }
@@ -461,10 +474,11 @@ fn gen_tree<P: GcParty>(
     alpha_share: u64,
     beta_share: &[Block],
     mode: TreeMode,
+    full_output: bool,
 ) -> (DpfKey, Option<FullEval>) {
     match mode {
-        TreeMode::Stored => gen_with::<P, CprgLocal>(p, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode),
-        TreeMode::Stream { .. } => gen_with::<P, CprgStream>(p, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode),
+        TreeMode::Stored => gen_with::<P, CprgLocal>(p, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode, full_output),
+        TreeMode::Stream { .. } => gen_with::<P, CprgStream>(p, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode, full_output),
     }
 }
 
@@ -483,11 +497,14 @@ pub fn gen(
     beta_share: &[Block],
     seed: [u8; 32],
 ) -> GenOutput {
-    gen_mode(ch, n_size, out_bits, alpha_share, beta_share, seed, TreeMode::Stored)
+    gen_mode(ch, n_size, out_bits, alpha_share, beta_share, seed, TreeMode::Stored, true)
 }
 
 /// [`gen`] with the tree held as `mode` says. Both modes send the same
-/// messages; [`TreeMode::Stream`] returns no full-domain output.
+/// messages; [`TreeMode::Stream`] returns no full-domain output. With
+/// `full_output` false the stored tree does not build it either, so
+/// `gen_time` covers the key alone.
+#[allow(clippy::too_many_arguments)]
 pub fn gen_mode(
     ch: &mut Channel,
     n_size: u64,
@@ -496,6 +513,7 @@ pub fn gen_mode(
     beta_share: &[Block],
     seed: [u8; 32],
     mode: TreeMode,
+    full_output: bool,
 ) -> GenOutput {
     let party = ch.party();
     let t_setup = Instant::now();
@@ -531,12 +549,12 @@ pub fn gen_mode(
     let (key, full, setup_stats, and_gates) = if party == 0 {
         let mut g = Garbler::setup(ch, &mut rng_proto);
         let s = mark(ch);
-        let (k, f) = gen_tree(&mut g, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode);
+        let (k, f) = gen_tree(&mut g, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode, full_output);
         (k, f, s, g.and_count())
     } else {
         let mut e = Evaluator::setup(ch, &mut rng_proto);
         let s = mark(ch);
-        let (k, f) = gen_tree(&mut e, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode);
+        let (k, f) = gen_tree(&mut e, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode, full_output);
         (k, f, s, e.and_count())
     };
     let gen_time = t_gen.elapsed();
@@ -556,15 +574,15 @@ pub fn gen_reference(
     beta: &[Block],
     seeds: [[u8; 32]; 2],
 ) -> ([DpfKey; 2], [FullEval; 2]) {
-    let (keys, [f0, f1]) = reference_with::<CprgLocal>(n_size, out_bits, alpha, beta, seeds, TreeMode::Stored);
+    let (keys, [f0, f1]) = reference_with::<CprgLocal>(n_size, out_bits, alpha, beta, seeds, TreeMode::Stored, true);
     (keys, [f0.expect("stored tree"), f1.expect("stored tree")])
 }
 
 /// The keys of [`gen_reference`], with the tree held as `mode` says.
 pub fn gen_reference_keys(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seeds: [[u8; 32]; 2], mode: TreeMode) -> [DpfKey; 2] {
     match mode {
-        TreeMode::Stored => reference_with::<CprgLocal>(n_size, out_bits, alpha, beta, seeds, mode).0,
-        TreeMode::Stream { .. } => reference_with::<CprgStream>(n_size, out_bits, alpha, beta, seeds, mode).0,
+        TreeMode::Stored => reference_with::<CprgLocal>(n_size, out_bits, alpha, beta, seeds, mode, false).0,
+        TreeMode::Stream { .. } => reference_with::<CprgStream>(n_size, out_bits, alpha, beta, seeds, mode, false).0,
     }
 }
 
@@ -575,6 +593,7 @@ fn reference_with<T: CprgTree>(
     beta: &[Block],
     seeds: [[u8; 32]; 2],
     mode: TreeMode,
+    full_output: bool,
 ) -> ([DpfKey; 2], [Option<FullEval>; 2]) {
     assert!(alpha < n_size);
     let bm = blocks_for_bits(out_bits);
@@ -604,11 +623,10 @@ fn reference_with<T: CprgTree>(
             a1 = n1.unwrap();
         }
     }
-    let acc0 = l0.finalize();
-    let acc1 = l1.finalize();
+    let acc0 = l0.finalize(full_output);
+    let acc1 = l1.finalize(full_output);
     let gamma = xor_blocks(&xor_blocks(&acc0, &acc1), beta);
-    let f0 = l0.output(&gamma);
-    let f1 = l1.output(&gamma);
+    let (f0, f1) = if full_output { (l0.output(&gamma), l1.output(&gamma)) } else { (None, None) };
     let mk = |party: usize| DpfKey {
         party,
         n_size,

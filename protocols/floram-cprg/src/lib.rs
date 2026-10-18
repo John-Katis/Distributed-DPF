@@ -34,11 +34,12 @@ pub struct TwoPartyRun {
 /// XOR-shares α and β at random and runs [`cprg::gen`] for both parties on two
 /// threads. All randomness derives from `seed`.
 pub fn run_gen(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seed: u64) -> TwoPartyRun {
-    run_gen_mode(n_size, out_bits, alpha, beta, seed, TreeMode::Stored)
+    run_gen_mode(n_size, out_bits, alpha, beta, seed, TreeMode::Stored, true)
 }
 
-/// [`run_gen`] with the tree held as `mode` says.
-pub fn run_gen_mode(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seed: u64, mode: TreeMode) -> TwoPartyRun {
+/// [`run_gen`] with the tree held as `mode` says, building the full-domain
+/// output only if `full_output` is set.
+pub fn run_gen_mode(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], seed: u64, mode: TreeMode, full_output: bool) -> TwoPartyRun {
     assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
@@ -49,12 +50,12 @@ pub fn run_gen_mode(n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], se
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();
-            let o = gen_mode(c, n_size, out_bits, a0, &b0, seeds[0], mode);
+            let o = gen_mode(c, n_size, out_bits, a0, &b0, seeds[0], mode, full_output);
             (o, t.elapsed())
         },
         |c| {
             let t = Instant::now();
-            let o = gen_mode(c, n_size, out_bits, a1, &b1, seeds[1], mode);
+            let o = gen_mode(c, n_size, out_bits, a1, &b1, seeds[1], mode, full_output);
             (o, t.elapsed())
         },
     );

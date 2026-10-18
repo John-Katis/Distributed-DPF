@@ -19,12 +19,13 @@ fn stream_gen_matches_stored_gen() {
             let beta = random_beta(&mut rng, ob);
             let alpha = rng.gen_range(0..n);
             let seed = rng.gen();
-            let stored = run_gen_mode(n, ob, alpha, &beta, seed, TreeMode::Stored);
-            for &batch in BATCHES {
-                let s = run_gen_mode(n, ob, alpha, &beta, seed, TreeMode::Stream { batch });
+            let stored = run_gen_mode(n, ob, alpha, &beta, seed, TreeMode::Stored, true);
+            let modes = std::iter::once(TreeMode::Stored).chain(BATCHES.iter().map(|&batch| TreeMode::Stream { batch }));
+            for mode in modes {
+                let s = run_gen_mode(n, ob, alpha, &beta, seed, mode, false);
                 for p in 0..2 {
                     let (a, b) = (&stored.outs[p], &s.outs[p]);
-                    let ctx = format!("N={n} out={ob} batch={batch} party={p}");
+                    let ctx = format!("N={n} out={ob} {mode:?} party={p}");
                     assert_eq!(a.key.public_part(), b.key.public_part(), "{ctx}");
                     assert_eq!(a.key.root, b.key.root, "{ctx}");
                     assert_eq!(a.gen_stats, b.gen_stats, "messages differ: {ctx}");

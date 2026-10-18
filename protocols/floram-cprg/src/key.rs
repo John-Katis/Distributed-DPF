@@ -86,7 +86,7 @@ impl DpfKey {
         for cw in &self.cws {
             local.step(cw.z, cw.tau_l, cw.tau_r);
         }
-        local.finalize();
+        local.finalize(true);
         local.output(&self.gamma)
     }
 

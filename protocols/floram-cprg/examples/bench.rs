@@ -5,7 +5,8 @@
 //! ```
 //!
 //! Options and CSV columns are those of `dpf_common::bench`. Setup (PRG keys +
-//! base OTs) is reported apart from generation. `eval` and `full` use keys from
+//! base OTs) is reported apart from generation, and Gen builds the key only
+//! (no full-domain output). `eval` and `full` use keys from
 //! the trusted-dealer `gen_reference`. With `--stream`, Gen and the dealer use
 //! the streaming tree and `full` folds the outputs instead of storing them.
 
@@ -20,10 +21,10 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut gen0, mut gen1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for r in 0..o.reps {
-        // Free the previous run (full-domain outputs) before the next one.
+        // Free the previous run before the next one.
         drop(last.take());
         let beta = random_beta(rng, o.out_bits);
-        let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen::<u64>() ^ r as u64, o.tree_mode());
+        let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen::<u64>() ^ r as u64, o.tree_mode(), false);
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
         gen0.push(run.outs[0].gen_time);
         gen1.push(run.outs[1].gen_time);
