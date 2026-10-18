@@ -23,12 +23,19 @@ fn stream_matches_stored_in<R: Ring>(widths: &[usize]) {
             let beta = R::random(&mut rng).and(R::mask(bits));
             let alpha = rng.gen_range(0..n);
             let seed = rng.gen();
-            let stored = run_gen_mode(n, bits, alpha, beta, seed, TreeMode::Stored);
+            let stored = run_gen_mode(n, bits, alpha, beta, seed, TreeMode::Stored, true);
             let dseed = rng.gen();
             let dkeys = gen_reference(n, bits, alpha, beta, dseed);
+            let lean = run_gen_mode(n, bits, alpha, beta, seed, TreeMode::Stored, false);
+            for p in 0..2 {
+                let (a, b) = (&stored.outs[p], &lean.outs[p]);
+                assert_eq!(a.key.public_part(), b.key.public_part(), "N={n} bits={bits}");
+                assert_eq!(a.gen_stats, b.gen_stats);
+                assert!(a.full.is_some() && b.full.is_none());
+            }
             for &batch in BATCHES {
                 let mode = TreeMode::Stream { batch };
-                let s = run_gen_mode(n, bits, alpha, beta, seed, mode);
+                let s = run_gen_mode(n, bits, alpha, beta, seed, mode, false);
                 for p in 0..2 {
                     let ctx = format!("N={n} bits={bits} batch={batch} party={p}");
                     let (a, b) = (&stored.outs[p], &s.outs[p]);

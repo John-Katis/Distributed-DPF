@@ -6,8 +6,8 @@
 //!
 //! `--out-bits ℓ` (1..=128, default 64) is the payload ring Z_2^ℓ, computed
 //! and sent in 64-bit words for ℓ ≤ 64 and in 128-bit words above. Options and
-//! CSV columns are those of `dpf_common::bench`. `eval` and `full` use dealer
-//! keys. With `--stream`, Gen and the dealer use the streaming tree and
+//! CSV columns are those of `dpf_common::bench`. Gen builds the key only (no
+//! full-domain output). `eval` and `full` use dealer keys. With `--stream`, Gen and the dealer use the streaming tree and
 //! `full` folds the outputs instead of storing them.
 
 use dpf_common::arith::Ring;
@@ -21,10 +21,10 @@ fn bench_gen<R: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
-        // Free the previous run (full-domain outputs) before the next one.
+        // Free the previous run before the next one.
         drop(last.take());
         let beta = R::random(rng).and(R::mask(o.out_bits));
-        let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen(), o.tree_mode());
+        let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen(), o.tree_mode(), false);
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
         g0.push(run.outs[0].gen_time);
         g1.push(run.outs[1].gen_time);

@@ -49,8 +49,8 @@ use std::time::{Duration, Instant};
 /// Everything one party gets out of [`gen`].
 pub struct GenOutput<R: Ring = u64> {
     pub key: ArithKey<R>,
-    /// Full-domain output shares, a by-product of generation. `None` with
-    /// the streaming tree.
+    /// Full-domain output shares, a by-product of generation. `None` unless
+    /// `full_output` was set, and always `None` with the streaming tree.
     pub full: Option<Vec<R>>,
     pub setup_stats: CommStats,
     pub gen_stats: CommStats,
@@ -98,6 +98,7 @@ fn party_rngs(seed: [u8; 32]) -> (ChaCha20Rng, ChaCha20Rng) {
 #[allow(clippy::too_many_arguments)]
 fn gen_with<R: Ring, T: ArithTree>(
     mode: TreeMode,
+    full_output: bool,
     bp: &mut BoolParty,
     cot: &mut CotPair,
     rng: &mut ChaCha20Rng,
@@ -151,7 +152,7 @@ fn gen_with<R: Ring, T: ArithTree>(
     let w_cw = wcw_share.add(R::get(&theirs)).and(m);
 
     let key = ArithKey { party: b, n_size, bits, root, cws, w_cw };
-    let full = tree.stored_leaves(n_size as usize).map(|(seeds, ts)| seeds.iter().zip(ts).map(|(s, t)| key.output(*s, *t)).collect());
+    let full = tree.stored_leaves(n_size as usize).filter(|_| full_output).map(|(seeds, ts)| seeds.iter().zip(ts).map(|(s, t)| key.output(*s, *t)).collect());
     (key, full)
 }
 
@@ -161,12 +162,15 @@ fn gen_with<R: Ring, T: ArithTree>(
 /// * `beta_share`: additive share of `β` modulo `2^bits`, `1 ≤ bits ≤ R::BITS`
 ///   (`R = u64` for ℓ ≤ 64, `u128` for ℓ ≤ 128).
 pub fn gen<R: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32]) -> GenOutput<R> {
-    gen_mode(ch, n_size, bits, alpha_share, beta_share, seed, TreeMode::Stored)
+    gen_mode(ch, n_size, bits, alpha_share, beta_share, seed, TreeMode::Stored, true)
 }
 
 /// [`gen`] with the tree held as `mode` says. Both modes send the same
-/// messages; [`TreeMode::Stream`] returns no full-domain output.
-pub fn gen_mode<R: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32], mode: TreeMode) -> GenOutput<R> {
+/// messages; [`TreeMode::Stream`] returns no full-domain output. With
+/// `full_output` false the stored tree does not build it either, so
+/// `gen_time` covers the key alone.
+#[allow(clippy::too_many_arguments)]
+pub fn gen_mode<R: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32], mode: TreeMode, full_output: bool) -> GenOutput<R> {
     assert!((1..=R::BITS).contains(&bits), "ℓ must be 1..={}", R::BITS);
     let t_setup = Instant::now();
     let (mut rng_tree, mut rng) = party_rngs(seed);
@@ -179,8 +183,8 @@ pub fn gen_mode<R: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share
     let setup_time = t_setup.elapsed();
     let t_gen = Instant::now();
     let (key, full) = match mode {
-        TreeMode::Stored => gen_with::<R, Tree>(mode, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
-        TreeMode::Stream { .. } => gen_with::<R, TreeStream>(mode, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
+        TreeMode::Stored => gen_with::<R, Tree>(mode, full_output, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
+        TreeMode::Stream { .. } => gen_with::<R, TreeStream>(mode, full_output, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
     };
     GenOutput {
         key,

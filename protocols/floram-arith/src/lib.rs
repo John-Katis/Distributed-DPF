@@ -35,11 +35,12 @@ pub struct TwoPartyRun<R: Ring = u64> {
 /// Additively shares α (mod 2^n) and β (mod 2^bits) and runs [`gen`] for both
 /// parties, over words of type `R` (`u64` for ℓ ≤ 64, `u128` for ℓ ≤ 128).
 pub fn run_gen<R: Ring>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: u64) -> TwoPartyRun<R> {
-    run_gen_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored)
+    run_gen_mode(n_size, bits, alpha, beta, seed, TreeMode::Stored, true)
 }
 
-/// [`run_gen`] with the tree held as `mode` says.
-pub fn run_gen_mode<R: Ring>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: u64, mode: TreeMode) -> TwoPartyRun<R> {
+/// [`run_gen`] with the tree held as `mode` says, building the full-domain
+/// output only if `full_output` is set.
+pub fn run_gen_mode<R: Ring>(n_size: u64, bits: usize, alpha: u64, beta: R, seed: u64, mode: TreeMode, full_output: bool) -> TwoPartyRun<R> {
     assert!(alpha < n_size);
     let n = dpf_common::block::depth_for(n_size);
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
@@ -53,12 +54,12 @@ pub fn run_gen_mode<R: Ring>(n_size: u64, bits: usize, alpha: u64, beta: R, seed
     let (r0, r1) = dpf_common::net::run_two_party(
         |c| {
             let t = Instant::now();
-            let o = gen_mode(c, n_size, bits, a0, b0, seeds[0], mode);
+            let o = gen_mode(c, n_size, bits, a0, b0, seeds[0], mode, full_output);
             (o, t.elapsed())
         },
         |c| {
             let t = Instant::now();
-            let o = gen_mode(c, n_size, bits, a1, b1, seeds[1], mode);
+            let o = gen_mode(c, n_size, bits, a1, b1, seeds[1], mode, full_output);
             (o, t.elapsed())
         },
     );
