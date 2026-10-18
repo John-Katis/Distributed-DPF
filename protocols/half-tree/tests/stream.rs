@@ -21,12 +21,19 @@ fn semi_honest_stream_matches_stored() {
             let beta = random_beta(&mut rng, ob);
             let alpha = rng.gen_range(0..n);
             let seed = rng.gen();
-            let stored = run_gen_mode(n, ob, alpha, &beta, seed, TreeMode::Stored);
+            let stored = run_gen_mode(n, ob, alpha, &beta, seed, TreeMode::Stored, true);
+            let lean = run_gen_mode(n, ob, alpha, &beta, seed, TreeMode::Stored, false);
+            for p in 0..2 {
+                let (a, b) = (&stored.outs[p], &lean.outs[p]);
+                assert_eq!((&a.key.cws, a.key.hcw, a.key.lcw, &a.key.cw_out), (&b.key.cws, b.key.hcw, b.key.lcw, &b.key.cw_out), "N={n} out={ob}");
+                assert_eq!(a.gen_stats, b.gen_stats);
+                assert!(a.full.is_some() && b.full.is_none());
+            }
             let dseed = rng.gen();
             let (dkeys, _) = gen_reference(n, ob, alpha, &beta, dseed);
             for &batch in BATCHES {
                 let mode = TreeMode::Stream { batch };
-                let s = run_gen_mode(n, ob, alpha, &beta, seed, mode);
+                let s = run_gen_mode(n, ob, alpha, &beta, seed, mode, false);
                 for p in 0..2 {
                     let ctx = format!("N={n} out={ob} batch={batch} party={p}");
                     let (a, b) = (&stored.outs[p], &s.outs[p]);
@@ -61,12 +68,20 @@ fn malicious_stream_matches_stored_and_catches_tampering() {
             let beta: Vec<Block> = (0..bm).map(|_| Block::random(&mut rng)).collect();
             let alpha = rng.gen_range(0..n);
             let seed = rng.gen();
-            let stored = run_mal_gen_mode(n, alpha, &beta, seed, [None, None], None, TreeMode::Stored);
+            let stored = run_mal_gen_mode(n, alpha, &beta, seed, [None, None], None, TreeMode::Stored, true);
+            let lean = run_mal_gen_mode(n, alpha, &beta, seed, [None, None], None, TreeMode::Stored, false);
+            for p in 0..2 {
+                let a = stored.outs[p].as_ref().expect("stored run aborted");
+                let b = lean.outs[p].as_ref().expect("run without output aborted");
+                assert_eq!(a.out.key.public_part(), b.out.key.public_part(), "N={n} bm={bm}");
+                assert_eq!(a.gen_stats, b.gen_stats);
+                assert!(a.out.full.is_some() && b.out.full.is_none());
+            }
             let dseed = rng.gen();
             let (dkeys, _) = gen_reference_mode(n, alpha, &beta, dseed, TreeMode::Stored);
             for &batch in BATCHES {
                 let mode = TreeMode::Stream { batch };
-                let s = run_mal_gen_mode(n, alpha, &beta, seed, [None, None], None, mode);
+                let s = run_mal_gen_mode(n, alpha, &beta, seed, [None, None], None, mode, false);
                 for p in 0..2 {
                     let ctx = format!("N={n} bm={bm} batch={batch} party={p}");
                     let a = stored.outs[p].as_ref().expect("stored run aborted");
@@ -93,7 +108,7 @@ fn malicious_stream_matches_stored_and_catches_tampering() {
                 }
                 let level = rng.gen_range(0..=dkeys[0].depth());
                 let fault = Some(Fault { level, err: Block(1 << 9) });
-                let bad = run_mal_gen_mode(n, alpha, &beta, seed, [fault, None], None, mode);
+                let bad = run_mal_gen_mode(n, alpha, &beta, seed, [fault, None], None, mode, false);
                 assert!(bad.outs.iter().any(|o| o.is_err()), "tampering at level {level} not caught: N={n} batch={batch}");
             }
         }

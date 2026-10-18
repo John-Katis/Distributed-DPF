@@ -85,7 +85,7 @@ impl HtKey {
         }
         local.last_sums();
         local.apply_last(hb(self.hcw), self.lcw);
-        local.finalize();
+        local.finalize(true);
         local.output(&self.cw_out)
     }
 

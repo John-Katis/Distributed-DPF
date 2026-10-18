@@ -80,19 +80,23 @@ impl Session {
     /// shares of `α < N` and `β` (`ceil(out_bits/128)` blocks; `out_bits ≤ 127`
     /// uses the PRG-free Convert).
     pub fn gen(&mut self, ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block]) -> GenOutput {
-        self.gen_mode(ch, n_size, out_bits, alpha_share, beta_share, TreeMode::Stored)
+        self.gen_mode(ch, n_size, out_bits, alpha_share, beta_share, TreeMode::Stored, true)
     }
 
     /// [`gen`](Self::gen) with the tree held as `mode` says. Both modes send
     /// the same messages; [`TreeMode::Stream`] returns no full-domain output.
-    pub fn gen_mode(&mut self, ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], mode: TreeMode) -> GenOutput {
+    /// With `full_output` false the stored tree does not build it either, so
+    /// `gen_time` covers the key alone.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gen_mode(&mut self, ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], mode: TreeMode, full_output: bool) -> GenOutput {
         match mode {
-            TreeMode::Stored => self.gen_with::<HtLocal>(ch, n_size, out_bits, alpha_share, beta_share, mode),
-            TreeMode::Stream { .. } => self.gen_with::<HtStream>(ch, n_size, out_bits, alpha_share, beta_share, mode),
+            TreeMode::Stored => self.gen_with::<HtLocal>(ch, n_size, out_bits, alpha_share, beta_share, mode, full_output),
+            TreeMode::Stream { .. } => self.gen_with::<HtStream>(ch, n_size, out_bits, alpha_share, beta_share, mode, full_output),
         }
     }
 
-    fn gen_with<T: HtTree>(&mut self, ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], mode: TreeMode) -> GenOutput {
+    #[allow(clippy::too_many_arguments)]
+    fn gen_with<T: HtTree>(&mut self, ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], mode: TreeMode, full_output: bool) -> GenOutput {
         let t = Instant::now();
         let before = ch.stats();
         let b = self.party;
@@ -148,12 +152,12 @@ impl Session {
         // 5. Output correction word.
         //    The leaf sum is `out_bits` wide and β ∈ F_2^out_bits, so the share
         //    is reduced to `out_bits` and opened in `ceil(out_bits/8)` bytes.
-        let mut mine = xor_blocks(&local.finalize(), beta_share);
+        let mut mine = xor_blocks(&local.finalize(full_output), beta_share);
         dpf_common::block::mask_to_bits(&mut mine, out_bits);
         ch.send_payload(&mine, out_bits);
         let cw_out = xor_blocks(&mine, &ch.recv_payload(out_bits));
 
-        let full = local.output(&cw_out);
+        let full = if full_output { local.output(&cw_out) } else { None };
         let key = HtKey { party: b, n_size, conv, hash: self.hash.clone(), root, cws, hcw, lcw, cw_out };
         GenOutput {
             key,
@@ -171,8 +175,8 @@ impl Session {
 /// Everything one party gets out of a generation.
 pub struct GenOutput {
     pub key: HtKey,
-    /// Full-domain output, a by-product of generation. `None` with the
-    /// streaming tree.
+    /// Full-domain output, a by-product of generation. `None` unless
+    /// `full_output` was set, and always `None` with the streaming tree.
     pub full: Option<FullEval>,
     pub setup_stats: CommStats,
     pub setup_time: Duration,
@@ -187,32 +191,35 @@ pub struct GenOutput {
 
 /// Session setup plus one generation, with Floram's `gen` signature.
 pub fn gen(ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], seed: [u8; 32]) -> GenOutput {
-    gen_mode(ch, n_size, out_bits, alpha_share, beta_share, seed, TreeMode::Stored)
+    gen_mode(ch, n_size, out_bits, alpha_share, beta_share, seed, TreeMode::Stored, true)
 }
 
-/// [`gen`] with the tree held as `mode` says.
-pub fn gen_mode(ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], seed: [u8; 32], mode: TreeMode) -> GenOutput {
+/// [`gen`] with the tree held as `mode` says, building the full-domain output
+/// only if `full_output` is set.
+#[allow(clippy::too_many_arguments)]
+pub fn gen_mode(ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], seed: [u8; 32], mode: TreeMode, full_output: bool) -> GenOutput {
     let mut s = Session::setup(ch, seed);
-    s.gen_mode(ch, n_size, out_bits, alpha_share, beta_share, mode)
+    s.gen_mode(ch, n_size, out_bits, alpha_share, beta_share, mode, full_output)
 }
 
 /// Trusted-dealer DPF.Gen (Fig. 8) for given root shares and hash key. Used as
 /// the bit-exact oracle for [`Session::gen`]: the protocol's keys must equal
 /// `deal` applied to the roots and `S` it produced.
 pub fn deal(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits: usize, alpha: u64, beta: &[Block]) -> ([HtKey; 2], [FullEval; 2]) {
-    let (keys, [f0, f1]) = deal_with::<HtLocal>(hash, roots, n_size, out_bits, alpha, beta, TreeMode::Stored);
+    let (keys, [f0, f1]) = deal_with::<HtLocal>(hash, roots, n_size, out_bits, alpha, beta, TreeMode::Stored, true);
     (keys, [f0.expect("stored tree"), f1.expect("stored tree")])
 }
 
 /// The keys of [`deal`], with the tree held as `mode` says.
 pub fn deal_keys(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], mode: TreeMode) -> [HtKey; 2] {
     match mode {
-        TreeMode::Stored => deal_with::<HtLocal>(hash, roots, n_size, out_bits, alpha, beta, mode).0,
-        TreeMode::Stream { .. } => deal_with::<HtStream>(hash, roots, n_size, out_bits, alpha, beta, mode).0,
+        TreeMode::Stored => deal_with::<HtLocal>(hash, roots, n_size, out_bits, alpha, beta, mode, false).0,
+        TreeMode::Stream { .. } => deal_with::<HtStream>(hash, roots, n_size, out_bits, alpha, beta, mode, false).0,
     }
 }
 
-fn deal_with<T: HtTree>(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], mode: TreeMode) -> ([HtKey; 2], [Option<FullEval>; 2]) {
+#[allow(clippy::too_many_arguments)]
+fn deal_with<T: HtTree>(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits: usize, alpha: u64, beta: &[Block], mode: TreeMode, full_output: bool) -> ([HtKey; 2], [Option<FullEval>; 2]) {
     assert!(alpha < n_size);
     let conv = Convert::new(out_bits);
     assert_eq!(beta.len(), conv.bm);
@@ -237,8 +244,8 @@ fn deal_with<T: HtTree>(hash: &CcrHash, roots: [Block; 2], n_size: u64, out_bits
     let lcw = [sum0.lsb() ^ an ^ true, sum1.lsb() ^ an];
     l0.apply_last(hcw, lcw);
     l1.apply_last(hcw, lcw);
-    let cw_out = xor_blocks(&xor_blocks(&l0.finalize(), &l1.finalize()), beta);
-    let f = [l0.output(&cw_out), l1.output(&cw_out)];
+    let cw_out = xor_blocks(&xor_blocks(&l0.finalize(full_output), &l1.finalize(full_output)), beta);
+    let f = if full_output { [l0.output(&cw_out), l1.output(&cw_out)] } else { [None, None] };
     let mk = |party: usize| HtKey {
         party,
         n_size,

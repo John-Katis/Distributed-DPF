@@ -240,10 +240,21 @@ impl HtLocal {
     }
 
     /// After the last level: converts all `2^n` leaves and returns
-    /// `⊕_j Convert(leaf_j)` per payload block.
-    pub fn finalize(&mut self) -> Vec<Block> {
+    /// `⊕_j Convert(leaf_j)` per payload block. With `keep_output` the payload
+    /// columns are kept for [`output`](Self::output); otherwise they are
+    /// folded chunk by chunk and dropped, and `output` must not be called.
+    pub fn finalize(&mut self, keep_output: bool) -> Vec<Block> {
         assert_eq!(self.level, self.depth);
         assert_eq!(self.nodes.len(), 1 << self.depth);
+        if !keep_output {
+            let mut acc = vec![Block::ZERO; self.conv.bm];
+            for leaves in self.nodes.chunks(1024) {
+                for (k, a) in acc.iter_mut().enumerate() {
+                    *a = self.conv.column(leaves, k).iter().fold(*a, |x, y| x ^ *y);
+                }
+            }
+            return acc;
+        }
         if self.conv.identity() {
             // One payload block: shift the leaves in place, keeping the t-bits.
             let n = self.n_size as usize;
@@ -291,7 +302,9 @@ pub trait HtTree: Sized {
     fn apply_correlated(&mut self, cw: Block);
     fn last_sums(&mut self) -> (Block, Block);
     fn apply_last(&mut self, hcw: Block, lcw: [bool; 2]);
-    fn finalize(&mut self) -> Vec<Block>;
+    /// `⊕_j Convert(leaf_j)`; `keep_output` asks the tree to keep the
+    /// payload for [`output`](HtTree::output).
+    fn finalize(&mut self, keep_output: bool) -> Vec<Block>;
     /// The full-domain output, if the tree keeps one.
     fn output(self, cw_out: &[Block]) -> Option<FullEval>;
     /// All `2^n` leaves, padding included, in order and in batches.
@@ -317,8 +330,8 @@ impl HtTree for HtLocal {
     fn apply_last(&mut self, hcw: Block, lcw: [bool; 2]) {
         HtLocal::apply_last(self, hcw, lcw)
     }
-    fn finalize(&mut self) -> Vec<Block> {
-        HtLocal::finalize(self)
+    fn finalize(&mut self, keep_output: bool) -> Vec<Block> {
+        HtLocal::finalize(self, keep_output)
     }
     fn output(self, cw_out: &[Block]) -> Option<FullEval> {
         Some(HtLocal::output(self, cw_out))
@@ -457,7 +470,7 @@ impl HtTree for HtStream {
         self.last = Some((hb(hcw), lcw));
     }
 
-    fn finalize(&mut self) -> Vec<Block> {
+    fn finalize(&mut self, _: bool) -> Vec<Block> {
         let mut acc = vec![Block::ZERO; self.conv.bm];
         self.visit_leaves(|_, leaves| {
             for (k, a) in acc.iter_mut().enumerate() {

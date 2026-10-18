@@ -54,7 +54,8 @@ pub struct MalSession {
 /// One party's output of [`MalSession::gen`].
 pub struct MalGenOutput {
     pub key: MalKey,
-    /// All outputs `x < N`; `None` with the streaming tree.
+    /// All outputs `x < N`. `None` unless `full_output` was set, and always
+    /// `None` with the streaming tree.
     pub full: Option<MalFull>,
 }
 
@@ -112,12 +113,15 @@ impl MalSession {
         beta: &[AuthGf],
         fault: Option<Fault>,
     ) -> Result<MalGenOutput, Abort> {
-        self.gen_mode(ch, n_size, alpha, beta, fault, TreeMode::Stored)
+        self.gen_mode(ch, n_size, alpha, beta, fault, TreeMode::Stored, true)
     }
 
     /// [`gen`](Self::gen) with the tree held as `mode` says. Both modes send
     /// the same messages; [`TreeMode::Stream`] returns no full-domain output.
+    /// The outputs are always computed for the MAC check; `full_output` only
+    /// decides whether the stored tree keeps them.
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     pub fn gen_mode(
         &mut self,
         ch: &mut Channel,
@@ -126,13 +130,15 @@ impl MalSession {
         beta: &[AuthGf],
         fault: Option<Fault>,
         mode: TreeMode,
+        full_output: bool,
     ) -> Result<MalGenOutput, Abort> {
         match mode {
-            TreeMode::Stored => self.gen_with::<HtLocal>(ch, n_size, alpha, beta, fault, mode),
-            TreeMode::Stream { .. } => self.gen_with::<HtStream>(ch, n_size, alpha, beta, fault, mode),
+            TreeMode::Stored => self.gen_with::<HtLocal>(ch, n_size, alpha, beta, fault, mode, full_output),
+            TreeMode::Stream { .. } => self.gen_with::<HtStream>(ch, n_size, alpha, beta, fault, mode, full_output),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn gen_with<T: HtTree>(
         &mut self,
         ch: &mut Channel,
@@ -141,6 +147,7 @@ impl MalSession {
         beta: &[AuthGf],
         fault: Option<Fault>,
         mode: TreeMode,
+        full_output: bool,
     ) -> Result<MalGenOutput, Abort> {
         let n = depth_for(n_size);
         assert_eq!(alpha.len(), n, "need one authenticated bit per level");
@@ -185,7 +192,7 @@ impl MalSession {
         let r = self.mac.rand_gf(ch, 1)?[0];
         let chi = self.mac.coins(ch, 1)?[0];
         let mut a = r;
-        let mut full = (mode == TreeMode::Stored).then(|| MalFull { n: 0, u: Vec::new(), v: vec![Vec::new(); bm] });
+        let mut full = (mode == TreeMode::Stored && full_output).then(|| MalFull { n: 0, u: Vec::new(), v: vec![Vec::new(); bm] });
         let chi_level = (0..n).fold(chi, |c, _| gf128::mul(c, c));
         let mut cu = gf128::ONE;
         let mut cv: Vec<Block> = Vec::with_capacity(bm);
@@ -255,10 +262,11 @@ pub fn run_mal(
     fault: Option<Fault>,
     ferret: Option<FerretConfig>,
 ) -> Result<MalRun, Abort> {
-    run_mal_mode(ch, n_size, alpha_share, beta_share, seed, fault, ferret, TreeMode::Stored)
+    run_mal_mode(ch, n_size, alpha_share, beta_share, seed, fault, ferret, TreeMode::Stored, true)
 }
 
-/// [`run_mal`] with the tree held as `mode` says.
+/// [`run_mal`] with the tree held as `mode` says, keeping the full-domain
+/// output only if `full_output` is set.
 #[allow(clippy::too_many_arguments)]
 pub fn run_mal_mode(
     ch: &mut Channel,
@@ -269,13 +277,14 @@ pub fn run_mal_mode(
     fault: Option<Fault>,
     ferret: Option<FerretConfig>,
     mode: TreeMode,
+    full_output: bool,
 ) -> Result<MalRun, Abort> {
     let mut s = MalSession::setup_with(ch, seed, ferret)?;
     let t = Instant::now();
     let before = ch.stats();
     let cots_before = s.mac.cot.produced;
     let (a, b) = s.share_inputs(ch, n_size, alpha_share, beta_share)?;
-    let out = s.gen_mode(ch, n_size, &a, &b, fault, mode)?;
+    let out = s.gen_mode(ch, n_size, &a, &b, fault, mode, full_output)?;
     s.mac.check(ch)?;
     Ok(MalRun {
         out,

@@ -15,7 +15,9 @@
 //!
 //! Options and CSV columns are those of `dpf_common::bench`. Setup (base OTs,
 //! COT/MAC-key initialisation, coin tosses) is reported apart from generation;
-//! COT extension is part of generation. `eval` and `full` use dealer keys.
+//! COT extension is part of generation. Gen builds the key only: `ht` skips
+//! the full-domain output, and `mal-ferret` computes the outputs for the MAC
+//! check but does not keep them. `eval` and `full` use dealer keys.
 //! With `--stream`, Gen and the dealer use the streaming tree and `full` folds
 //! the outputs instead of storing them.
 
@@ -32,10 +34,10 @@ fn gen_ht(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
-        // Free the previous run (full-domain outputs) before the next one.
+        // Free the previous run before the next one.
         drop(last.take());
         let beta = random_beta(rng, o.out_bits);
-        let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen(), o.tree_mode());
+        let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), &beta, rng.gen(), o.tree_mode(), false);
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
         g0.push(run.outs[0].gen_time);
         g1.push(run.outs[1].gen_time);
@@ -71,10 +73,10 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
-        // Free the previous run (full-domain outputs) before the next one.
+        // Free the previous run before the next one.
         drop(last.take());
         let beta: Vec<Block> = (0..bm).map(|_| Block::random(rng)).collect();
-        let run = run_mal_gen_mode(o.size, rng.gen_range(0..o.size), &beta, rng.gen(), [None, None], Some(FerretConfig::B13), o.tree_mode());
+        let run = run_mal_gen_mode(o.size, rng.gen_range(0..o.size), &beta, rng.gen(), [None, None], Some(FerretConfig::B13), o.tree_mode(), false);
         let [r0, r1] = run.outs.map(|r| r.expect("honest run aborted"));
         setup.push(r0.setup_time.max(r1.setup_time));
         g0.push(r0.gen_time);
