@@ -387,23 +387,12 @@ pub struct GenOutput {
     pub full: Option<FullEval>,
     /// Traffic for setup: PRG-key transfer and base OTs.
     pub setup_stats: CommStats,
-    /// Traffic for preprocessing: the random OTs behind the evaluator's
-    /// input labels ([`ot_count`]).
-    pub pre_stats: CommStats,
     /// Traffic for the generation proper.
     pub gen_stats: CommStats,
     pub and_gates: usize,
-    /// Wall time for setup (PRG keys, base OTs), preprocessing and generation
-    /// proper.
+    /// Wall time for setup (PRG keys, base OTs) and for generation proper.
     pub setup_time: Duration,
-    pub pre_time: Duration,
     pub gen_time: Duration,
-}
-
-/// OTs one generation needs, all with the evaluator as receiver: one per bit
-/// of α and per bit of the two shared level accumulators.
-pub fn ot_count(n_size: u64) -> usize {
-    (1 + 2 * 128) * depth_for(n_size)
 }
 
 /// The per-level 2PC (`fss_cprg_traverselevels` + `fss_cprg_getadvice`). Returns
@@ -543,42 +532,34 @@ pub fn gen_mode(
     };
     let root = sample_root(&mut rng_tree, party);
 
-    let ots = ot_count(n_size);
-    let args = (prg, n_size, out_bits, root, alpha_share, beta_share, mode, full_output);
-    if party == 0 {
+    let mut setup_time = Duration::ZERO;
+    let mut t_gen = Instant::now();
+    let mut mark = |ch: &mut Channel| {
+        // Synchronise at the end of setup so that neither party's gen time
+        // includes waiting for the other's base OTs. Counted as setup traffic.
+        if ch.party() == 1 {
+            ch.send(vec![0]);
+        } else {
+            ch.recv();
+        }
+        setup_time = t_setup.elapsed();
+        t_gen = Instant::now();
+        ch.stats()
+    };
+    let (key, full, setup_stats, and_gates) = if party == 0 {
         let mut g = Garbler::setup(ch, &mut rng_proto);
-        phases(&mut g, ch, &mut rng_proto, t_setup, ots, args)
+        let s = mark(ch);
+        let (k, f) = gen_tree(&mut g, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode, full_output);
+        (k, f, s, g.and_count())
     } else {
         let mut e = Evaluator::setup(ch, &mut rng_proto);
-        phases(&mut e, ch, &mut rng_proto, t_setup, ots, args)
-    }
-}
-
-/// [`gen_tree`]'s arguments after the GC party.
-type TreeArgs<'a> = (Prg, u64, usize, Block, u64, &'a [Block], TreeMode, bool);
-
-/// The phases after the GC party's setup: the end of setup, preprocessing
-/// (`ots` random OTs) and generation proper, each timed and counted apart.
-fn phases<P: GcParty>(p: &mut P, ch: &mut Channel, rng: &mut ChaCha20Rng, t_setup: Instant, ots: usize, args: TreeArgs) -> GenOutput {
-    // Synchronise at the end of setup so that neither party's preprocessing
-    // includes waiting for the other's base OTs. Counted as setup traffic.
-    ch.sync();
-    let setup_stats = ch.stats();
-    let setup_time = t_setup.elapsed();
-    let t_pre = Instant::now();
-    p.precompute_ots(ch, ots, rng);
-    let pre_stats = ch.stats().since(&setup_stats);
-    let pre_time = t_pre.elapsed();
-    // Timing only: neither party's gen time includes waiting for the other's
-    // preprocessing. Counted in no phase.
-    ch.sync();
-    let gen_start = ch.stats();
-    let t_gen = Instant::now();
-    let (prg, n_size, out_bits, root, alpha_share, beta_share, mode, full_output) = args;
-    let (key, full) = gen_tree(p, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode, full_output);
+        let s = mark(ch);
+        let (k, f) = gen_tree(&mut e, ch, prg, n_size, out_bits, root, alpha_share, beta_share, mode, full_output);
+        (k, f, s, e.and_count())
+    };
     let gen_time = t_gen.elapsed();
-    let gen_stats = ch.stats().since(&gen_start);
-    GenOutput { key, full, setup_stats, pre_stats, gen_stats, and_gates: p.and_count(), setup_time, pre_time, gen_time }
+    let gen_stats = ch.stats().since(&setup_stats);
+    GenOutput { key, full, setup_stats, gen_stats, and_gates, setup_time, gen_time }
 }
 
 /// Plaintext reference for [`gen`]. It runs both parties' trees in one thread

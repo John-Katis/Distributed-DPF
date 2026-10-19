@@ -120,17 +120,18 @@ row then breaks Gen down into three phases:
 | preprocessing | `pre_ms`, `pre_bytes`, `pre_rounds` | the input-independent correlations Gen consumes: random COTs/OTs, bit triples, PRG correlations, Duoram-3P's dealing |
 | generation | `gen_ms_p*`, `gen_bytes`, `gen_bytes_per_level`, `gen_rounds` | generation proper, given those correlations |
 
-Every protocol makes all its correlations in the preprocessing phase, before
-α and β are used. Where Gen needs a COT or OT on a secret choice bit (the bits
-of α, a MUX selector), preprocessing makes it with a random choice and Gen
-derandomises it with one bit (one round), as Ferret does:
+Where the paper (or its reference code) makes the correlations ahead of Gen,
+they are made in the preprocessing phase, before α and β are used. Where Gen
+needs a COT or OT on a secret choice bit (the bits of α, a MUX selector),
+preprocessing makes it with a random choice and Gen derandomises it with one
+bit (one round), as Ferret does:
 
 | protocol | preprocessing |
 |---|---|
-| floram-cprg | 257·n random IKNP OTs for the evaluator's input labels (n for α, 2·128 per level) |
+| floram-cprg | none: as in Obliv-C, Gen runs chosen-input IKNP for the evaluator's labels at each level |
 | half-tree (`ht`) | n random COTs per direction (GYW+23 Fig. 11) |
 | half-tree (`mal-ferret`) | n + 128·(bm + 1) random F_aBit COTs per direction for α, β and ⟨r⟩ (Ferret; refills only when its buffer runs out) |
-| floram-arith | 3n + 1 bit triples in one KKOT batch, n + 1 random COTs per direction |
+| floram-arith | none: as in the reference code, each AND makes its triples (KKOT) and each MUX its COTs (IKNP) when called |
 | fssnn | PRG correlations for 2n (+2) calls, 2n bit triples, 3n (+2ℓ+1 for `arith`) Ferret COTs per direction |
 | duoram (`2p`) | n AND triples from COTs, n + 2·w random COTs for the Gilboa products |
 | duoram (`3p`) | P2's one message to each party (n AND triples, n + 2 product triples) |

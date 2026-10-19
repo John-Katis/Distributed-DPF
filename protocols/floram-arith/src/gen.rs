@@ -26,11 +26,6 @@
 //! F_MUX^{A,ℓ} as in SIRNN ([`dpf_common::arith::mux`]), all over semi-honest
 //! IKNP / KK13 OT extension.
 //!
-//! Their correlations are made in a preprocessing phase before α and β are
-//! used ([`precompute`]): the 3n + 1 bit triples of BitDec and CCMP in one
-//! KKOT batch, and n + 1 random COTs per direction for the n σ-MUXes and the
-//! final MUX, which Gen then derandomises with one bit each.
-//!
 //! `Convert` reads the ℓ bits of the leaf label above its control bit, as the
 //! paper's `s∥t` split implies ([`crate::tree::conv`]; for ℓ = 128 one more
 //! PRG call per leaf). All of Z_2^ℓ is computed and sent in words of the
@@ -58,24 +53,13 @@ pub struct GenOutput<R: Ring = u64> {
     /// `full_output` was set, and always `None` with the streaming tree.
     pub full: Option<Vec<R>>,
     pub setup_stats: CommStats,
-    /// Preprocessing: the triples and random COTs ([`precompute`]).
-    pub pre_stats: CommStats,
     pub gen_stats: CommStats,
     /// F_AND invocations (BitDec and CCMP).
     pub and_gates: usize,
     /// COTs used by the two MUXes (both directions).
     pub cots: usize,
     pub setup_time: Duration,
-    pub pre_time: Duration,
     pub gen_time: Duration,
-}
-
-/// Preprocessing for a domain of depth `n`: 3n bit triples for BitDec and one
-/// for CCMP, and one random COT per direction for each of the n σ-MUXes and
-/// the final MUX.
-pub fn precompute(bp: &mut BoolParty, cot: &mut CotPair, ch: &mut Channel, n: usize, rng: &mut ChaCha20Rng) {
-    bp.precompute(ch, 3 * n + 1);
-    cot.precompute(ch, n + 1, n + 1, rng).expect("semi-honest COT");
 }
 
 /// Π_BitDec (Alg. 14): XOR shares of the bits of `x_0 + x_1 mod 2^n`, MSB
@@ -197,14 +181,6 @@ pub fn gen_mode<R: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share
     ch.sync();
     let setup_stats = ch.stats();
     let setup_time = t_setup.elapsed();
-    let t_pre = Instant::now();
-    precompute(&mut bp, &mut cot, ch, depth_for(n_size), &mut rng);
-    let pre_stats = ch.stats().since(&setup_stats);
-    let pre_time = t_pre.elapsed();
-    // Timing only: neither party's gen time includes waiting for the other's
-    // preprocessing. Counted in no phase.
-    ch.sync();
-    let gen_start = ch.stats();
     let t_gen = Instant::now();
     let (key, full) = match mode {
         TreeMode::Stored => gen_with::<R, Tree>(mode, full_output, &mut bp, &mut cot, &mut rng, ch, root, n_size, bits, alpha_share, beta_share),
@@ -213,13 +189,11 @@ pub fn gen_mode<R: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share
     GenOutput {
         key,
         full,
-        gen_stats: ch.stats().since(&gen_start),
+        gen_stats: ch.stats().since(&setup_stats),
         setup_stats,
-        pre_stats,
         and_gates: bp.ands,
         cots: cot.produced,
         setup_time,
-        pre_time,
         gen_time: t_gen.elapsed(),
     }
 }
