@@ -23,6 +23,11 @@
 //! [`CotPair`] holds both directions for one party: it is the sender (with its
 //! own Δ) in one instance and the receiver in the other, and `extend` runs both
 //! directions in the same rounds.
+//!
+//! [`CotPair::precompute`] moves the extension into an input-independent
+//! preprocessing phase: it makes random COTs in advance, and every later
+//! `extend` derandomises them with one bit per COT (one round), as Ferret's
+//! `extend` does.
 
 use super::iknp::{bytes_to_cols, pack_words, transpose, words_to_bytes};
 use super::ferret::{FerretConfig, FerretPair};
@@ -157,6 +162,17 @@ pub struct CotPair {
     /// Ferret extension, once [`enable_ferret`](Self::enable_ferret) ran. Then
     /// `extend` draws from Ferret instead of IKNP.
     pub ferret: Option<FerretPair>,
+    /// Random IKNP COTs from [`precompute`](Self::precompute), once it ran.
+    /// Then `extend` derandomises these instead of extending.
+    pool: Option<Pool>,
+}
+
+/// Random COTs made in advance: this party's receiver side `(r_j, M_j)` and
+/// sender side `K_j`, consumed from the front.
+struct Pool {
+    r: Vec<bool>,
+    m: Vec<Block>,
+    k: Vec<Block>,
 }
 
 impl CotPair {
@@ -173,7 +189,7 @@ impl CotPair {
             let r = CotReceiver::setup(ch, rng, base)?;
             (CotSender::setup(ch, rng, delta, base)?, r)
         };
-        Ok(CotPair { party, malicious, sender, receiver, produced: 0, ferret: None })
+        Ok(CotPair { party, malicious, sender, receiver, produced: 0, ferret: None, pool: None })
     }
 
     pub fn delta(&self) -> Block {
@@ -195,6 +211,23 @@ impl CotPair {
 
     pub fn is_malicious(&self) -> bool {
         self.malicious
+    }
+
+    /// Preprocessing: makes `mine` random COTs as receiver and `theirs` as
+    /// sender now, before any input is known, for the `extend` calls that
+    /// follow. Those then only derandomise (one bit per COT, one round) and
+    /// must not ask for more than was made here. With Ferret this refills the
+    /// buffers, so no refill iteration runs later. In malicious mode the KOS
+    /// check runs here.
+    pub fn precompute<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, mine: usize, theirs: usize, rng: &mut R) -> Result<(), Abort> {
+        if let Some(f) = self.ferret.as_mut() {
+            return f.ensure(ch, mine, theirs, rng);
+        }
+        assert!(self.pool.is_none(), "COTs already precomputed");
+        let r: Vec<bool> = (0..mine).map(|_| rng.gen()).collect();
+        let (k, m) = self.extend(ch, &r, theirs, rng)?;
+        self.pool = Some(Pool { r, m, k });
+        Ok(())
     }
 
     /// `m` random COTs in one direction, the one where party `sender` holds
@@ -237,6 +270,9 @@ impl CotPair {
         theirs: usize,
         rng: &mut R,
     ) -> Result<(Vec<Block>, Vec<Block>), Abort> {
+        if let Some(p) = self.pool.as_mut() {
+            return Ok(p.derandomise(ch, self.sender.delta, mine, theirs));
+        }
         self.produced += mine.len() + theirs;
         if let Some(f) = self.ferret.as_mut() {
             return f.extend(ch, mine, theirs, rng);
@@ -268,6 +304,23 @@ impl CotPair {
         m.truncate(mine.len());
         k.truncate(theirs);
         Ok((k, m))
+    }
+}
+
+impl Pool {
+    /// Chosen-choice COTs from the pool, as Ferret's `extend`: the receiver
+    /// sends `d = c ⊕ r` and the sender sets `K ← K ⊕ d·Δ`.
+    fn derandomise(&mut self, ch: &mut Channel, delta: Block, mine: &[bool], theirs: usize) -> (Vec<Block>, Vec<Block>) {
+        assert!(mine.len() <= self.r.len() && theirs <= self.k.len(), "COT pool exhausted");
+        let r: Vec<bool> = self.r.drain(..mine.len()).collect();
+        let m: Vec<Block> = self.m.drain(..mine.len()).collect();
+        let d: Vec<bool> = mine.iter().zip(&r).map(|(c, r)| c ^ r).collect();
+        ch.send_bits(&d);
+        let mut k: Vec<Block> = self.k.drain(..theirs).collect();
+        for (kj, dj) in k.iter_mut().zip(ch.recv_bits(theirs)) {
+            *kj ^= delta.and_bit(dj);
+        }
+        (k, m)
     }
 }
 
@@ -310,6 +363,36 @@ mod tests {
     fn correlation_holds() {
         run(false);
         run(true);
+    }
+
+    #[test]
+    fn precomputed_cots_derandomise() {
+        for malicious in [false, true] {
+            let mut rng = ChaCha20Rng::seed_from_u64(9);
+            let (d0, d1) = (Block::random(&mut rng), Block::random(&mut rng));
+            let c0: Vec<bool> = (0..300).map(|_| rng.gen()).collect();
+            let c1: Vec<bool> = (0..77).map(|_| rng.gen()).collect();
+            let party = |d: Block, mine: Vec<bool>, theirs: usize, seed: u64| {
+                move |c: &mut Channel| {
+                    let mut r = ChaCha20Rng::seed_from_u64(seed);
+                    let mut p = CotPair::setup(c, &mut r, d, malicious).unwrap();
+                    p.precompute(c, mine.len(), theirs, &mut r).unwrap();
+                    let before = c.stats();
+                    let out = p.extend(c, &mine, theirs, &mut r).unwrap();
+                    (out, c.stats().since(&before), p.produced)
+                }
+            };
+            let (((k0, m0), s0, n0), ((k1, m1), _, _)) = run_two_party(party(d0, c0.clone(), 77, 1), party(d1, c1.clone(), 300, 2));
+            for j in 0..300 {
+                assert_eq!(m0[j], k1[j] ^ d1.and_bit(c0[j]), "malicious={malicious}");
+            }
+            for j in 0..77 {
+                assert_eq!(m1[j], k0[j] ^ d0.and_bit(c1[j]), "malicious={malicious}");
+            }
+            // Online: one bit per COT as receiver, in one round.
+            assert_eq!((s0.bytes_sent, s0.rounds), (300usize.div_ceil(8), 1));
+            assert_eq!(n0, 377);
+        }
     }
 
     #[test]

@@ -516,7 +516,9 @@ impl FerretPair {
         Ok(p)
     }
 
-    fn ensure<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, mine: usize, theirs: usize, rng: &mut R) -> Result<(), Abort> {
+    /// Refills until `mine` COTs as receiver and `theirs` as sender are
+    /// buffered.
+    pub fn ensure<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, mine: usize, theirs: usize, rng: &mut R) -> Result<(), Abort> {
         if self.party == 0 {
             self.sender.ensure(ch, theirs, rng)?;
             self.receiver.ensure(ch, mine, rng)

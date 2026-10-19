@@ -7,7 +7,8 @@
 //!   CrypTFlow2 App. A.2). As in the reference `and_wrapper`, every AND uses
 //!   the first triple of its own pair, so no two ANDs share a triple
 //!   component. Online: open `x ⊕ a`, `y ⊕ b` (2 bits, one round).
-//!   Alternatively ([`BoolParty::with_triples`]) the triples come from a
+//!   [`BoolParty::precompute`] makes the triples for a whole protocol in one
+//!   KKOT batch before the inputs are known. Alternatively ([`BoolParty::with_triples`]) the triples come from a
 //!   pool, e.g. [`rot_triples`]: ABY's random-OT triples on (silent) random
 //!   COTs, as FssNN generates its triples with Ferret.
 //! * F_OR: `x ∨ y = 1 ⊕ ((1 ⊕ x) ∧ (1 ⊕ y))`.
@@ -59,6 +60,14 @@ impl BoolParty {
     /// triple traffic) instead of KKOT; it panics when they run out.
     pub fn with_triples<R: RngCore + CryptoRng>(party: usize, triples: Vec<(bool, bool, bool)>, rng: &mut R) -> Self {
         BoolParty { party, kkot: Kkot::Pool(triples.into_iter()), rng: ChaCha20Rng::from_rng(rng).unwrap(), ands: 0 }
+    }
+
+    /// Preprocessing: makes `m` triples now, in one KKOT batch, for the F_AND
+    /// calls that follow; it panics when they run out.
+    pub fn precompute(&mut self, ch: &mut Channel, m: usize) {
+        assert!(!matches!(self.kkot, Kkot::Pool(_)), "triples already precomputed");
+        let t = self.triples(ch, m);
+        self.kkot = Kkot::Pool(t.into_iter());
     }
 
     pub fn party(&self) -> usize {
@@ -294,6 +303,27 @@ mod tests {
                 assert_eq!(z0[i] ^ z1[i], if c { y[i] } else { x[i] });
             }
         }
+    }
+
+    #[test]
+    fn precomputed_triples_serve_and() {
+        let party = |seed: u64| {
+            move |ch: &mut Channel| {
+                let mut r = ChaCha20Rng::seed_from_u64(seed);
+                let mut p = BoolParty::setup(ch, &mut r);
+                p.precompute(ch, 50);
+                let before = ch.stats();
+                let x: Vec<(bool, bool)> = (0..50).map(|_| (r.gen(), r.gen())).collect();
+                let z = p.and_many(ch, &x);
+                (x, z, ch.stats().since(&before))
+            }
+        };
+        let ((x0, z0, s0), (x1, z1, _)) = run_two_party(party(1), party(2));
+        for i in 0..50 {
+            assert_eq!(z0[i] ^ z1[i], (x0[i].0 ^ x1[i].0) & (x0[i].1 ^ x1[i].1));
+        }
+        // Online: 2 bits per AND, one round.
+        assert_eq!((s0.bytes_sent, s0.rounds), (100usize.div_ceil(8), 1));
     }
 
     #[test]
