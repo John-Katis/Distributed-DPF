@@ -21,6 +21,10 @@
 //!
 //! [`MalSession::gen`] leaves the MAC check to the caller so it can be batched
 //! with the rest of a larger protocol; [`run_mal`] runs it at the end.
+//!
+//! Preprocessing ([`MalSession::precompute`]) makes the random F_aBit COTs for
+//! α, β and `⟨r⟩` before the inputs are known, KOS-checked (or from Ferret);
+//! authenticating the inputs then only derandomises them.
 
 use super::key::{leaf_outputs, leaf_sums, MalFull, MalKey};
 use crate::tree::{HtLocal, HtStream, HtTree};
@@ -90,6 +94,22 @@ impl MalSession {
 
     pub fn delta(&self) -> Block {
         self.mac.delta()
+    }
+
+    /// Random COTs per direction for one generation: n for the bits of α, 128
+    /// for each of the `bm` elements of β and 128 for `⟨r⟩`.
+    pub fn cot_count(n_size: u64, bm: usize) -> usize {
+        depth_for(n_size) + 128 * (bm + 1)
+    }
+
+    /// Preprocessing for one generation with `bm` payload elements: the
+    /// [`cot_count`](Self::cot_count) random COTs per direction.
+    pub fn precompute(&mut self, ch: &mut Channel, n_size: u64, bm: usize) -> Result<(), Abort> {
+        let m = Self::cot_count(n_size, bm);
+        let mut rng = self.mac.rng().clone();
+        self.mac.cot.precompute(ch, m, m, &mut rng)?;
+        *self.mac.rng() = rng;
+        Ok(())
     }
 
     /// Authenticates XOR shares of `α < N` (as bits, MSB first) and of `β`.
@@ -244,14 +264,18 @@ pub struct MalRun {
     pub delta: Block,
     pub setup_stats: CommStats,
     pub setup_time: Duration,
+    /// Preprocessing: the random COTs ([`MalSession::precompute`]).
+    pub pre_stats: CommStats,
+    pub pre_time: Duration,
     /// Input authentication + generation + final MAC check.
     pub gen_stats: CommStats,
     pub gen_time: Duration,
-    /// COTs consumed by this generation (both directions, KOS padding included).
+    /// COTs consumed by this generation (both directions).
     pub cots: usize,
 }
 
-/// Setup, input authentication, generation and the MAC check for one party.
+/// Setup, preprocessing, input authentication, generation and the MAC check
+/// for one party.
 /// `ferret` selects F_COT: `None` = KOS-checked IKNP, `Some(cfg)` = Ferret.
 pub fn run_mal(
     ch: &mut Channel,
@@ -280,9 +304,17 @@ pub fn run_mal_mode(
     full_output: bool,
 ) -> Result<MalRun, Abort> {
     let mut s = MalSession::setup_with(ch, seed, ferret)?;
+    let cots_before = s.mac.cot.produced;
+    let t_pre = Instant::now();
+    let pre_before = ch.stats();
+    s.precompute(ch, n_size, beta_share.len())?;
+    let pre_stats = ch.stats().since(&pre_before);
+    let pre_time = t_pre.elapsed();
+    // Timing only: neither party's gen time includes waiting for the other's
+    // preprocessing. Counted in no phase.
+    ch.sync();
     let t = Instant::now();
     let before = ch.stats();
-    let cots_before = s.mac.cot.produced;
     let (a, b) = s.share_inputs(ch, n_size, alpha_share, beta_share)?;
     let out = s.gen_mode(ch, n_size, &a, &b, fault, mode, full_output)?;
     s.mac.check(ch)?;
@@ -291,6 +323,8 @@ pub fn run_mal_mode(
         delta: s.delta(),
         setup_stats: s.setup_stats,
         setup_time: s.setup_time,
+        pre_stats,
+        pre_time,
         gen_stats: ch.stats().since(&before),
         gen_time: t.elapsed(),
         cots: s.mac.cot.produced - cots_before,

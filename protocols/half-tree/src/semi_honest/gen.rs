@@ -9,11 +9,16 @@
 //! "all invocations of F_Rand can be compressed via another independent PRF
 //! key sampled after the one-time initialization of F_COT".
 //!
+//! Preprocessing (Fig. 11, per run, before α and β are known): n random COTs
+//! per direction ([`Session::precompute`]).
+//!
 //! Per run, with `α` XOR-shared MSB-first and `β` XOR-shared:
 //!
-//! 1. n COTs per direction on the α-share bits give
-//!    `M_b[α_{i,b}] = K_{1−b}[α_{i,b}] ⊕ α_{i,b}·Δ_{1−b}`. With chosen-choice IKNP
-//!    the masked-choice message `g_b` of Fig. 11 is folded into the extension.
+//! 1. The n COTs per direction are derandomised to the α-share bits, giving
+//!    `M_b[α_{i,b}] = K_{1−b}[α_{i,b}] ⊕ α_{i,b}·Δ_{1−b}`: party b sends the
+//!    masked choices `g_b = α_b ⊕ r_b` of Fig. 11 (one round). Without
+//!    [`Session::precompute`], a chosen-choice IKNP extension does both at
+//!    once.
 //! 2. Root share `Δ_b ⊕ W`.
 //! 3. Levels `1..n−1` (one round each):
 //!    `⟨CW_i⟩_b = ⊕_j H(X^j_b) ⊕ Δ_b ⊕ α_{i,b}·Δ_b ⊕ K_b[α_{i,1−b}] ⊕ M_b[α_{i,b}]`,
@@ -46,6 +51,9 @@ pub struct Session {
     rng: ChaCha20Rng,
     pub setup_stats: CommStats,
     pub setup_time: Duration,
+    /// The last [`precompute`](Self::precompute), reported by the next
+    /// generation.
+    pre: (CommStats, Duration),
 }
 
 impl Session {
@@ -68,7 +76,21 @@ impl Session {
             rng,
             setup_stats: ch.stats().since(&before),
             setup_time: t.elapsed(),
+            pre: Default::default(),
         }
+    }
+
+    /// Preprocessing for one generation on a domain of size `n_size`: n random
+    /// COTs per direction.
+    pub fn precompute(&mut self, ch: &mut Channel, n_size: u64) {
+        let t = Instant::now();
+        let before = ch.stats();
+        let n = depth_for(n_size);
+        self.cot.precompute(ch, n, n, &mut self.rng).expect("semi-honest COT");
+        self.pre = (ch.stats().since(&before), t.elapsed());
+        // Timing only: neither party's gen time includes waiting for the
+        // other's preprocessing. Counted in no phase.
+        ch.sync();
     }
 
     /// `Δ_b`, this party's share of the global offset.
@@ -106,7 +128,7 @@ impl Session {
         let alpha = bits_msb_first(alpha_share, n);
         let delta = self.delta();
 
-        // 1. COTs on the α shares, both directions.
+        // 1. COTs on the α shares, both directions (derandomised, if precomputed).
         let cot_before = ch.stats();
         let (k, m) = self.cot.extend(ch, &alpha, n, &mut self.rng).expect("semi-honest COT");
         let cot_stats = ch.stats().since(&cot_before);
@@ -159,11 +181,14 @@ impl Session {
 
         let full = if full_output { local.output(&cw_out) } else { None };
         let key = HtKey { party: b, n_size, conv, hash: self.hash.clone(), root, cws, hcw, lcw, cw_out };
+        let (pre_stats, pre_time) = std::mem::take(&mut self.pre);
         GenOutput {
             key,
             full,
             setup_stats: self.setup_stats,
             setup_time: self.setup_time,
+            pre_stats,
+            pre_time,
             gen_stats: ch.stats().since(&before),
             cot_stats,
             cots: 2 * n,
@@ -180,16 +205,21 @@ pub struct GenOutput {
     pub full: Option<FullEval>,
     pub setup_stats: CommStats,
     pub setup_time: Duration,
-    /// Traffic for this generation, COT extension included.
+    /// Traffic for the preceding [`Session::precompute`] (the random COTs).
+    pub pre_stats: CommStats,
+    pub pre_time: Duration,
+    /// Traffic for this generation, COT derandomisation included.
     pub gen_stats: CommStats,
-    /// The part of `gen_stats` spent on COT extension.
+    /// The part of `gen_stats` spent on COTs: the masked choices `g_b`
+    /// (or the whole extension, without precomputation).
     pub cot_stats: CommStats,
     /// COTs consumed (both directions).
     pub cots: usize,
     pub gen_time: Duration,
 }
 
-/// Session setup plus one generation, with Floram's `gen` signature.
+/// Session setup, preprocessing and one generation, with Floram's `gen`
+/// signature.
 pub fn gen(ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], seed: [u8; 32]) -> GenOutput {
     gen_mode(ch, n_size, out_bits, alpha_share, beta_share, seed, TreeMode::Stored, true)
 }
@@ -199,6 +229,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, bet
 #[allow(clippy::too_many_arguments)]
 pub fn gen_mode(ch: &mut Channel, n_size: u64, out_bits: usize, alpha_share: u64, beta_share: &[Block], seed: [u8; 32], mode: TreeMode, full_output: bool) -> GenOutput {
     let mut s = Session::setup(ch, seed);
+    s.precompute(ch, n_size);
     s.gen_mode(ch, n_size, out_bits, alpha_share, beta_share, mode, full_output)
 }
 
