@@ -42,7 +42,10 @@
 //! expanded as in the other protocols.
 //!
 //! Correlations for all `2n` PRG evaluations are generated up front from
-//! OT (DGH+21 §5.5), so no dealer is involved anywhere.
+//! OT (DGH+21 §5.5), so no dealer is involved anywhere. They, the `2n` AND
+//! triples and the Ferret COTs of the MUXes form the preprocessing phase
+//! ([`precompute`]), before α and β are used; Gen then derandomises the
+//! COTs with one bit each.
 
 use super::key::FssKey;
 use super::sec_prg::{eval_shared, preprocess, PrgCorr};
@@ -60,6 +63,8 @@ use std::time::{Duration, Instant};
 pub struct GenOutput {
     pub key: FssKey,
     pub setup_stats: CommStats,
+    /// Preprocessing: PRG correlations, triples and MUX COTs ([`precompute`]).
+    pub pre_stats: CommStats,
     pub gen_stats: CommStats,
     /// F_AND invocations (state bits).
     pub and_gates: usize,
@@ -68,7 +73,31 @@ pub struct GenOutput {
     /// 2PC evaluations of the PRG.
     pub prg_calls: usize,
     pub setup_time: Duration,
+    pub pre_time: Duration,
     pub gen_time: Duration,
+}
+
+/// The correlations one generation consumes.
+pub struct Pre {
+    /// For the PRG evaluations: two per level, plus two for `Conv` if ℓ > λ.
+    pub prg: Vec<PrgCorr>,
+    /// The `2n` AND triples of step 7.
+    pub bp: BoolParty,
+}
+
+/// Preprocessing for a domain of depth `n`: the PRG correlations, the `2n`
+/// triples (F_GenMT from Ferret, FssNN §2.2) and Ferret COTs per direction
+/// for the MUXes, 3 per level (step 5 and both step-7 selections) plus
+/// 2ℓ + 1 for the arithmetic final word.
+pub fn precompute(ch: &mut Channel, cot: &mut CotPair, n: usize, group: Group, bits: usize, rng: &mut ChaCha20Rng) -> Pre {
+    let mut tweak = 0;
+    let calls = 2 * n + if bits > SEED_BITS { 2 } else { 0 };
+    let prg = preprocess(ch, cot, calls, &mut tweak, rng);
+    let triples = rot_triples(ch, cot, 2 * n, rng);
+    let bp = BoolParty::with_triples(ch.party(), triples, rng);
+    let muxes = 3 * n + if group == Group::Arith { 2 * bits + 1 } else { 0 };
+    cot.precompute(ch, muxes, muxes, rng).expect("semi-honest COT");
+    Pre { prg, bp }
 }
 
 /// Opens an ℓ-bit word, XOR- or additively shared per `group`.
@@ -124,6 +153,7 @@ fn final_cw(
 #[allow(clippy::too_many_arguments)]
 fn gen_with(
     cot: &mut CotPair,
+    pre: Pre,
     rng: &mut ChaCha20Rng,
     ch: &mut Channel,
     root: Block,
@@ -135,12 +165,8 @@ fn gen_with(
 ) -> (FssKey, usize, usize) {
     let b = ch.party();
     let n = depth_for(n_size);
-    let mut tweak = 0;
-    let calls = 2 * n + if bits > SEED_BITS { 2 } else { 0 };
-    let corr = preprocess(ch, cot, calls, &mut tweak, rng);
-    // F_GenMT from Ferret (FssNN §2.2): one F_AND per tree and level.
-    let triples = rot_triples(ch, cot, 2 * n, rng);
-    let mut bp = BoolParty::with_triples(b, triples, rng);
+    let Pre { prg: corr, mut bp } = pre;
+    let calls = corr.len();
     let bp = &mut bp;
 
     // Step 2: ⟨s_j^(0)⟩, own root, zero share of the peer's.
@@ -202,16 +228,26 @@ pub fn gen(ch: &mut Channel, n_size: u64, group: Group, bits: usize, alpha_share
     ch.sync();
     let setup_stats = ch.stats();
     let setup_time = t_setup.elapsed();
+    let t_pre = Instant::now();
+    let pre = precompute(ch, &mut cot, depth_for(n_size), group, bits, &mut rng);
+    let pre_stats = ch.stats().since(&setup_stats);
+    let pre_time = t_pre.elapsed();
+    // Timing only: neither party's gen time includes waiting for the other's
+    // preprocessing. Counted in no phase.
+    ch.sync();
+    let gen_start = ch.stats();
     let t_gen = Instant::now();
-    let (key, prg_calls, and_gates) = gen_with(&mut cot, &mut rng, ch, root, n_size, group, bits, alpha_share, beta_share);
+    let (key, prg_calls, and_gates) = gen_with(&mut cot, pre, &mut rng, ch, root, n_size, group, bits, alpha_share, beta_share);
     GenOutput {
         key,
-        gen_stats: ch.stats().since(&setup_stats),
+        gen_stats: ch.stats().since(&gen_start),
         setup_stats,
+        pre_stats,
         and_gates,
         cots: cot.produced,
         prg_calls,
         setup_time,
+        pre_time,
         gen_time: t_gen.elapsed(),
     }
 }

@@ -13,10 +13,11 @@
 //! `--out-bits ℓ` is 1..=256 (default 64; the sweep uses 16,32,64,128,256).
 //! Up to ℓ = 127 the output is read from the leaf seed; beyond that it takes
 //! one more PRG call per leaf (two more 2PC PRG calls in Gen). Options and CSV
-//! columns are those of `dpf_common::bench`. Setup (base OTs of the
-//! COT, bit-triple and 1-of-3 OT instances) is reported apart from
-//! generation; the PRG correlations are part of generation, and `cots` also
-//! counts the random OTs behind them. `eval` and `full` use dealer keys.
+//! columns are those of `dpf_common::bench`. Setup (base OTs, Ferret
+//! bootstrap) and preprocessing (the PRG correlations, the AND triples and
+//! the MUX COTs, all from Ferret) are reported apart from generation, and
+//! `cots` also counts the random OTs behind the PRG correlations. `eval` and
+//! `full` use dealer keys.
 
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::stream::TreeMode;
@@ -27,7 +28,7 @@ use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
 
 fn gen_sh(o: &Opts, group: Group, rng: &mut ChaCha20Rng) {
-    let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
+    let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
         // Free the previous run (full-domain outputs) before the next one.
@@ -35,6 +36,7 @@ fn gen_sh(o: &Opts, group: Group, rng: &mut ChaCha20Rng) {
         let beta = Word::random(rng, o.out_bits);
         let run = run_gen(o.size, group, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen(), FerretConfig::B13);
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
+        pre.push(run.outs[0].pre_time.max(run.outs[1].pre_time));
         g0.push(run.outs[0].gen_time);
         g1.push(run.outs[1].gen_time);
         total.push(run.times[0].max(run.times[1]));
@@ -42,7 +44,7 @@ fn gen_sh(o: &Opts, group: Group, rng: &mut ChaCha20Rng) {
     }
     let run = last.unwrap();
     let [o0, o1] = &run.outs;
-    let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.gen_stats, o1.gen_stats]);
+    let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.pre_stats, o1.pre_stats], [o0.gen_stats, o1.gen_stats]);
     print_gen(
         o,
         &GenRow {
@@ -51,9 +53,12 @@ fn gen_sh(o: &Opts, group: Group, rng: &mut ChaCha20Rng) {
             rounds,
             total: median(total),
             setup: median(setup),
+            pre: median(pre),
             gen_p0: median(g0),
             gen_p1: median(g1),
             setup_bytes: o0.setup_stats.total_bytes(),
+            pre_bytes: o0.pre_stats.total_bytes(),
+            pre_rounds: o0.pre_stats.rounds.max(o1.pre_stats.rounds),
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
             gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
