@@ -6,8 +6,8 @@
 //!
 //! `--out-bits ℓ` (1..=128, default 64) is the payload ring Z_2^ℓ, computed
 //! and sent in 64-bit words for ℓ ≤ 64 and in 128-bit words above. Options and
-//! CSV columns are those of `dpf_common::bench`. Gen builds the key only (no
-//! full-domain output). `eval` and `full` use dealer keys. With `--stream`, Gen and the dealer use the streaming tree and
+//! CSV columns are those of `dpf_common::bench`; `pre_*` is the triples and
+//! random COTs. Gen builds the key only (no full-domain output). `eval` and `full` use dealer keys. With `--stream`, Gen and the dealer use the streaming tree and
 //! `full` folds the outputs instead of storing them.
 
 use dpf_common::arith::Ring;
@@ -18,7 +18,7 @@ use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
 
 fn bench_gen<R: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
-    let (mut setup, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![]);
+    let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
         // Free the previous run before the next one.
@@ -26,6 +26,7 @@ fn bench_gen<R: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
         let beta = R::random(rng).and(R::mask(o.out_bits));
         let run = run_gen_mode(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen(), o.tree_mode(), false);
         setup.push(run.outs[0].setup_time.max(run.outs[1].setup_time));
+        pre.push(run.outs[0].pre_time.max(run.outs[1].pre_time));
         g0.push(run.outs[0].gen_time);
         g1.push(run.outs[1].gen_time);
         total.push(run.times[0].max(run.times[1]));
@@ -33,7 +34,7 @@ fn bench_gen<R: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
     }
     let run = last.unwrap();
     let [o0, o1] = &run.outs;
-    let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.gen_stats, o1.gen_stats]);
+    let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.pre_stats, o1.pre_stats], [o0.gen_stats, o1.gen_stats]);
     print_gen(
         o,
         &GenRow {
@@ -42,9 +43,12 @@ fn bench_gen<R: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
             rounds,
             total: median(total),
             setup: median(setup),
+            pre: median(pre),
             gen_p0: median(g0),
             gen_p1: median(g1),
             setup_bytes: o0.setup_stats.total_bytes(),
+            pre_bytes: o0.pre_stats.total_bytes(),
+            pre_rounds: o0.pre_stats.rounds.max(o1.pre_stats.rounds),
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
             gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
