@@ -216,17 +216,21 @@ impl CotPair {
     /// Preprocessing: makes `mine` random COTs as receiver and `theirs` as
     /// sender now, before any input is known, for the `extend` calls that
     /// follow. Those then only derandomise (one bit per COT, one round) and
-    /// must not ask for more than was made here. With Ferret this refills the
-    /// buffers, so no refill iteration runs later. In malicious mode the KOS
-    /// check runs here.
+    /// must not ask for more than is left in the pool; a later `precompute`
+    /// adds to it. With Ferret this refills the buffers, so no refill
+    /// iteration runs later. In malicious mode the KOS check runs here.
     pub fn precompute<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, mine: usize, theirs: usize, rng: &mut R) -> Result<(), Abort> {
         if let Some(f) = self.ferret.as_mut() {
             return f.ensure(ch, mine, theirs, rng);
         }
-        assert!(self.pool.is_none(), "COTs already precomputed");
         let r: Vec<bool> = (0..mine).map(|_| rng.gen()).collect();
+        let pool = self.pool.take();
         let (k, m) = self.extend(ch, &r, theirs, rng)?;
-        self.pool = Some(Pool { r, m, k });
+        let mut p = pool.unwrap_or(Pool { r: vec![], m: vec![], k: vec![] });
+        p.r.extend(r);
+        p.m.extend(m);
+        p.k.extend(k);
+        self.pool = Some(p);
         Ok(())
     }
 

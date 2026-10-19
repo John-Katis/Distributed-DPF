@@ -37,7 +37,13 @@
 //!
 //! DPF evaluation is local, so `eval` (one point) and `full` (the whole
 //! domain) rows have no communication and no rounds. The columns after the
-//! metrics break Gen down into setup and generation proper.
+//! metrics break Gen down into three phases:
+//!
+//! * setup (`setup_*`): base OTs and keys, once per session;
+//! * preprocessing (`pre_*`): the input-independent correlations Gen
+//!   consumes (random COTs and OTs, bit triples, PRG correlations, a 3P
+//!   helper's dealing);
+//! * generation proper (`gen_*`), given those correlations.
 
 use crate::net::CommStats;
 use crate::stream::TreeMode;
@@ -45,7 +51,7 @@ use std::time::Duration;
 
 /// Column names, printed once as `#` comments.
 pub const HEADER: &str = "\
-# gen: mode,variant,N,in_bits,out_bits,bm,reps,comm_p0,comm_p1,comm_p2,comm_total,rounds,comp_ms,lan_net_ms,lan_total_ms,wan_net_ms,wan_total_ms,setup_ms,gen_ms_p0,gen_ms_p1,setup_bytes,gen_bytes,gen_bytes_per_level,gen_rounds,and_gates,cots,key_bytes
+# gen: mode,variant,N,in_bits,out_bits,bm,reps,comm_p0,comm_p1,comm_p2,comm_total,rounds,comp_ms,lan_net_ms,lan_total_ms,wan_net_ms,wan_total_ms,setup_ms,pre_ms,gen_ms_p0,gen_ms_p1,setup_bytes,pre_bytes,pre_rounds,gen_bytes,gen_bytes_per_level,gen_rounds,and_gates,cots,key_bytes
 # eval: mode,variant,N,in_bits,out_bits,bm,reps,comm_p0,comm_p1,comm_p2,comm_total,rounds,comp_ms,lan_net_ms,lan_total_ms,wan_net_ms,wan_total_ms,points,ns_per_eval
 # full: mode,variant,N,in_bits,out_bits,bm,reps,comm_p0,comm_p1,comm_p2,comm_total,rounds,comp_ms,lan_net_ms,lan_total_ms,wan_net_ms,wan_total_ms,ns_per_point";
 
@@ -224,9 +230,15 @@ pub struct GenRow {
     /// included.
     pub total: Duration,
     pub setup: Duration,
+    /// Preprocessing wall time of the slower party.
+    pub pre: Duration,
     pub gen_p0: Duration,
     pub gen_p1: Duration,
     pub setup_bytes: usize,
+    /// Preprocessing traffic, all links and directions.
+    pub pre_bytes: usize,
+    /// Preprocessing rounds (max over the parties).
+    pub pre_rounds: usize,
     pub gen_bytes: usize,
     pub depth: usize,
     /// Rounds of generation proper (max over the parties).
@@ -236,11 +248,11 @@ pub struct GenRow {
     pub key_bytes: usize,
 }
 
-/// `sent` and `rounds` of a two-party Gen whose setup and generation traffic
-/// were counted apart.
-pub fn whole_gen(setup: [CommStats; 2], gen: [CommStats; 2]) -> ([usize; 3], usize) {
-    let sent = |p: usize| setup[p].bytes_sent + gen[p].bytes_sent;
-    let rounds = |p: usize| setup[p].rounds + gen[p].rounds;
+/// `sent` and `rounds` of a two-party Gen whose setup, preprocessing and
+/// generation traffic were counted apart.
+pub fn whole_gen(setup: [CommStats; 2], pre: [CommStats; 2], gen: [CommStats; 2]) -> ([usize; 3], usize) {
+    let sent = |p: usize| setup[p].bytes_sent + pre[p].bytes_sent + gen[p].bytes_sent;
+    let rounds = |p: usize| setup[p].rounds + pre[p].rounds + gen[p].rounds;
     ([sent(0), sent(1), 0], rounds(0).max(rounds(1)))
 }
 
@@ -257,7 +269,7 @@ fn metrics(o: &Opts, sent: [usize; 3], rounds: usize, comp: Duration) -> String 
 
 pub fn print_gen(o: &Opts, r: &GenRow) {
     println!(
-        "gen,{},{},{:.2},{},{},{},{},{:.3},{:.3},{:.3},{},{},{:.0},{},{},{},{}",
+        "gen,{},{},{:.2},{},{},{},{},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{:.0},{},{},{},{}",
         o.label(),
         o.size,
         o.in_bits(),
@@ -266,9 +278,12 @@ pub fn print_gen(o: &Opts, r: &GenRow) {
         o.reps,
         metrics(o, r.sent, r.rounds, r.total),
         ms(r.setup),
+        ms(r.pre),
         ms(r.gen_p0),
         ms(r.gen_p1),
         r.setup_bytes,
+        r.pre_bytes,
+        r.pre_rounds,
         r.gen_bytes,
         r.gen_bytes as f64 / r.depth as f64,
         r.gen_rounds,
