@@ -34,7 +34,7 @@ fn stream_matches_stored_in<R: Lanes>(widths: &[usize]) {
                         let (a, b) = (&stored.outs[p], &s.outs[p]);
                         assert_eq!(a.key.public_part(), b.key.public_part(), "{ctx}");
                         assert_eq!((a.key.c, a.key.fbar), (b.key.c, b.key.fbar), "{ctx}");
-                        assert_eq!((a.pre_stats, a.online_stats), (b.pre_stats, b.online_stats), "messages differ: {ctx}");
+                        assert_eq!((a.pre_stats, a.tree_stats, a.online_stats), (b.pre_stats, b.tree_stats, b.online_stats), "messages differ: {ctx}");
                     }
                 }
             }

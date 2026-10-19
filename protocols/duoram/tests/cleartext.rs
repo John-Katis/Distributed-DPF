@@ -147,8 +147,8 @@ fn traffic_follows_word_width() {
     // P2 deals n + 2 product triples of two words each.
     assert_eq!(b.outs[0].helper_bytes - a.outs[0].helper_bytes, (depth + 2) * 2 * 8);
     // P0's masked inputs (n + 2 words) and the two openings of each phase.
-    let sent64 = a.outs[0].pre_stats.bytes_sent + a.outs[0].online_stats.bytes_sent;
-    let sent128 = b.outs[0].pre_stats.bytes_sent + b.outs[0].online_stats.bytes_sent;
+    let sent64 = a.outs[0].tree_stats.bytes_sent + a.outs[0].online_stats.bytes_sent;
+    let sent128 = b.outs[0].tree_stats.bytes_sent + b.outs[0].online_stats.bytes_sent;
     assert_eq!(sent128 - sent64, (depth + 2 + 2 + 2) * 8);
     let (a, b) = (run_gen_2p(n, 64, 3, 5u64, 1), run_gen_2p(n, 128, 3, 5u128, 1));
     assert_eq!(b.outs[0].cots - a.outs[0].cots, 2 * 64);

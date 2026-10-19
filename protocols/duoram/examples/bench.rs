@@ -1,4 +1,5 @@
-//! Benchmarks for Duoram's DPF (preprocessing plus online adjustment).
+//! Benchmarks for Duoram's DPF (correlations, preprocessing and online
+//! adjustment).
 //!
 //! ```text
 //! cargo run --release -p duoram --example bench-duoram -- <gen|eval|full|all> --variant <2p|3p> [options]
@@ -12,15 +13,15 @@
 //! 128-bit word above. Options and
 //! CSV columns are those of `dpf_common::bench`. For `gen`:
 //!
-//! * `comp_ms` covers setup, preprocessing and the online phase;
-//!   `gen_ms_p*` only preprocessing and the online phase.
-//! * `comm_p0`/`comm_p1` are what P0 and P1 send over setup, preprocessing
-//!   and online; `comm_p2` is the correlations P2 deals in 3P.
-//! * `gen_bytes` is all traffic on all links: P0↔P1 in both directions, plus
-//!   P2's dealt correlations in 3P.
+//! * `pre_*` is the correlations: the AND and product triples (2P: from OT,
+//!   with the Gilboa COTs precomputed; 3P: P2's dealing, both parties'
+//!   messages).
+//! * `gen_*` is Duoram's preprocessing (the DPF at a random target) plus the
+//!   online phase, P0↔P1 in both directions; `comp_ms` adds setup and `pre`.
+//! * `comm_p0`/`comm_p1` are what P0 and P1 send over all phases; `comm_p2`
+//!   is the correlations P2 deals in 3P.
 //! * `gen_rounds` is the larger of P0's and P1's preprocessing plus online
-//!   rounds, and `rounds` adds setup. In 3P the P0–P1 link starts at depth 0,
-//!   so P2's dealing round is included.
+//!   rounds, and `rounds` adds setup and `pre_rounds`.
 //! * `cots` is 2P only.
 //! * The online phase alone is two words each way in one round; it is printed
 //!   as a `#` comment line.
@@ -35,7 +36,7 @@ use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
 
 fn bench_gen<R: Lanes>(o: &Opts, rng: &mut ChaCha20Rng) {
-    let (mut setup, mut g0, mut g1, mut total, mut onl) = (vec![], vec![], vec![], vec![], vec![]);
+    let (mut setup, mut pre, mut g0, mut g1, mut total, mut onl) = (vec![], vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
     for _ in 0..o.reps {
         // Free the previous run (full-domain outputs) before the next one.
@@ -49,17 +50,20 @@ fn bench_gen<R: Lanes>(o: &Opts, rng: &mut ChaCha20Rng) {
         };
         let [r0, r1] = &run.outs;
         setup.push(r0.setup_time.max(r1.setup_time));
-        g0.push(r0.pre_time + r0.online_time);
-        g1.push(r1.pre_time + r1.online_time);
+        pre.push(r0.pre_time.max(r1.pre_time));
+        g0.push(r0.tree_time + r0.online_time);
+        g1.push(r1.tree_time + r1.online_time);
         onl.push(r0.online_time.max(r1.online_time));
         total.push(run.times[0].max(run.times[1]));
         last = Some(run);
     }
     let run = last.unwrap();
     let [o0, o1] = &run.outs;
-    let link = o0.pre_stats.total_bytes() + o0.online_stats.total_bytes();
-    let (mut sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0, o1].map(|r| r.pre_stats + r.online_stats));
+    let link = o0.tree_stats.total_bytes() + o0.online_stats.total_bytes();
+    let (mut sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.pre_stats, o1.pre_stats], [o0, o1].map(|r| r.tree_stats + r.online_stats));
     sent[2] = o0.helper_bytes + o1.helper_bytes;
+    // 3P: P2's messages to both parties; 2P: the P0–P1 link.
+    let pre_bytes = if o.variant == "3p" { o0.helper_bytes + o1.helper_bytes } else { o0.pre_stats.total_bytes() };
     print_gen(
         o,
         &GenRow {
@@ -68,12 +72,15 @@ fn bench_gen<R: Lanes>(o: &Opts, rng: &mut ChaCha20Rng) {
             rounds,
             total: median(total),
             setup: median(setup),
+            pre: median(pre),
             gen_p0: median(g0),
             gen_p1: median(g1),
             setup_bytes: o0.setup_stats.total_bytes(),
-            gen_bytes: link + o0.helper_bytes + o1.helper_bytes,
+            pre_bytes,
+            pre_rounds: o0.pre_stats.rounds.max(o1.pre_stats.rounds),
+            gen_bytes: link,
             depth: o0.key.depth(),
-            gen_rounds: (o0.pre_stats.rounds + o0.online_stats.rounds).max(o1.pre_stats.rounds + o1.online_stats.rounds),
+            gen_rounds: (o0.tree_stats.rounds + o0.online_stats.rounds).max(o1.tree_stats.rounds + o1.online_stats.rounds),
             and_gates: 0,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),
@@ -90,7 +97,7 @@ fn bench_gen<R: Lanes>(o: &Opts, rng: &mut ChaCha20Rng) {
 }
 
 /// Both variants produce the same key; they differ only in how the
-/// preprocessing gets its correlations.
+/// correlations are made.
 fn bench<R: Lanes>(o: &Opts, rng: &mut ChaCha20Rng) {
     assert!(matches!(o.variant.as_str(), "2p" | "3p"), "unknown variant {}", o.variant);
     if o.runs("gen") {

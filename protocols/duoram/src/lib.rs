@@ -4,6 +4,8 @@
 //! (git-crysp.uwaterloo.ca/avadapal/duoram, `preprocessing/` and
 //! `2p-preprocessing/`):
 //!
+//! * [`gen::correlate`]: the input-independent correlations, AND triples and
+//!   product triples (3P: dealt by P2; 2P: from OT).
 //! * [`gen::preprocess`]: a Floram-style DPF at a random target `r`, with the
 //!   correction words from Du–Atallah products, the deferred final CW, and
 //!   the conversion of the XOR-shared tree into additive shares (App. D).

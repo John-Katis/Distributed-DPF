@@ -1,5 +1,10 @@
-//! Duoram's DPF generation: preprocessing at a random target, then the
-//! online adjustment to the real (α, β).
+//! Duoram's DPF generation: input-independent correlations, preprocessing at
+//! a random target, then the online adjustment to the real (α, β).
+//!
+//! **Correlations** ([`correlate`]): the n AND triples of step 2 and the
+//! n + 2 products of steps 4–5. 3P: P2 deals both in one message. 2P: the
+//! triples from COTs, and random COTs for the Gilboa products, which steps
+//! 4–5 then derandomise with one bit each.
 //!
 //! **Preprocessing** (Protocol 1/2 lines 1–4, `create_dpfs` and
 //! `convert_shares` of the reference), for party b ∈ {0, 1}:
@@ -27,7 +32,7 @@
 //! the reference's `value_t`: `u64` for an output ring of up to 64 bits,
 //! `u128` for up to 128 bits ([`Lanes`]).
 
-use crate::du_atallah::{compute_cw, deal as p2_deal, receive_dealt, Helper};
+use crate::du_atallah::{compute_cw, deal as p2_deal, receive_dealt, CwCorr, Helper};
 use crate::key::DuoramKey;
 use crate::tree::{CorrectionWord, DuoramTree, Lanes, StoredTree, StreamTree};
 use dpf_common::arith::{mask, Ring};
@@ -43,8 +48,11 @@ use std::time::{Duration, Instant};
 pub struct GenOutput<R: Lanes = u64> {
     pub key: DuoramKey<R>,
     pub setup_stats: CommStats,
-    /// Preprocessing traffic of this party (all its links).
+    /// The correlations ([`correlate`]): 2P the OT traffic with the peer, 3P
+    /// what P2 dealt to this party (its link to P2).
     pub pre_stats: CommStats,
+    /// Duoram's preprocessing, the DPF at the random target (P0–P1 link).
+    pub tree_stats: CommStats,
     /// Online traffic of this party.
     pub online_stats: CommStats,
     /// Bytes received from the helper P2 (3P only).
@@ -53,6 +61,7 @@ pub struct GenOutput<R: Lanes = u64> {
     pub cots: usize,
     pub setup_time: Duration,
     pub pre_time: Duration,
+    pub tree_time: Duration,
     pub online_time: Duration,
 }
 
@@ -94,25 +103,42 @@ fn exchange<R: Ring>(ch: &mut Channel, mine: &[R]) -> Vec<R> {
     got.chunks(R::BYTES).zip(mine).map(|(c, v)| v.add(R::get(c))).collect()
 }
 
-/// Steps 1–5 for this party, over the link to the other party.
-pub fn preprocess<R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, n_size: u64, rng: &mut ChaCha20Rng) -> Preprocessed<R> {
-    preprocess_mode(ch, helper, n_size, rng, TreeMode::Stored)
+/// The correlations for one generation, over the link to the other party:
+/// the n AND triples of step 2 (returned; 3P: from what P2 dealt, no
+/// traffic) and, in 2P, random COTs for the n + 2 Gilboa products of steps
+/// 4–5, party 1 receiving.
+pub fn correlate<R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, n_size: u64, rng: &mut ChaCha20Rng) -> Vec<CwCorr> {
+    let n = depth_for(n_size);
+    let corr = helper.cw_corr(ch, n, rng);
+    if let Helper::Ot(cot) = helper {
+        // One COT per bit of y: n single bits and two full words (steps 4–5).
+        let total = n + 2 * R::BITS;
+        let (mine, theirs) = if ch.party() == 0 { (0, total) } else { (total, 0) };
+        cot.precompute(ch, mine, theirs, rng).expect("semi-honest COT");
+    }
+    corr
+}
+
+/// Steps 1–5 for this party, over the link to the other party, given the
+/// correlations of [`correlate`].
+pub fn preprocess<R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, corr: Vec<CwCorr>, n_size: u64, rng: &mut ChaCha20Rng) -> Preprocessed<R> {
+    preprocess_mode(ch, helper, corr, n_size, rng, TreeMode::Stored)
 }
 
 /// [`preprocess`] with the tree held as `mode` says. Both modes send the same
 /// messages.
-pub fn preprocess_mode<R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed<R> {
+pub fn preprocess_mode<R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, corr: Vec<CwCorr>, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed<R> {
     match mode {
-        TreeMode::Stored => preprocess_with::<StoredTree, R>(ch, helper, n_size, rng, mode),
-        TreeMode::Stream { .. } => preprocess_with::<StreamTree, R>(ch, helper, n_size, rng, mode),
+        TreeMode::Stored => preprocess_with::<StoredTree, R>(ch, helper, corr, n_size, rng, mode),
+        TreeMode::Stream { .. } => preprocess_with::<StreamTree, R>(ch, helper, corr, n_size, rng, mode),
     }
 }
 
-fn preprocess_with<T: DuoramTree, R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed<R> {
+fn preprocess_with<T: DuoramTree, R: Lanes>(ch: &mut Channel, helper: &mut Helper<R>, corr: Vec<CwCorr>, n_size: u64, rng: &mut ChaCha20Rng, mode: TreeMode) -> Preprocessed<R> {
     let b = ch.party();
     let n = depth_for(n_size);
+    assert_eq!(corr.len(), n, "one AND triple per level");
     let r_bits = rng.gen::<u64>() & mask(n);
-    let corr = helper.cw_corr(ch, n, rng);
 
     // Steps 1–2.
     let root = Block((rng.gen::<u128>() & !1) | b as u128);
@@ -172,22 +198,28 @@ pub fn online<R: Lanes>(ch: &mut Channel, pre: Preprocessed<R>, bits: usize, alp
     }
 }
 
+/// After the correlations: synchronises (timing only, counted in no phase),
+/// then runs and measures preprocessing and the online phase on the link
+/// `ch` to the other party.
 fn finish<R: Lanes>(
     ch: &mut Channel,
     pre_fn: impl FnOnce(&mut Channel) -> Preprocessed<R>,
-    stats: impl Fn(&Channel) -> CommStats,
     bits: usize,
     alpha_share: u64,
     beta_share: R,
 ) -> (DuoramKey<R>, CommStats, CommStats, Duration, Duration) {
-    let s0 = stats(ch);
+    // Neither party's preprocessing includes waiting for the other's
+    // correlations. In 3P the sync also brings the P0–P1 link's round count up
+    // to the party's clock, which P2's message advanced.
+    ch.sync();
+    let s0 = ch.stats();
     let t0 = Instant::now();
     let pre = pre_fn(ch);
     let pre_time = t0.elapsed();
-    let s1 = stats(ch);
+    let s1 = ch.stats();
     let t1 = Instant::now();
     let key = online(ch, pre, bits, alpha_share, beta_share);
-    (key, s1.since(&s0), stats(ch).since(&s1), pre_time, t1.elapsed())
+    (key, s1.since(&s0), ch.stats().since(&s1), pre_time, t1.elapsed())
 }
 
 /// 2P-Duoram: P0 and P1 alone, correlations from IKNP OT.
@@ -205,19 +237,19 @@ pub fn gen_2p_mode<R: Lanes>(ch: &mut Channel, n_size: u64, bits: usize, alpha_s
     ch.sync();
     let setup_stats = ch.stats();
     let setup_time = t_setup.elapsed();
-    let (key, pre_stats, online_stats, pre_time, online_time) = finish(
-        ch,
-        |ch| preprocess_mode(ch, &mut Helper::Ot(&mut cot), n_size, &mut rng, mode),
-        |ch| ch.stats(),
-        bits,
-        alpha_share,
-        beta_share,
-    );
-    GenOutput { key, setup_stats, pre_stats, online_stats, helper_bytes: 0, cots: cot.produced, setup_time, pre_time, online_time }
+    let t_pre = Instant::now();
+    let mut helper = Helper::Ot(&mut cot);
+    let corr = correlate(ch, &mut helper, n_size, &mut rng);
+    let pre_stats = ch.stats().since(&setup_stats);
+    let pre_time = t_pre.elapsed();
+    let (key, tree_stats, online_stats, tree_time, online_time) =
+        finish(ch, |ch| preprocess_mode(ch, &mut helper, corr, n_size, &mut rng, mode), bits, alpha_share, beta_share);
+    GenOutput { key, setup_stats, pre_stats, tree_stats, online_stats, helper_bytes: 0, cots: cot.produced, setup_time, pre_time, tree_time, online_time }
 }
 
 /// 3P-Duoram, party P0 or P1: correlations dealt by P2. P2's link is only
-/// used for its one message (`helper_bytes`); `pre_stats` is the P0–P1 link.
+/// used for its one message (`pre_stats`, `helper_bytes`); `tree_stats` and
+/// `online_stats` are the P0–P1 link.
 pub fn gen_3p<R: Lanes>(peers: &mut Peers, n_size: u64, bits: usize, alpha_share: u64, beta_share: R, seed: [u8; 32]) -> GenOutput<R> {
     gen_3p_mode(peers, n_size, bits, alpha_share, beta_share, seed, TreeMode::Stored)
 }
@@ -229,27 +261,24 @@ pub fn gen_3p_mode<R: Lanes>(peers: &mut Peers, n_size: u64, bits: usize, alpha_
     assert!(b < 2, "P2 runs gen_3p_helper");
     let mut rng = ChaCha20Rng::from_seed(seed);
     let (levels, crosses) = counts(n_size);
-    let t0 = Instant::now();
+    let t_pre = Instant::now();
     let mut helper = receive_dealt::<R>(peers.to(2), levels, crosses);
-    let from_p2 = peers.stats_with(2);
-    let recv_time = t0.elapsed();
-    let (key, pre_stats, online_stats, pre_time, online_time) = finish(
-        peers.to(1 - b),
-        |ch| preprocess_mode(ch, &mut helper, n_size, &mut rng, mode),
-        |ch| ch.stats(),
-        bits,
-        alpha_share,
-        beta_share,
-    );
+    let corr = correlate(peers.to(1 - b), &mut helper, n_size, &mut rng);
+    let pre_stats = peers.stats_with(2);
+    let pre_time = t_pre.elapsed();
+    let (key, tree_stats, online_stats, tree_time, online_time) =
+        finish(peers.to(1 - b), |ch| preprocess_mode(ch, &mut helper, corr, n_size, &mut rng, mode), bits, alpha_share, beta_share);
     GenOutput {
         key,
         setup_stats: CommStats::default(),
         pre_stats,
+        tree_stats,
         online_stats,
-        helper_bytes: from_p2.bytes_recv,
+        helper_bytes: pre_stats.bytes_recv,
         cots: 0,
         setup_time: Duration::ZERO,
-        pre_time: pre_time + recv_time,
+        pre_time,
+        tree_time,
         online_time,
     }
 }
