@@ -18,10 +18,10 @@ use crate::hash::{ot_hash, CtrPrg};
 use crate::net::Channel;
 use rand::{CryptoRng, Rng, RngCore};
 
-/// Number of base OTs, i.e. the OT-extension key width. Obliv-C uses
-/// `OT_KEY_BYTES_HONEST = 10`, so 80 bits. Set this to 128 for a 128-bit
-/// computational security level. Must be at most 128.
-pub const OT_KEY_BITS: usize = 80;
+/// Number of base OTs, i.e. the OT-extension key width. 128 bits, the
+/// computational security level of every other protocol here; Obliv-C's
+/// default is `OT_KEY_BYTES_HONEST = 10`, i.e. 80 bits. Must be at most 128.
+pub const OT_KEY_BITS: usize = 128;
 
 pub(crate) fn pack_words(bits: &[bool]) -> Vec<u128> {
     let mut w = vec![0u128; bits.len().div_ceil(128)];
