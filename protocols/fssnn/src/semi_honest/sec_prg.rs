@@ -59,11 +59,22 @@ fn h2(x: Block, tweak: u64) -> u8 {
     (z3_hash().h(x, tweak).0 & 3) as u8
 }
 
-/// Expected random COTs per (2,3)-correlation (3/2) and per
-/// (3,2)-correlation (2 · 4/3), with slack so that one batch nearly always
-/// suffices.
-fn oversample(need: usize, num: usize, den: usize) -> usize {
-    if need == 0 { 0 } else { need * num / den + need / 8 + 64 }
+/// Standard deviations of slack per batch in [`draws`].
+const Z: f64 = 8.0;
+
+/// Draws for `need` kept correlations when each draw is kept with
+/// probability `p` (2/3 for a (2,3)-COT, 3/4 for a (3,2)-pair): the smallest
+/// `k` with `k·p − Z·σ ≥ need`, `σ = √(k·p·(1−p))`, so one batch falls short
+/// with probability below 10⁻¹⁵ (`z` = [`Z`]). [`preprocess`] still draws
+/// again whenever a batch does fall short.
+fn draws(need: usize, p: f64, z: f64) -> usize {
+    if need == 0 {
+        return 0;
+    }
+    // √k is the positive root of p·x² − z·√(p(1−p))·x − need = 0.
+    let s = z * (p * (1.0 - p)).sqrt();
+    let x = (s + (s * s + 4.0 * p * need as f64).sqrt()) / (2.0 * p);
+    (x * x).ceil() as usize
 }
 
 /// Receiver's share `(u_2, v_2)` of a (3,2)-correlation when `x̃_2 = j`, given
@@ -94,14 +105,19 @@ fn s_j(x1: u8, u1: bool, v1: bool, j: u8) -> u8 {
 /// Two rounds besides Ferret refills: the keep and discard bits cross in one,
 /// the masked `s_j` follow in the next.
 pub fn preprocess<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, calls: usize, tweak: &mut u64, rng: &mut R) -> Vec<PrgCorr> {
+    preprocess_z(ch, cot, calls, tweak, rng, Z)
+}
+
+/// [`preprocess`] with `z` standard deviations of slack per batch.
+fn preprocess_z<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, calls: usize, tweak: &mut u64, rng: &mut R, z: f64) -> Vec<PrgCorr> {
     let (need23, need32) = (calls * N_IN, calls * M_MID);
     let mut c23: Vec<(bool, u8)> = Vec::with_capacity(need23);
     let mut c32: Vec<(u8, bool, bool)> = Vec::with_capacity(need32);
     let delta = cot.delta();
     let first = ch.party() == 0;
     while c23.len() < need23 || c32.len() < need32 {
-        let k23 = oversample(need23 - c23.len(), 3, 2);
-        let k32 = oversample(need32 - c32.len(), 4, 3);
+        let k23 = draws(need23 - c23.len(), 2.0 / 3.0, z);
+        let k32 = draws(need32 - c32.len(), 3.0 / 4.0, z);
         let base = *tweak;
         *tweak += (k23 + 2 * k32) as u64;
         let tw = |j: usize| base + j as u64;
@@ -281,6 +297,10 @@ mod tests {
     type PairRun = ([Vec<PrgCorr>; 2], [Vec<[u128; 2]>; 2], Vec<u128>);
 
     fn run_pair(calls: usize, seed: u64, ferret: bool) -> PairRun {
+        run_pair_z(calls, seed, ferret, Z)
+    }
+
+    fn run_pair_z(calls: usize, seed: u64, ferret: bool, z: f64) -> PairRun {
         let mut rng = ChaCha20Rng::seed_from_u64(seed);
         let x: Vec<u128> = (0..calls).map(|_| rng.gen()).collect();
         let x0: Vec<u128> = (0..calls).map(|_| rng.gen()).collect();
@@ -294,7 +314,7 @@ mod tests {
                     cot.enable_ferret(ch, FerretConfig::TOY, &mut r).unwrap();
                 }
                 let mut tw = 0;
-                let corr = preprocess(ch, &mut cot, calls, &mut tw, &mut r);
+                let corr = preprocess_z(ch, &mut cot, calls, &mut tw, &mut r, z);
                 let y = eval_shared(ch, &corr, &xs);
                 (corr, y)
             }
@@ -323,6 +343,37 @@ mod tests {
                 let bit = |m: &[u128; MW]| (m[i / 128] >> (i % 128)) & 1;
                 assert_eq!(bit(&a.u) ^ bit(&b.u), (x % 2) as u128, "(3,2) u at {i}");
                 assert_eq!(bit(&a.v) ^ bit(&b.v), (((x + 1) % 3) % 2) as u128, "(3,2) v at {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn draws_cover_need() {
+        for need in [1, 10, 128, 512, 8192, 32768] {
+            for p in [2.0 / 3.0, 3.0 / 4.0] {
+                let k = draws(need, p, Z) as f64;
+                assert!(k * p - Z * (k * p * (1.0 - p)).sqrt() >= need as f64 - 1e-6, "need={need} p={p}");
+                assert!(k < need as f64 / p * 1.25 + 600.0, "need={need} p={p}: {k} draws");
+            }
+        }
+    }
+
+    /// Batches sized below the expectation fall short, so preprocessing must
+    /// draw again until it has every correlation.
+    #[test]
+    fn short_batches_are_refilled() {
+        for ferret in [false, true] {
+            let ([c0, c1], [y0, y1], x) = run_pair_z(4, 5, ferret, -3.0);
+            assert_eq!((c0.len(), c1.len()), (4, 4));
+            for (a, b) in c0.iter().zip(&c1) {
+                for i in 0..M_MID {
+                    let t = (a.xt[i] + b.xt[i]) % 3;
+                    let bit = |m: &[u128; MW]| (m[i / 128] >> (i % 128)) & 1;
+                    assert_eq!(bit(&a.u) ^ bit(&b.u), (t % 2) as u128, "ferret={ferret} (3,2) u at {i}");
+                }
+            }
+            for k in 0..x.len() {
+                assert_eq!([y0[k][0] ^ y1[k][0], y0[k][1] ^ y1[k][1]], lpn_prg().eval(x[k]), "ferret={ferret} call {k}");
             }
         }
     }
