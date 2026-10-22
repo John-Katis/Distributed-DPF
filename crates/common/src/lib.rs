@@ -8,6 +8,7 @@
 //!   optional KOS check.
 //! * [`gf128`]: GF(2^128) multiplication.
 //! * [`f4`]: the field F4, scalar and packed.
+//! * [`foleage`]: the FOLEAGE F4-OLE PCG with dealer-free seed generation.
 //! * [`aes_tower`]: fixed-key AES–MMO in the clear and in 2PC, S-box in the
 //!   F4 tower, F4 products from a pluggable backend.
 //! * [`arith`]: Z_2^ℓ helpers and the OT-based arithmetic MUX.
@@ -27,6 +28,7 @@ pub mod block;
 pub mod bool2pc;
 pub mod coin;
 pub mod f4;
+pub mod foleage;
 pub mod gc;
 pub mod gf128;
 pub mod hash;
