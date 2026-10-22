@@ -200,6 +200,37 @@ pub fn rot_triples<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, 
     (0..m).map(|i| (a[i], b[i], c[i] ^ (a[i] & b[i]))).collect()
 }
 
+/// `m` bit-times-block triples `(a, B, C = a·B)`, XOR-shared, from random COTs
+/// one per direction: [`rot_triples`] with the hashes kept at 128 bits. In the
+/// direction where party s sends, `H(K) ⊕ H(M) = r·(H(K) ⊕ H(K ⊕ Δ))` shares
+/// `a_{1−s}·B_s` with `a_{1−s} = r` and `B_s = H(K) ⊕ H(K ⊕ Δ)`. On Ferret COTs
+/// this sends nothing beyond Ferret's own refills.
+pub fn rot_string_triples<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, m: usize, rng: &mut R) -> Vec<(bool, Block, Block)> {
+    let me = ch.party();
+    let delta = cot.delta();
+    let h = |x: Block, i: usize| cot_hash().h(x, (3 << 61) | i as u64);
+    let (mut a, mut b, mut c) = (vec![false; m], vec![Block::ZERO; m], vec![Block::ZERO; m]);
+    for s in 0..2 {
+        match cot.random_cots(ch, s, m, rng).expect("semi-honest COT") {
+            RandomCots::Sender(k) => {
+                debug_assert_eq!(me, s);
+                for i in 0..m {
+                    let (x0, x1) = (h(k[i], i), h(k[i] ^ delta, i));
+                    b[i] = x0 ^ x1;
+                    c[i] ^= x0;
+                }
+            }
+            RandomCots::Receiver(r, macs) => {
+                for i in 0..m {
+                    a[i] = r[i];
+                    c[i] ^= h(macs[i], i);
+                }
+            }
+        }
+    }
+    (0..m).map(|i| (a[i], b[i], c[i] ^ b[i].and_bit(a[i]))).collect()
+}
+
 /// F_MUX^{B,λ}: shares of `x_i` if `c = 0` and of `y_i` if `c = 1`, for
 /// XOR-shared blocks and one XOR-shared choice bit `c`.
 ///
@@ -324,6 +355,23 @@ mod tests {
         }
         // Online: 2 bits per AND, one round.
         assert_eq!((s0.bytes_sent, s0.rounds), (100usize.div_ceil(8), 1));
+    }
+
+    #[test]
+    fn rot_string_triples_are_triples() {
+        let party = |seed: u64| {
+            move |ch: &mut Channel| {
+                let mut r = ChaCha20Rng::seed_from_u64(seed);
+                let d = Block::random(&mut r);
+                let mut cot = CotPair::setup(ch, &mut r, d, false).unwrap();
+                rot_string_triples(ch, &mut cot, 200, &mut r)
+            }
+        };
+        let (t0, t1) = run_two_party(party(5), party(6));
+        for (x, y) in t0.iter().zip(&t1) {
+            assert_eq!(x.2 ^ y.2, (x.1 ^ y.1).and_bit(x.0 ^ y.0));
+        }
+        assert!(t0.iter().any(|t| t.0) && t1.iter().any(|t| t.0));
     }
 
     #[test]

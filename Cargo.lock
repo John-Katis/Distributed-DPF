@@ -255,6 +255,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ht-aes"
+version = "0.1.0"
+dependencies = [
+ "dpf-common",
+ "rand",
+ "rand_chacha",
+]
+
+[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
