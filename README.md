@@ -23,6 +23,9 @@ protocols/
                      F_PRF = fixed-key AES-MMO in 2PC over the F4 tower;
                      semi-honest (FOLEAGE triples) and malicious (bucketed
                      authenticated triples, payload MAC, Π_Verify)
+crates/exp-mal-foleage/  experimental: malicious F4 triples from FOLEAGE (dealer-
+                     seeded): (a) all MACs from the PCG, (b) PCG-VOLE MACs +
+                     aBits + sacrifice; see its README
 scripts/
   bench_all.sh       runs all benchmarks into results/*.csv
 REFERENCES.md        papers and techniques this code implements
