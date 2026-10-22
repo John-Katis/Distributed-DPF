@@ -20,11 +20,15 @@
 //!
 //! * [`semi_honest`]: payload in Z_2^ℓ (ℓ ≤ 128), F4 triples from FOLEAGE
 //!   ([`dpf_common::foleage`]), leaf B2A and sign as in FssNN (SIRNN MUXes).
-//! * [`malicious`]: every share authenticated (bit MACs in GF(2^128)), F4
-//!   triples from leaky authenticated triples with bucketing, payload in
-//!   `{0,1}^ℓ ⊂ GF(2^128)` with a payload-MAC correction word and Π_Verify.
+//! * [`malicious`]: the semi-honest Gen on the same preprocessing, plus the
+//!   paper's payload-MAC word `W^MAC_CW` under a persistent key δ and
+//!   Π_Verify on the outputs; payload in `{0,1}^ℓ ⊂ GF(2^128)`.
+//! * [`malicious_auth`]: additionally every share authenticated (bit MACs in
+//!   GF(2^128), the layer (A1)–(A5) against selective failure), F4 triples
+//!   from leaky authenticated triples with bucketing on malicious Ferret.
 
 pub mod malicious;
+pub mod malicious_auth;
 pub mod semi_honest;
 
 use dpf_common::aes_tower::{Mmo, PRODUCTS_PER_CALL, ROUNDS_PER_CALL};

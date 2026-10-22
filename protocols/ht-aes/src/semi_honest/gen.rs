@@ -73,13 +73,115 @@ pub struct Pre {
 /// Preprocessing for depth `n` and width `bits`: FOLEAGE expansion and
 /// triples, string triples, Ferret COTs.
 pub fn precompute(ch: &mut Channel, cot: &mut CotPair, seed: &foleage::Seed, n: usize, bits: usize, rng: &mut ChaCha20Rng) -> Pre {
+    precompute_counts(ch, cot, seed, sh_products(n), n, n + 2 * bits + 1, rng)
+}
+
+/// `products` F4 triples from the FOLEAGE seed, `strings` bit-times-block
+/// triples from Ferret random OTs and `cots` COTs per direction.
+pub(crate) fn precompute_counts(ch: &mut Channel, cot: &mut CotPair, seed: &foleage::Seed, products: usize, strings: usize, cots: usize, rng: &mut ChaCha20Rng) -> Pre {
     let ole = seed.expand();
-    let be = BeaverF4::new(ch.party(), foleage::triples(&ole, ch.party(), sh_products(n)));
+    let be = BeaverF4::new(ch.party(), foleage::triples(&ole, ch.party(), products));
     drop(ole);
-    let string_triples = rot_string_triples(ch, cot, n, rng);
-    let cots = n + 2 * bits + 1;
+    let string_triples = rot_string_triples(ch, cot, strings, rng);
     cot.precompute(ch, cots, cots, rng).expect("semi-honest COT");
     Pre { be, string_triples }
+}
+
+/// One party's session state after setup.
+pub(crate) struct Setup {
+    pub cot: CotPair,
+    pub rng: ChaCha20Rng,
+    pub fseed: foleage::Seed,
+    pub stats: CommStats,
+    pub time: Duration,
+    pub seedgen_stats: CommStats,
+    pub seedgen_time: Duration,
+}
+
+/// Base OTs keyed by `Δ_b` (`lsb(Δ_b) = b`), Ferret, FOLEAGE seed generation.
+pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> Setup {
+    let t_setup = Instant::now();
+    let mut rng = ChaCha20Rng::from_seed(seed);
+    let party = ch.party();
+    let delta = Block::random(&mut rng).with_lsb(party == 1);
+    let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
+    if let Some(cfg) = ferret {
+        cot.enable_ferret(ch, cfg, &mut rng).expect("semi-honest Ferret");
+    }
+    let before_seed = ch.stats();
+    let t_seed = Instant::now();
+    let fseed = seed_gen(ch, &mut cot, foleage, &mut rng);
+    let seedgen_stats = ch.stats().since(&before_seed);
+    let seedgen_time = t_seed.elapsed();
+    ch.sync();
+    Setup { cot, rng, fseed, stats: ch.stats(), time: t_setup.elapsed(), seedgen_stats, seedgen_time }
+}
+
+/// Steps 1–3: `⟨α_ℓ·Δ⟩`, then the n levels. `extra` rides with the level-0
+/// message (n ≥ 1) and the other party's `extra` (of the same length) is
+/// returned. `cw_err = Some((ℓ, ε))` XORs ε into this party's CW share at
+/// level ℓ (a deliberate deviation, for the malicious abort tests). Returns
+/// this party's share of `st_{n,0}`, the words, the reply.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn walk(
+    be: &mut BeaverF4,
+    string_triples: &[(bool, Block, Block)],
+    cot: &mut CotPair,
+    rng: &mut ChaCha20Rng,
+    ch: &mut Channel,
+    n: usize,
+    alpha_share: u64,
+    extra: &[u8],
+    cw_err: Option<(usize, Block)>,
+) -> (Block, Vec<Block>, Vec<u8>) {
+    assert!(n >= 1);
+    let b = ch.party();
+    let delta = cot.delta();
+    let fs = state_hash();
+
+    // 1. ⟨α_ℓ·Δ⟩.
+    let a: Vec<bool> = (0..n).map(|i| (alpha_share >> (n - 1 - i)) & 1 == 1).collect();
+    let (k, m) = cot.extend(ch, &a, n, rng).expect("semi-honest COT");
+    let a_delta: Vec<Block> = (0..n).map(|i| delta.and_bit(a[i]) ^ m[i] ^ k[i]).collect();
+
+    // 2. Root shares.
+    let mut st = if b == 0 { delta } else { Block::ZERO };
+    let mut cws = Vec::with_capacity(n);
+    let mut reply = Vec::new();
+    for i in 0..n {
+        // 3A. L_0, L_1.
+        let jobs: [(&Mmo, Shared128<bool>); 2] = [(fs, bits_of(st)), (fs, bits_of(st ^ delta))];
+        let l = mmo_shared(be, ch, &jobs);
+        let (l0, l1) = (block_of(&l[0]), block_of(&l[1]));
+        // 3B + C opening.
+        let mut cw_share = l0 ^ l1 ^ delta ^ a_delta[i];
+        if let Some((lvl, e)) = cw_err {
+            if lvl == i {
+                cw_share ^= e;
+            }
+        }
+        let (ta, tb, tc) = string_triples[i];
+        let (e, f) = (a[i] ^ ta, st ^ tb);
+        let x = if i == 0 { extra.len() } else { 0 };
+        let mut msg = Vec::with_capacity(33 + x);
+        msg.extend_from_slice(&cw_share.to_bytes());
+        msg.extend_from_slice(&f.to_bytes());
+        msg.push(e as u8);
+        msg.extend_from_slice(&extra[..x]);
+        ch.send(msg);
+        let mut theirs = ch.recv();
+        assert_eq!(theirs.len(), 33 + x, "malformed level message");
+        if i == 0 {
+            reply = theirs.split_off(33);
+        }
+        let cw = cw_share ^ Block::from_bytes(&theirs[..16]);
+        let (f, e) = (f ^ Block::from_bytes(&theirs[16..32]), e ^ (theirs[32] & 1 == 1));
+        // α·st = e·f ⊕ e·B ⊕ f·a ⊕ C.
+        let prod = f.and_bit(e && b == 0) ^ tb.and_bit(e) ^ f.and_bit(ta) ^ tc;
+        st = l0 ^ prod ^ cw.and_bit(st.lsb());
+        cws.push(cw);
+    }
+    (st, cws, reply)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -97,39 +199,8 @@ fn gen_with<T: Ring>(
     let n = depth_for(n_size);
     let Pre { mut be, string_triples } = pre;
     let delta = cot.delta();
-    let (fs, fp): (&Mmo, &Mmo) = (state_hash(), pay_hash());
-
-    // 1. ⟨α_ℓ·Δ⟩.
-    let a: Vec<bool> = (0..n).map(|i| (alpha_share >> (n - 1 - i)) & 1 == 1).collect();
-    let (k, m) = cot.extend(ch, &a, n, rng).expect("semi-honest COT");
-    let a_delta: Vec<Block> = (0..n).map(|i| delta.and_bit(a[i]) ^ m[i] ^ k[i]).collect();
-
-    // 2. Root shares.
-    let mut st = if b == 0 { delta } else { Block::ZERO };
-    let mut cws = Vec::with_capacity(n);
-    for i in 0..n {
-        // 3A. L_0, L_1.
-        let jobs: [(&Mmo, Shared128<bool>); 2] = [(fs, bits_of(st)), (fs, bits_of(st ^ delta))];
-        let l = mmo_shared(&mut be, ch, &jobs);
-        let (l0, l1) = (block_of(&l[0]), block_of(&l[1]));
-        // 3B + C opening.
-        let cw_share = l0 ^ l1 ^ delta ^ a_delta[i];
-        let (ta, tb, tc) = string_triples[i];
-        let (e, f) = (a[i] ^ ta, st ^ tb);
-        let mut msg = Vec::with_capacity(33);
-        msg.extend_from_slice(&cw_share.to_bytes());
-        msg.extend_from_slice(&f.to_bytes());
-        msg.push(e as u8);
-        ch.send(msg);
-        let theirs = ch.recv();
-        assert_eq!(theirs.len(), 33, "malformed level message");
-        let cw = cw_share ^ Block::from_bytes(&theirs[..16]);
-        let (f, e) = (f ^ Block::from_bytes(&theirs[16..32]), e ^ (theirs[32] & 1 == 1));
-        // α·st = e·f ⊕ e·B ⊕ f·a ⊕ C.
-        let prod = f.and_bit(e && b == 0) ^ tb.and_bit(e) ^ f.and_bit(ta) ^ tc;
-        st = l0 ^ prod ^ cw.and_bit(st.lsb());
-        cws.push(cw);
-    }
+    let fp = pay_hash();
+    let (st, cws, _) = walk(&mut be, &string_triples, cot, rng, ch, n, alpha_share, &[], None);
 
     // 4. Leaf word.
     let jobs: [(&Mmo, Shared128<bool>); 2] = [(fp, bits_of(leaf_seed(st))), (fp, bits_of(leaf_seed(st ^ delta)))];
@@ -163,22 +234,7 @@ fn gen_with<T: Ring>(
 #[allow(clippy::too_many_arguments)]
 pub fn gen<T: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: T, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> GenOutput<T> {
     assert!(bits >= 1 && bits <= T::BITS && bits <= 128);
-    let t_setup = Instant::now();
-    let mut rng = ChaCha20Rng::from_seed(seed);
-    let party = ch.party();
-    let delta = Block::random(&mut rng).with_lsb(party == 1);
-    let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
-    if let Some(cfg) = ferret {
-        cot.enable_ferret(ch, cfg, &mut rng).expect("semi-honest Ferret");
-    }
-    let before_seed = ch.stats();
-    let t_seed = Instant::now();
-    let fseed = seed_gen(ch, &mut cot, foleage, &mut rng);
-    let seedgen_stats = ch.stats().since(&before_seed);
-    let seedgen_time = t_seed.elapsed();
-    ch.sync();
-    let setup_stats = ch.stats();
-    let setup_time = t_setup.elapsed();
+    let Setup { mut cot, mut rng, fseed, stats: setup_stats, time: setup_time, seedgen_stats, seedgen_time } = setup(ch, seed, ferret, foleage);
     let cots_before = cot.produced;
 
     let t_pre = Instant::now();

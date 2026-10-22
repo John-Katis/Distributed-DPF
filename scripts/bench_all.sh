@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the DPF benchmarks (Floram, HT, HT-mal with Ferret, Floram-arith,
-# FssNN bin/arith, Duoram 2P/3P, ours: ht-aes sh/mal) over the same sweep and writes one CSV per
+# FssNN bin/arith, Duoram 2P/3P, ours: ht-aes sh/mal/mal-auth) over the same sweep and writes one CSV per
 # protocol into results/.
 #
 #   [OUT_LIST=a,b,..] scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [--batch-log b] [mode]
@@ -50,3 +50,4 @@ echo "duoram-2p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-fro
 echo "duoram-3p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 3p           | tee results/duoram-3p.csv
 echo "ht-aes-sh"     && "$BIN/bench-ht-aes"       "$MODE" "${S[@]}" --variant sh                            | tee results/ht-aes-sh.csv
 echo "ht-aes-mal"    && "$BIN/bench-ht-aes"       "$MODE" "${S[@]}" --variant mal                           | tee results/ht-aes-mal.csv
+echo "ht-aes-mal-auth" && "$BIN/bench-ht-aes"     "$MODE" "${S[@]}" --variant mal-auth                      | tee results/ht-aes-mal-auth.csv

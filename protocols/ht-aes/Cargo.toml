@@ -1,6 +1,6 @@
 [package]
 name = "ht-aes"
-description = "Our dealer-free half-tree DPF: shared on-path state, F_PRF = fixed-key AES-MMO evaluated in 2PC over the F4 tower, F4 triples from FOLEAGE (semi-honest) or authenticated leaky triples with bucketing (malicious)."
+description = "Our dealer-free half-tree DPF: shared on-path state, F_PRF = fixed-key AES-MMO evaluated in 2PC over the F4 tower, F4 triples from FOLEAGE (semi-honest and malicious with payload MAC) or authenticated leaky triples with bucketing (malicious, every share authenticated)."
 version.workspace = true
 edition.workspace = true
 

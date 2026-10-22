@@ -1,20 +1,22 @@
-//! The malicious Gen: correctness against the dealer, Π_Verify, aborts.
+//! The malicious Gen on the semi-honest preprocessing: correctness against
+//! the dealer, Π_Verify, and that deviations in Gen are caught by Π_Verify.
 
 use dpf_common::block::Block;
 use dpf_common::coin::Abort;
 use dpf_common::net::run_two_party;
-use ht_aes::malicious::{deal, low, run_mal, verify, Fault, MalKey, MalRun};
+use ht_aes::malicious::{deal, low, mal_products, run_mal, verify, Fault, MalKey, MalRun};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
-fn run(n: u64, bits: usize, alpha: u64, beta: Block, seed: u64, faults: [Option<Fault>; 2]) -> [Result<MalRun, Abort>; 2] {
+fn run(n: u64, bits: usize, alpha: u64, beta: Block, seed: u64, faults: [Option<Fault>; 2]) -> [MalRun; 2] {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
     let b0 = low(Block::random(&mut rng), bits);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
+    let p = ht_aes::malicious::mal_foleage_for(dpf_common::block::depth_for(n));
     let (r0, r1) = run_two_party(
-        move |c| run_mal(c, n, bits, a0, b0, seeds[0], None, faults[0]),
-        move |c| run_mal(c, n, bits, alpha ^ a0, beta ^ b0, seeds[1], None, faults[1]),
+        move |c| run_mal(c, n, bits, a0, b0, seeds[0], None, p, faults[0]),
+        move |c| run_mal(c, n, bits, alpha ^ a0, beta ^ b0, seeds[1], None, p, faults[1]),
     );
     [r0, r1]
 }
@@ -42,10 +44,9 @@ fn mal_gen_matches_dealer_and_verifies() {
         let alpha = rng.gen_range(0..n);
         let beta = low(Block::random(&mut rng), bits);
         let [r0, r1] = run(n, bits, alpha, beta, i as u64, [None, None]);
-        let (r0, r1) = (r0.unwrap(), r1.unwrap());
         let depth = r0.key.depth();
-        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 45);
-        assert_eq!(r0.products, ht_aes::malicious::mal_products(depth, bits));
+        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 42);
+        assert_eq!(r0.products, mal_products(depth));
         let delta = r0.delta_share ^ r1.delta_share;
         let dealt = deal([r0.key.root, r1.key.root], n, bits, alpha, beta, delta);
         assert_eq!(dealt, [r0.key.clone(), r1.key.clone()]);
@@ -62,8 +63,10 @@ fn mal_gen_matches_dealer_and_verifies() {
     }
 }
 
+/// A wrong CW share, payload word or MAC word in Gen: the honest run of Gen
+/// completes, and Π_Verify over the whole domain aborts.
 #[test]
-fn faults_in_gen_abort() {
+fn faults_in_gen_are_caught_by_verify() {
     let mut rng = ChaCha20Rng::seed_from_u64(2);
     let (n, bits) = (8u64, 16usize);
     for level in [0usize, 2, 3, 4] {
@@ -72,8 +75,9 @@ fn faults_in_gen_abort() {
             let mut faults = [None, None];
             faults[cheater] = Some(Fault { level, err });
             let [r0, r1] = run(n, bits, 5, Block(77), 10 + level as u64, faults);
-            assert_eq!(r0.err(), Some(Abort("MAC check failed")), "level {level} cheater {cheater}");
-            assert_eq!(r1.err(), Some(Abort("MAC check failed")));
+            let [a, b] = eval_and_verify([r0.key, r1.key], [r0.delta_share, r1.delta_share], (0..n).collect(), false);
+            assert_eq!(a.err(), Some(Abort("output MAC check failed")), "level {level} cheater {cheater}");
+            assert_eq!(b.err(), Some(Abort("output MAC check failed")));
         }
     }
 }
