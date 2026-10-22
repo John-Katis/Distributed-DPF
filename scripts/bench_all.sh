@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the DPF benchmarks (Floram, HT, HT-mal with Ferret, Floram-arith,
-# FssNN bin/arith, Duoram 2P/3P) over the same sweep and writes one CSV per
+# FssNN bin/arith, Duoram 2P/3P, ours: ht-aes sh/mal) over the same sweep and writes one CSV per
 # protocol into results/.
 #
 #   [OUT_LIST=a,b,..] scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [--batch-log b] [mode]
@@ -18,7 +18,7 @@
 # in-bits below. The cut-offs are for ~26 GB free RAM, from Gen's peak RSS at
 # n = 22, 24 (2× per input bit): ~64 B·2^n for Floram, HT and Floram-arith,
 # ~160 B·2^n for HT-mal, ~32 B·2^n for Duoram. FssNN's Gen only follows the
-# path to alpha (flat ~1 GB), so it always runs stored. In `full` mode the
+# path to alpha (flat ~1 GB), so it always runs stored; so does ht-aes (ours). In `full` mode the
 # stored full-domain output of FssNN does not fit from about n = 30 on.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -36,7 +36,7 @@ done
 [[ " ${ARGS[*]-} " == *" --max-in-bits "* ]] || ARGS+=(--max-in-bits 32)
 
 mkdir -p results
-cargo build --release -p floram-cprg -p half-tree -p floram-arith -p fssnn -p duoram --examples
+cargo build --release -p floram-cprg -p half-tree -p floram-arith -p fssnn -p duoram -p ht-aes --examples
 
 BIN=target/release/examples
 S=(--sweep --out-list "$OUT_LIST" "${ARGS[@]}")
@@ -48,3 +48,5 @@ echo "fssnn-bin"     && "$BIN/bench-fssnn"        "$MODE" "${S[@]}" --variant bi
 echo "fssnn-arith"   && "$BIN/bench-fssnn"        "$MODE" "${S[@]}" --variant arith                         | tee results/fssnn-arith.csv
 echo "duoram-2p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 2p           | tee results/duoram-2p.csv
 echo "duoram-3p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 3p           | tee results/duoram-3p.csv
+echo "ht-aes-sh"     && "$BIN/bench-ht-aes"       "$MODE" "${S[@]}" --variant sh                            | tee results/ht-aes-sh.csv
+echo "ht-aes-mal"    && "$BIN/bench-ht-aes"       "$MODE" "${S[@]}" --variant mal                           | tee results/ht-aes-mal.csv

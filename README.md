@@ -19,6 +19,10 @@ protocols/
                      LPN-PRG evaluated in 2PC
   duoram/            the DPF part of Duoram (Vadapalli et al., USENIX Sec'23):
                      preprocessing at a random target, online shift; 2P and 3P
+  ht-aes/            ours: dealer-free half-tree DPF with shared on-path state,
+                     F_PRF = fixed-key AES-MMO in 2PC over the F4 tower;
+                     semi-honest (FOLEAGE triples) and malicious (bucketed
+                     authenticated triples, payload MAC, Π_Verify)
 scripts/
   bench_all.sh       runs all benchmarks into results/*.csv
 REFERENCES.md        papers and techniques this code implements
@@ -31,6 +35,8 @@ REFERENCES.md        papers and techniques this code implements
 | `half-tree` (`malicious`) | malicious, one-bit leakage | BDOZ-authenticated bits | `GF(2^128)^bm` + SPDZ MACs | as above, plus a batch MAC check |
 | `floram-arith` | semi-honest | additive shares mod 2^n (BitDec from bit triples) | `Z_2^ℓ`, ℓ ≤ 64 | COT-based block MUX per level, CCMP + arithmetic MUX for the last word |
 | `fssnn` (`bin`, `arith`) | semi-honest | XOR shares | `F_2^ℓ` (`bin`) or `Z_2^ℓ` (`arith`), ℓ ≤ 256 | both trees' seeds XOR-shared, LPN-PRG (DGH+21) in 2PC per level, COT MUX; correlations from IKNP + KK13 OT |
+| `ht-aes` (`sh`) | semi-honest | XOR shares | `Z_2^ℓ`, ℓ ≤ 128 | shared on-path state, AES-MMO in 2PC per level (F4 tower, FOLEAGE triples), COT for α·Δ; FssNN's MUX B2A + sign at the leaf |
+| `ht-aes` (`mal`) | malicious with abort, no leakage | authenticated bits | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | as `sh` on SPDZ bit MACs, F4 triples from leaky triples + bucketing on malicious-Ferret aBits; one check of all openings, Π_Verify on outputs |
 | `duoram` (`2p`, `3p`) | semi-honest | additive shares mod 2^n (online shift) | `Z_2^ℓ`, ℓ ≤ 64 | Du–Atallah product per level at a random target; triples from helper P2 (`3p`) or IKNP OT (`2p`); one-round online phase |
 
 ## Shared library: `dpf-common`
@@ -44,12 +50,15 @@ REFERENCES.md        papers and techniques this code implements
 | `ot`      | base OTs over secp256r1 (Naor–Pinkas, semi-honest; Masny–Rindal endemic OT, malicious), semi-honest IKNP extension, 128-bit correlated OT (`CotPair`, sender-chosen Δ; in malicious mode endemic base OTs + KOS15 check), Ferret LPN-based COT extension (`CotPair::enable_ferret`), and KK13 1-of-N OT (`kkot`) |
 | `gf128`   | GF(2^128) multiplication (`pclmulqdq` with a portable fallback) |
 | `coin`    | SHA-256 commitments, coin tossing, `Abort` |
-| `mac`     | authenticated sharing: `binary` (BDOZ bits + SPDZ over GF(2^128)), `z2k` (SPDZ2k), `fp` (SPDZ over F_p), all with deferred batch MAC checks |
+| `mac`     | authenticated sharing: `binary` (BDOZ bits + SPDZ over GF(2^128)), `z2k` (SPDZ2k), `fp` (SPDZ over F_p), all with deferred batch MAC checks; `af4`: SPDZ bit MACs for F4 circuits, leaky F4 triples (Π_LaAND over F4) with WRK17 bucketing, the hash-and-commit check of all openings, and the authenticated `TowerBackend` |
 | `arith`   | Z_2^ℓ helpers and SIRNN's COT-based arithmetic MUX |
 | `bool2pc` | F_AND / F_OR on XOR-shared bits from CrypTFlow2 bit triples, COT-based block MUX |
 | `bench`   | shared CLI and CSV schema for every `examples/bench*.rs` |
 | `stream`  | batched depth-first tree walk for the streaming tree mode (`TreeMode`) |
 | `gc`      | half-gates garbled circuits over XOR-shared inputs (`GcParty`, `Garbler`, `Evaluator`) |
+| `f4`      | the field F4 (`h·ω + l` as two bits), scalar and packed |
+| `aes_tower` | fixed-key AES–MMO in the clear and in 2PC: S-box in the F4 tower (12 F4 products, depth 4; 1,920 products / 40 rounds per call), F4 products from a pluggable `TowerBackend`, semi-honest `BeaverF4` |
+| `foleage` | the FOLEAGE F4-OLE PCG (port of the reference code): ternary random DPF, packed FFT, expansion to OLEs and F4 triples, and the dealer-free seed generation of §5 (chosen 1-of-3 OT from COTs), which the reference code leaves out |
 | `testing` | cleartext point function `point_fn` and `random_beta`, for tests and benchmarks |
 
 ## Adding a protocol
@@ -81,6 +90,8 @@ cargo run --release -p fssnn --example bench-fssnn -- all --variant bin --in-bit
 cargo run --release -p fssnn --example bench-fssnn -- all --variant arith --in-bits 16 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 2p --in-bits 16 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 3p --in-bits 16 --out-bits 128
+cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh --in-bits 16 --out-bits 64
+cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal --in-bits 16 --out-bits 64
 scripts/bench_all.sh                          # Gen, n = 8..32, out-bits 64 and 128, one CSV per protocol in results/
 ```
 
@@ -135,6 +146,8 @@ bit (one round), as Ferret does:
 | fssnn | PRG correlations for 2n (+2) calls, 2n bit triples, 3n (+2ℓ+1 for `arith`) Ferret COTs per direction |
 | duoram (`2p`) | n AND triples from COTs, n + 2·w random COTs for the Gilboa products |
 | duoram (`3p`) | P2's one message to each party (n AND triples, n + 2 product triples) |
+| ht-aes (`sh`) | FOLEAGE expansion into (2n + 2)·1,920 F4 triples (local), n bit-times-block triples from Ferret random OTs, n + 2ℓ + 1 Ferret COTs per direction; the FOLEAGE seeds (≥ 3^12 OLEs, ~26 MB) are generated without a dealer in setup |
+| ht-aes (`mal`) | (2n + 4)·1,920 + 64·(2n + ℓ) authenticated F4 triples: 4× as many leaky triples from malicious-Ferret aBits, bucketed and checked; COTs for the n + ℓ + 254 input bits |
 
 For Duoram, generation proper is its own preprocessing (the DPF at a random
 target) plus the one-round online phase, which the bench also prints as a
@@ -150,7 +163,8 @@ protocols (floram-cprg, half-tree, floram-arith, duoram) keep only the root
 and the correction words opened so far. Whenever Gen needs a level's sum, a
 batched depth-first walk from the root regenerates that level, XORs it into a
 running accumulator and drops it. FssNN's Gen only follows α's path, so for
-FssNN only the full-domain eval streams.
+FssNN only the full-domain eval streams; ht-aes's Gen also only follows α's
+path and has no streaming mode at all.
 
 - Memory is about `batch · n` blocks (default batch 2^16, `--batch-log b`).
 - Gen does about 2× the PRG work, because each level re-expands the levels
