@@ -22,9 +22,11 @@
 //! Beaver triple ([`triples`]).
 //!
 //! Parameters `c = 4`, `t = 27` are the paper's conservative choice (Table 2 /
-//! Fig. 1; its script estimates 203 bits for its sizes). The paper sets them for
-//! large instances; this crate uses them unchanged for every `N`, so for small
-//! `N` the security estimate is the paper's, not re-derived.
+//! Fig. 1). ePrint 2025/892 (Bouillaguet, Delaplace, Hamdad, Vergnaud) breaks
+//! the aggressive set in practice and the conservative one for large N; their
+//! countermeasure `3^{N−1} < 4^{3(c−1)}` limits `c = 4` to `N ≤ 12`, which
+//! [`Params::new`] enforces. Larger instances need a larger c (e.g. `c = 5`
+//! allows `N ≤ 16`, the choice recommended by the LXYZ25 code).
 //!
 //! * [`fft`]: the packed FFT over `R`.
 //! * [`tdpf`]: the ternary random DPF and its full-domain evaluation.
@@ -60,7 +62,19 @@ impl Params {
     /// `3^log3` OLEs, with up to 5 leaf trits.
     pub fn new(log3: usize) -> Params {
         assert!(log3 >= T_TRITS + 2, "need at least two trits per block");
+        assert!(
+            Self::outside_bczv_attack(log3),
+            "3^{log3} OLEs with c = {C} is in reach of the QA-SD attack of ePrint 2025/892 (needs 3^(N-1) < 4^(3(c-1)), i.e. N <= 12 for c = 4)"
+        );
         Params { log3, leaf_trits: (log3 - T_TRITS - 1).min(5) }
+    }
+
+    /// Bouillaguet–Delaplace–Hamdad–Vergnaud (ePrint 2025/892) recover the
+    /// noise from the coordinates where all of `a_1, …, a_{c−1}` vanish; their
+    /// countermeasure is `(q−1)^{N−1} < q^{(q−1)(c−1)}`, i.e. `3^{N−1} <
+    /// 4^{3(c−1)}` over F4, so that no such evaluation point is expected.
+    pub fn outside_bczv_attack(log3: usize) -> bool {
+        3u128.pow(log3 as u32 - 1) < 4u128.pow(3 * (C as u32 - 1))
     }
 
     /// The smallest instance (at least `3^12`) with `n` OLEs.
@@ -295,6 +309,8 @@ mod tests {
             0
         });
         assert_eq!(trit(17, 2), 1);
-        assert_eq!(Params::for_oles(600_000).log3, 13);
+        assert_eq!(Params::for_oles(500_000).log3, 12);
+        // 3^13 with c = 4 is in reach of ePrint 2025/892.
+        assert!(std::panic::catch_unwind(|| Params::new(13)).is_err());
     }
 }
