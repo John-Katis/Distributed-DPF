@@ -7,6 +7,9 @@
 //! * [`ot`]: Naor–Pinkas base OT, semi-honest IKNP, and correlated OT with an
 //!   optional KOS check.
 //! * [`gf128`]: GF(2^128) multiplication.
+//! * [`f4`]: the field F4, scalar and packed.
+//! * [`aes_tower`]: fixed-key AES–MMO in the clear and in 2PC, S-box in the
+//!   F4 tower, F4 products from a pluggable backend.
 //! * [`arith`]: Z_2^ℓ helpers and the OT-based arithmetic MUX.
 //! * [`bool2pc`]: F_AND / F_OR from CrypTFlow2 bit triples and the COT-based
 //!   block MUX, on XOR-shared bits.
@@ -17,11 +20,13 @@
 //! * [`bench`]: shared CLI and CSV rows for the protocols' benchmarks.
 //! * [`stream`]: batched depth-first walk for the streaming tree mode.
 
+pub mod aes_tower;
 pub mod arith;
 pub mod bench;
 pub mod block;
 pub mod bool2pc;
 pub mod coin;
+pub mod f4;
 pub mod gc;
 pub mod gf128;
 pub mod hash;
