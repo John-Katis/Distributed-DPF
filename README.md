@@ -24,9 +24,6 @@ protocols/
                      semi-honest (FOLEAGE triples), malicious on the same
                      preprocessing (payload MAC, Π_Verify), and malicious with
                      every share authenticated (A1–A5, bucketed triples)
-crates/exp-mal-foleage/  experimental: malicious F4 triples from FOLEAGE (dealer-
-                     seeded): (a) all MACs from the PCG, (b) PCG-VOLE MACs +
-                     aBits + sacrifice; see its README
 scripts/
   bench_all.sh       runs all benchmarks into results/*.csv
 REFERENCES.md        papers and techniques this code implements
