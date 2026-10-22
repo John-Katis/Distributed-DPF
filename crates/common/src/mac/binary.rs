@@ -123,6 +123,17 @@ impl MacChecker {
     }
 }
 
+/// `Δ_b` with `lsb(Δ_b) = b`, the first draw of [`MacParty::setup`] from its
+/// seed (so a test harness can know the keys a session will use).
+pub fn sample_delta<R: rand::RngCore + rand::CryptoRng>(rng: &mut R, party: usize) -> Block {
+    Block::random(rng).with_lsb(party == 1)
+}
+
+/// The `Δ_b` that [`MacParty::setup`] picks for `seed`.
+pub fn delta_for_seed(seed: [u8; 32], party: usize) -> Block {
+    sample_delta(&mut ChaCha20Rng::from_seed(seed), party)
+}
+
 /// One party's authenticated-sharing engine: its MAC key, the KOS-checked COTs
 /// that implement F_aBit, and the openings awaiting the batch check.
 pub struct MacParty {
@@ -143,8 +154,7 @@ impl MacParty {
     pub fn setup(ch: &mut Channel, seed: [u8; 32]) -> Result<Self, Abort> {
         let party = ch.party();
         let mut rng = ChaCha20Rng::from_seed(seed);
-        let mut delta = Block::random(&mut rng);
-        delta.0 = (delta.0 & !1) | party as u128;
+        let delta = sample_delta(&mut rng, party);
         let mut cot = CotPair::setup(ch, &mut rng, delta, true)?;
         let r: Vec<bool> = (0..LSB_CHECK_COTS).map(|_| rng.gen()).collect();
         let (k, m) = cot.extend(ch, &r, LSB_CHECK_COTS, &mut rng)?;

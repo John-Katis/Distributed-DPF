@@ -151,7 +151,7 @@ pub struct Ole {
 
 /// The public `a` in the FFT domain: lane 0 is the constant 1, lanes 1..c
 /// uniform (`sample_a_and_a2`).
-fn sample_a(p: &Params, seed: Block) -> Vec<u8> {
+pub fn sample_a(p: &Params, seed: Block) -> Vec<u8> {
     let n = p.oles();
     let words = CtrPrg::new(seed).next_words(n.div_ceil(16));
     (0..n).map(|i| ((words[i / 16] >> (8 * (i % 16))) as u8 & !3) | 1).collect()
