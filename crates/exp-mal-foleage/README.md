@@ -7,6 +7,25 @@ per key at n = 32). Two approaches on one triple PCG, both **dealer-seeded**:
 the seeds come from a trusted function, the stand-in for a malicious seed
 generation, which is the open part.
 
+## Prior art
+
+* (a) is, up to the encoding of the MACs, the authenticated-triple PCG of
+  Boyle et al. (ring-LPN PCGs, CRYPTO'20, ePrint 2022/1035) and of Li, Xing,
+  Yao and Yuan (ePrint 2025/169), who cover authenticated Boolean triples
+  from QA-SD including the F4 / ternary-DPF case. Both give a maliciously
+  secure setup: a malicious DPF key generation with a consistency check
+  (`F_c-SUV`), under QA-SD/module-LPN with static leakage (single-entry
+  predicates on the noise positions). So the "malicious DPF recursion" of (a)
+  is already resolved there; our Γ = √Δ two-lane encoding is a variant of
+  their trace-based one. LXYZ25 report 47.5 MB of setup for 3^16
+  authenticated Boolean triples (≈ 9 bits per triple), no online cost.
+* (b), PCG-VOLE MACs plus a semi-honest-style OLE setup plus sacrifice, did
+  not come up in that search. Its security analysis (draft, with what is
+  proved and what is assumed) is in `mal_foleage_temp.tex` at the repo root
+  (untracked): it needs sampling `a` after the seeds, and a QA-SD leakage
+  assumption that also allows pairwise predicates (stronger than static
+  leakage).
+
 ## The triple PCG (`src/pcg.rs`)
 
 Each party σ has two regular noise vectors `e_σ`, `f_σ` (c = 4, t = 27, as
