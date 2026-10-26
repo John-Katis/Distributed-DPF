@@ -64,4 +64,6 @@ echo "ht-aes-sh"        && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --va
 echo "ht-aes-mal"       && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal       | tee "$OUT"/ht-aes-mal.csv
 echo "ht-aes-mal-arith" && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal-arith | tee "$OUT"/ht-aes-mal-arith.csv
 # The leakage-free Gen (A1)-(A5); its keys and evaluation are those of ht-aes-mal.
-[[ $MODE == gen ]] && echo "ht-aes-mal-auth" && "$BIN/bench-ht-aes" gen "${S[@]}" --variant mal-auth | tee "$OUT"/ht-aes-mal-auth.csv
+if [[ $MODE == gen ]]; then
+  echo "ht-aes-mal-auth" && "$BIN/bench-ht-aes" gen "${S[@]}" --variant mal-auth | tee "$OUT"/ht-aes-mal-auth.csv
+fi
