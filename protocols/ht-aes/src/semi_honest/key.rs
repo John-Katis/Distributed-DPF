@@ -68,24 +68,33 @@ impl<T: Ring> ShKey<T> {
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
-        self.outputs(&nodes)
+        let mut ys = Vec::new();
+        self.outputs(&nodes, &mut Vec::new(), &mut ys);
+        ys
     }
 
     /// [`eval_full`](Self::eval_full) without holding the domain: a batched
     /// walk ([`dpf_common::stream`]) that calls `visit(x0, ys)` with this
     /// party's shares at `x0 .. x0 + ys.len()`, for all x < N.
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[T])) {
+        let (mut buf, mut ys) = (Vec::new(), Vec::new());
         walk(self.root, self.cws.len(), batch, |l, parents, out| children(parents, self.cws[l - 1], out), |x0, leaves| {
             if x0 < self.n_size {
-                visit(x0, &self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)]));
+                self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut ys);
+                visit(x0, &ys);
             }
         });
     }
 
-    fn outputs(&self, leaves: &[Block]) -> Vec<T> {
-        let seeds: Vec<Block> = leaves.iter().map(|&s| leaf_seed(s)).collect();
-        let mut w = vec![Block::ZERO; seeds.len()];
-        pay_hash().h_many(&seeds, &mut w);
-        leaves.iter().zip(&w).map(|(&s, &wv)| self.output(s, wv)).collect()
+    /// The outputs at `leaves` into `ys`; `buf` is scratch, reused across calls.
+    fn outputs(&self, leaves: &[Block], buf: &mut Vec<Block>, ys: &mut Vec<T>) {
+        let k = leaves.len();
+        buf.clear();
+        buf.extend(leaves.iter().map(|&s| leaf_seed(s)));
+        buf.resize(2 * k, Block::ZERO);
+        let (seeds, w) = buf.split_at_mut(k);
+        pay_hash().h_many(seeds, w);
+        ys.clear();
+        ys.extend(leaves.iter().zip(&*w).map(|(&s, &wv)| self.output(s, wv)));
     }
 }

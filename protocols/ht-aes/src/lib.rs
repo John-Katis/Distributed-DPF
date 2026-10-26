@@ -64,13 +64,16 @@ pub fn child(st: Block, cw: Block, bit: bool) -> Block {
 /// [`child`] for a whole batch: appends both corrected children of every
 /// parent to `out`, interleaved `[L(p0), R(p0), L(p1), …]`.
 pub fn children(parents: &[Block], cw: Block, out: &mut Vec<Block>) {
-    let mut l = vec![Block::ZERO; parents.len()];
-    state_hash().h_many(parents, &mut l);
-    out.reserve(2 * parents.len());
-    for (&st, &lv) in parents.iter().zip(&l) {
-        let c = cw.and_bit(st.lsb());
-        out.push(lv ^ c);
-        out.push(st ^ lv ^ c);
+    let (start, k) = (out.len(), parents.len());
+    out.resize(start + 2 * k, Block::ZERO);
+    let kids = &mut out[start..];
+    // H(parents) into the upper half, then spread in place: slot i is read
+    // before slots 2i, 2i + 1 ≤ k + i are written.
+    state_hash().h_many(parents, &mut kids[k..]);
+    for (i, &st) in parents.iter().enumerate() {
+        let lv = kids[k + i] ^ cw.and_bit(st.lsb());
+        kids[2 * i] = lv;
+        kids[2 * i + 1] = st ^ lv;
     }
 }
 
