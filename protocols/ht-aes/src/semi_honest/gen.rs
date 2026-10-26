@@ -42,9 +42,9 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
 
-/// Everything one party gets out of [`gen`].
-pub struct GenOutput<T: Ring> {
-    pub key: ShKey<T>,
+/// Everything one party gets out of [`gen`] (and [`super::bin::gen`]).
+pub struct GenOutput<K> {
+    pub key: K,
     /// Base OTs, Ferret bootstrap and the FOLEAGE seed generation.
     pub setup_stats: CommStats,
     pub pre_stats: CommStats,
@@ -232,15 +232,30 @@ fn gen_with<T: Ring>(
 ///   benchmarks); `None` keeps IKNP, for tests.
 /// * `foleage`: the PCG instance, at least [`foleage_for`]`(n)`.
 #[allow(clippy::too_many_arguments)]
-pub fn gen<T: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: T, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> GenOutput<T> {
+pub fn gen<T: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: T, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> GenOutput<ShKey<T>> {
     assert!(bits >= 1 && bits <= T::BITS && bits <= 128);
+    let n = depth_for(n_size);
+    drive(ch, seed, ferret, foleage, n, n + 2 * bits + 1, |cot, pre, rng, ch| gen_with(cot, pre, rng, ch, n_size, bits, alpha_share, beta_share))
+}
+
+/// Setup, then preprocessing ([`sh_products`]`(n)` F4 triples, n string
+/// triples, `cots` COTs per direction), then `body`, the generation proper,
+/// each phase timed and counted on its own.
+pub(crate) fn drive<K>(
+    ch: &mut Channel,
+    seed: [u8; 32],
+    ferret: Option<FerretConfig>,
+    foleage: Params,
+    n: usize,
+    cots: usize,
+    body: impl FnOnce(&mut CotPair, Pre, &mut ChaCha20Rng, &mut Channel) -> (K, usize),
+) -> GenOutput<K> {
     let Setup { mut cot, mut rng, fseed, stats: setup_stats, time: setup_time, seedgen_stats, seedgen_time } = setup(ch, seed, ferret, foleage);
     let cots_before = cot.produced;
 
     let t_pre = Instant::now();
-    let n = depth_for(n_size);
     assert!(2 * sh_products(n) <= foleage.oles(), "FOLEAGE instance too small for depth {n}");
-    let pre = precompute(ch, &mut cot, &fseed, n, bits, &mut rng);
+    let pre = precompute_counts(ch, &mut cot, &fseed, sh_products(n), n, cots, &mut rng);
     drop(fseed);
     let pre_stats = ch.stats().since(&setup_stats);
     let pre_time = t_pre.elapsed();
@@ -249,7 +264,7 @@ pub fn gen<T: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64
     ch.sync();
     let gen_start = ch.stats();
     let t_gen = Instant::now();
-    let (key, products) = gen_with(&mut cot, pre, &mut rng, ch, n_size, bits, alpha_share, beta_share);
+    let (key, products) = body(&mut cot, pre, &mut rng, ch);
     GenOutput {
         key,
         gen_stats: ch.stats().since(&gen_start),

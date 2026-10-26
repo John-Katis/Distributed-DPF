@@ -23,11 +23,16 @@
 //! * [`malicious`]: the semi-honest Gen on the same preprocessing, plus the
 //!   paper's payload-MAC word `W^MAC_CW` under a persistent key δ and
 //!   Π_Verify on the outputs; payload in `{0,1}^ℓ ⊂ GF(2^128)`.
+//! * [`malicious_arith`]: the same for an arithmetic payload, `G = F_p`
+//!   ([`field`]): B2A, `δ·β` and the sign from COT-based OLEs.
+//! * [`semi_honest::bin`]: the semi-honest Gen with a binary payload, no B2A.
 //! * [`malicious_auth`]: additionally every share authenticated (bit MACs in
 //!   GF(2^128), the layer (A1)–(A5) against selective failure), F4 triples
 //!   from leaky authenticated triples with bucketing on malicious Ferret.
 
+pub mod field;
 pub mod malicious;
+pub mod malicious_arith;
 pub mod malicious_auth;
 pub mod semi_honest;
 
