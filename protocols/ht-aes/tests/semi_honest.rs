@@ -29,12 +29,15 @@ fn check<T: Ring>(keys: &[ShKey<T>; 2], n: u64, alpha: u64, beta: T) {
 }
 
 fn run<T: Ring>(n: u64, bits: usize, alpha: u64, beta: T, seed: u64) -> [ShKey<T>; 2] {
+    run_with(n, bits, alpha, beta, seed, Params::new(10))
+}
+
+fn run_with<T: Ring>(n: u64, bits: usize, alpha: u64, beta: T, seed: u64, p: Params) -> [ShKey<T>; 2] {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
     let b0 = T::random(&mut rng).and(T::mask(bits));
     let b1 = beta.sub(b0).and(T::mask(bits));
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-    let p = Params::new(10);
     let (o0, o1) = run_two_party(
         move |c| gen(c, n, bits, a0, b0, seeds[0], None, p),
         move |c| gen(c, n, bits, alpha ^ a0, b1, seeds[1], None, p),
@@ -72,5 +75,19 @@ fn dealer_keys_are_point_functions() {
         let beta: u128 = rng.gen::<u128>() >> 1;
         let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
         check(&deal(roots, n, 127, alpha, beta), n, alpha, beta);
+    }
+}
+
+#[test]
+fn gen_at_domain_2_pow_63() {
+    let mut rng = ChaCha20Rng::seed_from_u64(3);
+    let n = 1u64 << 63;
+    let alpha = rng.gen_range(0..n);
+    let beta = rng.gen::<u64>();
+    let keys = run_with::<u64>(n, 64, alpha, beta, 7, ht_aes::semi_honest::foleage_for(63));
+    assert_eq!(keys[0].depth(), 63);
+    for x in [alpha, alpha ^ 1, alpha ^ (1 << 62), 0, n - 1, rng.gen_range(0..n)] {
+        let y = keys[0].eval_point(x).add(keys[1].eval_point(x));
+        assert_eq!(y, if x == alpha { beta } else { 0 }, "x={x}");
     }
 }
