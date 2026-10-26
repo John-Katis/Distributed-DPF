@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the DPF benchmarks (Floram, HT, HT-mal with Ferret, Floram-arith,
-# FssNN bin/arith, Duoram 2P/3P, ours: ht-aes sh/mal/mal-auth) over the same sweep and writes one CSV per
+# FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal}) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen) or results-eval/ (eval, full, all).
 #
 #   [OUT_LIST=a,b,..] scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [--batch-log b] [mode]
@@ -20,7 +20,7 @@
 # ~160 B·2^n for HT-mal, ~32 B·2^n for Duoram. FssNN's Gen only follows the
 # path to alpha (flat ~1 GB), so it always runs stored; so does ht-aes (ours). Their full-domain
 # eval does hold the whole domain, so in eval/full/all mode they stream it from n = 28
-# (FssNN, ht-aes sh) and 27 (ht-aes mal, mal-auth: output and MAC per leaf); in `all`
+# (FssNN, ht-aes sh) and 27 (ht-aes mal: output and MAC per leaf); in `all`
 # mode ht-aes stays stored, since its Gen has no streaming tree.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -59,6 +59,7 @@ echo "fssnn-bin"     && "$BIN/bench-fssnn"        "$MODE" "${S[@]}" "${FS[@]}" -
 echo "fssnn-arith"   && "$BIN/bench-fssnn"        "$MODE" "${S[@]}" "${FS[@]}" --variant arith            | tee "$OUT"/fssnn-arith.csv
 echo "duoram-2p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 2p           | tee "$OUT"/duoram-2p.csv
 echo "duoram-3p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 3p           | tee "$OUT"/duoram-3p.csv
-echo "ht-aes-sh"     && "$BIN/bench-ht-aes"       "$MODE" "${S[@]}" "${AS[@]}" --variant sh               | tee "$OUT"/ht-aes-sh.csv
-echo "ht-aes-mal"    && "$BIN/bench-ht-aes"       "$MODE" "${S[@]}" "${AM[@]}" --variant mal              | tee "$OUT"/ht-aes-mal.csv
-echo "ht-aes-mal-auth" && "$BIN/bench-ht-aes"     "$MODE" "${S[@]}" "${AM[@]}" --variant mal-auth         | tee "$OUT"/ht-aes-mal-auth.csv
+echo "ht-aes-sh-bin"    && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh-bin    | tee "$OUT"/ht-aes-sh-bin.csv
+echo "ht-aes-sh"        && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh        | tee "$OUT"/ht-aes-sh.csv
+echo "ht-aes-mal"       && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal       | tee "$OUT"/ht-aes-mal.csv
+echo "ht-aes-mal-arith" && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal-arith | tee "$OUT"/ht-aes-mal-arith.csv

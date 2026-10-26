@@ -37,7 +37,9 @@ REFERENCES.md        papers and techniques this code implements
 | `floram-arith` | semi-honest | additive shares mod 2^n (BitDec from bit triples) | `Z_2^ℓ`, ℓ ≤ 64 | COT-based block MUX per level, CCMP + arithmetic MUX for the last word |
 | `fssnn` (`bin`, `arith`) | semi-honest | XOR shares | `F_2^ℓ` (`bin`) or `Z_2^ℓ` (`arith`), ℓ ≤ 256 | both trees' seeds XOR-shared, LPN-PRG (DGH+21) in 2PC per level, COT MUX; correlations from IKNP + KK13 OT |
 | `ht-aes` (`sh`) | semi-honest | XOR shares | `Z_2^ℓ`, ℓ ≤ 128 | shared on-path state, AES-MMO in 2PC per level (F4 tower, FOLEAGE triples), COT for α·Δ; FssNN's MUX B2A + sign at the leaf |
+| `ht-aes` (`sh-bin`) | semi-honest | XOR shares | `F_2^ℓ`, ℓ ≤ 128 | as `sh`; the leaf opens `W_0 ⊕ W_1 ⊕ β` (no B2A, no sign) |
 | `ht-aes` (`mal`) | malicious with abort (the paper's §malicious: key material checked by Π_Verify; selective failure as in Prop. "Selective-failure channel") | XOR shares | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | the `sh` Gen on the same FOLEAGE/Ferret preprocessing, plus `F^mac` at the leaf, `δ·β` from ℓ string triples, the payload-MAC word under a persistent δ; Π_Verify on outputs |
+| `ht-aes` (`mal-arith`) | malicious with abort, as `mal` | XOR shares | `F_p` + payload MAC in `F_p` (Goldilocks for ℓ ≤ 64, `2^127 − 1` above) | the `sh` Gen on the same preprocessing; at the leaf `F^pay`, `F^mac`, then COT-based OLEs for the B2A of the masks, `δ·β` (Gilboa) and the sign `(1 − 2t)·V`; Π_Verify over `F_p` |
 | `ht-aes` (`mal-auth`) | malicious with abort, no leakage | authenticated bits | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | as `mal` on SPDZ bit MACs ((A1)–(A5)), F4 triples from leaky triples + bucketing on malicious-Ferret aBits; one check of all openings, Π_Verify on outputs |
 | `duoram` (`2p`, `3p`) | semi-honest | additive shares mod 2^n (online shift) | `Z_2^ℓ`, ℓ ≤ 64 | Du–Atallah product per level at a random target; triples from helper P2 (`3p`) or IKNP OT (`2p`); one-round online phase |
 
@@ -93,7 +95,9 @@ cargo run --release -p fssnn --example bench-fssnn -- all --variant arith --in-b
 cargo run --release -p duoram --example bench-duoram -- all --variant 2p --in-bits 16 --out-bits 64
 cargo run --release -p duoram --example bench-duoram -- all --variant 3p --in-bits 16 --out-bits 128
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh --in-bits 16 --out-bits 64
+cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal --in-bits 16 --out-bits 64
+cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-arith --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-auth --in-bits 16 --out-bits 64
 scripts/bench_all.sh                          # Gen, n = 8..32, out-bits 64 and 128, one CSV per protocol in results-gen/
 scripts/bench_all.sh full                     # full-domain eval, same sweep, into results-eval/
@@ -152,6 +156,8 @@ bit (one round), as Ferret does:
 | duoram (`3p`) | P2's one message to each party (n AND triples, n + 2 product triples) |
 | ht-aes (`sh`) | FOLEAGE expansion into (2n + 2)·1,920 F4 triples (local), n bit-times-block triples from Ferret random OTs, n + 2ℓ + 1 Ferret COTs per direction; the FOLEAGE seeds (≥ 3^12 OLEs, ~26 MB) are generated without a dealer in setup |
 | ht-aes (`mal`) | as `sh`: FOLEAGE expansion into (2n + 4)·1,920 F4 triples, n + ℓ bit-times-block triples from Ferret random OTs (branch selection, δ·β), n Ferret COTs per direction; FOLEAGE seeds generated in setup |
+| ht-aes (`sh-bin`) | as `sh` with n Ferret COTs per direction (the α-bits only) |
+| ht-aes (`mal-arith`) | as `mal` with n string triples (branch selection) and n + 4κ + ⌈log p⌉ + 2 Ferret COTs per direction for the leaf OLEs (κ = min(⌈log p⌉ + 40, 128)) |
 | ht-aes (`mal-auth`) | (2n + 4)·1,920 + 64·(2n + ℓ) authenticated F4 triples: 4× as many leaky triples from malicious-Ferret aBits, bucketed and checked; COTs for the n + ℓ + 254 input bits |
 
 For Duoram, generation proper is its own preprocessing (the DPF at a random
