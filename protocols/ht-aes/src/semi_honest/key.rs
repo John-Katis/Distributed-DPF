@@ -1,9 +1,10 @@
 //! The semi-honest key: root `Δ_b`, n level words, the payload word in
 //! Z_2^ℓ, and its point and full-domain evaluation.
 
-use crate::{child, leaf_seed, pay_hash, state_hash};
+use crate::{child, children, leaf_seed, pay_hash};
 use dpf_common::arith::Ring;
 use dpf_common::block::{depth_for, Block};
+use dpf_common::stream::walk;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShKey<T: Ring> {
@@ -60,24 +61,31 @@ impl<T: Ring> ShKey<T> {
 
     /// Shares of `f(0), …, f(N − 1)`: all 2^n leaves, one level at a time.
     pub fn eval_full(&self) -> Vec<T> {
-        let h = state_hash();
         let mut nodes = vec![self.root];
-        let mut l = Vec::new();
         for &cw in &self.cws {
-            l.resize(nodes.len(), Block::ZERO);
-            h.h_many(&nodes, &mut l);
-            let mut next = Vec::with_capacity(2 * nodes.len());
-            for (&st, &lv) in nodes.iter().zip(&l) {
-                let c = cw.and_bit(st.lsb());
-                next.push(lv ^ c);
-                next.push(st ^ lv ^ c);
-            }
+            let mut next = Vec::new();
+            children(&nodes, cw, &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
-        let seeds: Vec<Block> = nodes.iter().map(|&s| leaf_seed(s)).collect();
+        self.outputs(&nodes)
+    }
+
+    /// [`eval_full`](Self::eval_full) without holding the domain: a batched
+    /// walk ([`dpf_common::stream`]) that calls `visit(x0, ys)` with this
+    /// party's shares at `x0 .. x0 + ys.len()`, for all x < N.
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[T])) {
+        walk(self.root, self.cws.len(), batch, |l, parents, out| children(parents, self.cws[l - 1], out), |x0, leaves| {
+            if x0 < self.n_size {
+                visit(x0, &self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)]));
+            }
+        });
+    }
+
+    fn outputs(&self, leaves: &[Block]) -> Vec<T> {
+        let seeds: Vec<Block> = leaves.iter().map(|&s| leaf_seed(s)).collect();
         let mut w = vec![Block::ZERO; seeds.len()];
         pay_hash().h_many(&seeds, &mut w);
-        nodes.iter().zip(&w).map(|(&s, &wv)| self.output(s, wv)).collect()
+        leaves.iter().zip(&w).map(|(&s, &wv)| self.output(s, wv)).collect()
     }
 }

@@ -17,14 +17,17 @@
 //! line. Preprocessing is the FOLEAGE expansion into F4 triples, the string
 //! triples and the Ferret COTs (for `mal-auth`: the authenticated triples).
 //! `and_gates` counts F4 products. `eval` and `full` use dealer keys; `full`
-//! holds the whole domain for `sh` and evaluates point by point (output and
-//! MAC) for `mal` and `mal-auth`.
+//! evaluates the whole domain (output and, for `mal` and `mal-auth`, MAC) one
+//! level at a time, or with `--stream` in a batched walk that folds the
+//! outputs into a checksum. Gen only follows the path to α, so `--stream`
+//! applies to `eval` and `full` only.
 
 use dpf_common::arith::Ring;
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::block::depth_for;
 use dpf_common::net::run_two_party;
 use dpf_common::ot::FerretConfig;
+use dpf_common::stream::TreeMode;
 use ht_aes::semi_honest::{foleage_for, gen, gen_reference};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -105,8 +108,15 @@ fn eval_sh<T: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
         });
     }
     if o.runs("full") {
-        bench_full(o, 1, || {
-            black_box(k.eval_full());
+        bench_full(o, 1, || match o.tree_mode() {
+            TreeMode::Stored => {
+                black_box(k.eval_full());
+            }
+            TreeMode::Stream { batch } => {
+                let mut acc = T::ZERO;
+                k.eval_full_stream(batch, |_, ys| acc = ys.iter().fold(acc, |a, y| a.add(*y)));
+                black_box(acc);
+            }
         });
     }
 }
@@ -240,8 +250,15 @@ fn eval_mal(o: &Opts, rng: &mut ChaCha20Rng) {
         });
     }
     if o.runs("full") {
-        bench_full(o, 1, || {
-            black_box((0..o.size).map(|x| k.eval_point(x)).fold(dpf_common::block::Block::ZERO, |a, y| a ^ y.0 ^ y.1));
+        bench_full(o, 1, || match o.tree_mode() {
+            TreeMode::Stored => {
+                black_box(k.eval_full());
+            }
+            TreeMode::Stream { batch } => {
+                let mut acc = dpf_common::block::Block::ZERO;
+                k.eval_full_stream(batch, |_, outs| acc = outs.iter().fold(acc, |a, y| a ^ y.0 ^ y.1));
+                black_box(acc);
+            }
         });
     }
 }
@@ -249,9 +266,9 @@ fn eval_mal(o: &Opts, rng: &mut ChaCha20Rng) {
 fn main() {
     let opts = Opts::parse(&["sh", "mal", "mal-auth"], 64, &[64, 128]);
     assert!(opts.out_list.iter().chain([&opts.out_bits]).all(|b| (1..=128).contains(b)), "out-bits must be 1..=128");
-    assert!(!opts.stream, "ht-aes has no streaming tree: Gen follows only the path to α");
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
+        assert!(!(o.stream && o.runs("gen")), "ht-aes Gen has no streaming tree: it follows only the path to α");
         let wide = o.out_bits > 64;
         match o.variant.as_str() {
             "sh" => {

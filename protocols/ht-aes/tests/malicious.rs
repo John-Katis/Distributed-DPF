@@ -81,3 +81,24 @@ fn faults_in_gen_are_caught_by_verify() {
         }
     }
 }
+
+#[test]
+fn full_eval_matches_point_eval() {
+    let mut rng = ChaCha20Rng::seed_from_u64(3);
+    for (n, bits) in [(2u64, 64usize), (13, 128), (64, 5), (1000, 64)] {
+        let beta = low(Block::random(&mut rng), bits);
+        let (keys, _) = ht_aes::malicious::gen_reference(n, bits, rng.gen_range(0..n), beta, rng.gen());
+        for k in &keys {
+            let points: Vec<(Block, Block)> = (0..n).map(|x| k.eval_point(x)).collect();
+            assert_eq!(k.eval_full(), points);
+            for batch in [2, 4, 1 << 10] {
+                let mut streamed = Vec::new();
+                k.eval_full_stream(batch, |x0, outs| {
+                    assert_eq!(x0, streamed.len() as u64);
+                    streamed.extend_from_slice(outs);
+                });
+                assert_eq!(streamed, points, "n={n} batch={batch}");
+            }
+        }
+    }
+}

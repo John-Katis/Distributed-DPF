@@ -11,6 +11,16 @@ use rand_chacha::ChaCha20Rng;
 fn check<T: Ring>(keys: &[ShKey<T>; 2], n: u64, alpha: u64, beta: T) {
     let m = T::mask(keys[0].bits);
     let full = [keys[0].eval_full(), keys[1].eval_full()];
+    for (k, f) in keys.iter().zip(&full) {
+        for batch in [2, 4, 1 << 10] {
+            let mut streamed = Vec::new();
+            k.eval_full_stream(batch, |x0, ys| {
+                assert_eq!(x0, streamed.len() as u64);
+                streamed.extend_from_slice(ys);
+            });
+            assert_eq!(&streamed, f, "batch={batch}");
+        }
+    }
     for x in 0..n {
         let y = keys[0].eval_point(x).add(keys[1].eval_point(x)).and(m);
         assert_eq!(y, if x == alpha { beta } else { T::ZERO }, "x={x}");

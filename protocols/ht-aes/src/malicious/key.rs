@@ -2,8 +2,9 @@
 //! group) and payload-MAC word `W^MAC_CW ∈ GF(2^128)`; evaluation returns the
 //! output share and its MAC share, and [`verify`] is Π_Verify.
 
-use crate::{child, leaf_seed, mac_hash, pay_hash};
+use crate::{child, children, leaf_seed, mac_hash, pay_hash};
 use dpf_common::block::{depth_for, Block};
+use dpf_common::stream::walk;
 use dpf_common::coin::{coin_block, commit_and_open_blocks, Abort};
 use dpf_common::gf128;
 use dpf_common::hash::CtrPrg;
@@ -55,6 +56,40 @@ impl MalKey {
         let s = leaf_seed(st);
         let t = st.lsb();
         (low(pay_hash().h(s), self.bits) ^ self.w_cw.and_bit(t), mac_hash().h(s) ^ self.wm_cw.and_bit(t))
+    }
+
+    /// Shares `(y, m)` at x = 0, …, N − 1: all 2^n leaves, one level at a time.
+    pub fn eval_full(&self) -> Vec<(Block, Block)> {
+        let mut nodes = vec![self.root];
+        for &cw in &self.cws {
+            let mut next = Vec::new();
+            children(&nodes, cw, &mut next);
+            nodes = next;
+        }
+        nodes.truncate(self.n_size as usize);
+        self.outputs(&nodes)
+    }
+
+    /// [`eval_full`](Self::eval_full) without holding the domain: a batched
+    /// walk ([`dpf_common::stream`]) that calls `visit(x0, outs)` with this
+    /// party's shares at `x0 .. x0 + outs.len()`, for all x < N.
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[(Block, Block)])) {
+        walk(self.root, self.cws.len(), batch, |l, parents, out| children(parents, self.cws[l - 1], out), |x0, leaves| {
+            if x0 < self.n_size {
+                visit(x0, &self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)]));
+            }
+        });
+    }
+
+    fn outputs(&self, leaves: &[Block]) -> Vec<(Block, Block)> {
+        let seeds: Vec<Block> = leaves.iter().map(|&s| leaf_seed(s)).collect();
+        let (mut w, mut wm) = (vec![Block::ZERO; seeds.len()], vec![Block::ZERO; seeds.len()]);
+        pay_hash().h_many(&seeds, &mut w);
+        mac_hash().h_many(&seeds, &mut wm);
+        leaves.iter().zip(w.iter().zip(&wm)).map(|(&st, (&wv, &mv))| {
+            let t = st.lsb();
+            (low(wv, self.bits) ^ self.w_cw.and_bit(t), mv ^ self.wm_cw.and_bit(t))
+        }).collect()
     }
 }
 

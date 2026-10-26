@@ -61,6 +61,19 @@ pub fn child(st: Block, cw: Block, bit: bool) -> Block {
     c ^ cw.and_bit(st.lsb())
 }
 
+/// [`child`] for a whole batch: appends both corrected children of every
+/// parent to `out`, interleaved `[L(p0), R(p0), L(p1), …]`.
+pub fn children(parents: &[Block], cw: Block, out: &mut Vec<Block>) {
+    let mut l = vec![Block::ZERO; parents.len()];
+    state_hash().h_many(parents, &mut l);
+    out.reserve(2 * parents.len());
+    for (&st, &lv) in parents.iter().zip(&l) {
+        let c = cw.and_bit(st.lsb());
+        out.push(lv ^ c);
+        out.push(st ^ lv ^ c);
+    }
+}
+
 /// The leaf input of the payload hashes: the seed with its control bit cleared.
 #[inline]
 pub fn leaf_seed(st: Block) -> Block {
