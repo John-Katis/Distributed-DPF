@@ -25,7 +25,7 @@ protocols/
                      preprocessing (payload MAC, Π_Verify), and malicious with
                      every share authenticated (A1–A5, bucketed triples)
 scripts/
-  bench_all.sh       runs all benchmarks into results/*.csv
+  bench_all.sh       runs all benchmarks into results-gen/ or results-eval/
 REFERENCES.md        papers and techniques this code implements
 ```
 
@@ -95,7 +95,8 @@ cargo run --release -p duoram --example bench-duoram -- all --variant 3p --in-bi
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-auth --in-bits 16 --out-bits 64
-scripts/bench_all.sh                          # Gen, n = 8..32, out-bits 64 and 128, one CSV per protocol in results/
+scripts/bench_all.sh                          # Gen, n = 8..32, out-bits 64 and 128, one CSV per protocol in results-gen/
+scripts/bench_all.sh full                     # full-domain eval, same sweep, into results-eval/
 ```
 
 All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`); the
@@ -166,9 +167,8 @@ sweep runs out of memory around n = 27–28. With `--stream` the tree-based
 protocols (floram-cprg, half-tree, floram-arith, duoram) keep only the root
 and the correction words opened so far. Whenever Gen needs a level's sum, a
 batched depth-first walk from the root regenerates that level, XORs it into a
-running accumulator and drops it. FssNN's Gen only follows α's path, so for
-FssNN only the full-domain eval streams; ht-aes's Gen also only follows α's
-path and has no streaming mode at all.
+running accumulator and drops it. FssNN's and ht-aes's Gen only follow α's
+path, so for those two only the full-domain eval streams.
 
 - Memory is about `batch · n` blocks (default batch 2^16, `--batch-log b`).
 - Gen does about 2× the PRG work, because each level re-expands the levels

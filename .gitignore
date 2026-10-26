@@ -1,5 +1,6 @@
 /target
-/results
+/results-eval
+/results-gen
 /REFERENCES.md
 /papers
 /cutoff_point_latex_temp.tex
