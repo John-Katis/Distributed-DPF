@@ -7,5 +7,5 @@
 pub mod gen;
 pub mod key;
 
-pub use gen::{deal, gen_reference, leaf_oles, run_mal_arith, ArithMalRun, ArithMalSession};
+pub use gen::{deal, gen_reference, leaf_counts, run_mal_arith, ArithMalRun, ArithMalSession};
 pub use key::{verify, ArithMalKey};

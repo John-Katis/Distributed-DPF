@@ -46,7 +46,7 @@ fn gen_matches_dealer_and_verifies<F: Field>(seed: u64) {
         let beta = F::random(&mut rng);
         let [r0, r1] = run(n, alpha, beta, seed + i as u64, [None, None]);
         let depth = r0.key.depth();
-        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 46);
+        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 44);
         assert_eq!(r0.products, mal_products(depth));
         let delta = r0.delta_share.add(r1.delta_share);
         let dealt = deal([r0.key.root, r1.key.root], n, alpha, beta, delta);

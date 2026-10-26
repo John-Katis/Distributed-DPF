@@ -9,24 +9,24 @@
 //!    so δ only ever enters linearly.
 //! 2. `F^pay`, `F^mac` on both leaf seeds (four MMO calls, 40 rounds), each
 //!    read as the integer of its low κ bits mod p.
-//! 3. One batch of COT OLEs ([`ole`], two rounds): the B2A of those 4κ bits
-//!    (`⟨h⟩ = h_b − 2h_0h_1`, the cross term from one OLE per bit), and the
-//!    cross terms of `⟨δβ⟩ = δ_b·β_b + δ_0·β_1 + δ_1·β_0` (Gilboa, one OLE per
-//!    bit of `β_b`).
-//! 4. `V = W_0 − W_1 − β`, `Ṽ = W̃_0 − W̃_1 − δβ`, and the sign
-//!    `(1 − 2σ)·V`, `(1 − 2σ)·Ṽ` for `σ = t_{n,0}` from two more OLEs
-//!    (`σ·D = σ_0D_0 + σ_1D_1 + σ_1(1 − 2σ_0)D_0 + σ_0(1 − 2σ_1)D_1`, two
-//!    rounds).
-//! 5. Both words opened together.
+//! 3. The paper's arithmetic leaf ([`arith_leaf`], three rounds) on the two
+//!    words `V = W_0 − W_1 − β` and `Ṽ = W̃_0 − W̃_1 − δβ`: B2A of the 4κ mask
+//!    bits by daBits, `⟦δβ⟧` by a Beaver product (β is secret-shared), and
+//!    the sign `(1 − 2t_{n,0})` by the tag's daBit and one triple per word;
+//!    both words are opened together.
 //!
-//! The products in the AES calls, the branch selection and the OLEs are the
-//! semi-honest ones; every deviation shows up only in the published key
-//! material, which Π_Verify ([`super::verify`]) checks at evaluation time.
+//! The products in the AES calls, the branch selection and the leaf are the
+//! semi-honest ones (plain FOLEAGE triples, daBits and triples from COTs);
+//! every deviation shows up only in the published key material, which
+//! Π_Verify ([`super::verify`]) checks at evaluation time, up to the
+//! selective-failure leak of the paper's Proposition "Selective-failure
+//! channel".
 //!
-//! Rounds: `1 + 41n + 40 + 2 + 2 + 1 = 41n + 46`.
+//! Rounds: `1 + 41n + 40 + 3 = 41n + 44`.
 
 use super::key::ArithMalKey;
-use crate::field::{ole, Field};
+use crate::field::Field;
+use crate::leaf::{arith_leaf, fp_pre, fp_pre_cots, leaf_dabits, FpPre, Sub};
 use crate::malicious::{mal_products, Fault};
 use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup};
 use crate::{child, leaf_seed, mac_hash, pay_hash, state_hash};
@@ -39,10 +39,10 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
 
-/// COT OLEs per direction at the leaf: the B2A of the four masks, the bits of
-/// `β_b` for `δβ`, the two signs.
-pub fn leaf_oles<F: Field>() -> usize {
-    4 * F::KAPPA + F::P_BITS + 2
+/// Leaf correlations: daBits for two words, Beaver triples for the two signs
+/// and `δβ`.
+pub fn leaf_counts<F: Field>() -> (usize, usize) {
+    (leaf_dabits::<F>(2), 3)
 }
 
 /// One party's long-lived state.
@@ -61,24 +61,28 @@ impl<F: Field> ArithMalSession<F> {
     }
 
     /// FOLEAGE expansion into [`mal_products`] triples, n string triples
-    /// (branch selection) and `n + `[`leaf_oles`] COTs per direction.
-    pub fn precompute(&mut self, ch: &mut Channel, n: usize) -> Pre {
+    /// (branch selection), n COTs per direction, and the leaf's daBits and
+    /// Beaver triples over F_p ([`leaf_counts`]).
+    pub fn precompute(&mut self, ch: &mut Channel, n: usize) -> (Pre, FpPre<F>) {
         assert!(2 * mal_products(n) <= self.s.fseed.params.oles(), "FOLEAGE instance too small for depth {n}");
         let s = &mut self.s;
-        precompute_counts(ch, &mut s.cot, &s.fseed, mal_products(n), n, n + leaf_oles::<F>(), &mut s.rng)
+        let (dabits, triples) = leaf_counts::<F>();
+        let pre = precompute_counts(ch, &mut s.cot, &s.fseed, mal_products(n), n, n + fp_pre_cots::<F>(dabits, triples), &mut s.rng);
+        let fpre = fp_pre(ch, &mut s.cot, dabits, triples, &mut s.rng);
+        (pre, fpre)
     }
 
     /// One generation: XOR shares of α, additive shares of `β ∈ F_p`. A
     /// fault at level `n` hits the payload word, at `n + 1` the MAC word (its
     /// error read as an element of F_p).
-    pub fn gen(&mut self, ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, pre: Pre, fault: Option<Fault>) -> (ArithMalKey<F>, usize) {
+    pub fn gen(&mut self, ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, pre: (Pre, FpPre<F>), fault: Option<Fault>) -> (ArithMalKey<F>, usize) {
         let b = ch.party();
         let n = depth_for(n_size);
         let err = |lvl: usize| match fault {
             Some(f) if f.level == lvl => F::from_u128(f.err.0),
             _ => F::ZERO,
         };
-        let Pre { mut be, string_triples } = pre;
+        let (Pre { mut be, string_triples }, mut fpre) = pre;
         let s = &mut self.s;
         let cw_err = fault.filter(|f| f.level < n).map(|f| (f.level, f.err));
         let (st, cws, _) = walk(&mut be, &string_triples, &mut s.cot, &mut s.rng, ch, n, alpha_share, &[], cw_err);
@@ -90,46 +94,11 @@ impl<F: Field> ArithMalSession<F> {
         let jobs: [(&Mmo, Shared128<bool>); 4] = [(fp, s0), (fp, s1), (fm, s0), (fm, s1)];
         let w: Vec<Block> = mmo_shared(&mut be, ch, &jobs).iter().map(block_of).collect();
 
-        // 3. B2A of the masks and the cross terms of δβ, in one OLE batch.
-        let kappa = F::KAPPA;
-        let pow2: Vec<F> = (0..kappa.max(F::P_BITS)).map(F::pow2).collect();
-        let beta_int = beta_share.to_u128();
-        let mut g = Vec::with_capacity(leaf_oles::<F>() - 2);
-        let mut c = Vec::with_capacity(g.capacity());
-        for wj in &w {
-            for k in 0..kappa {
-                let h = wj.bit(k);
-                g.push(h);
-                c.push(if h { pow2[k] } else { F::ZERO });
-            }
-        }
-        for k in 0..F::P_BITS {
-            g.push((beta_int >> k) & 1 == 1);
-            c.push(self.delta_mac.mul(pow2[k]));
-        }
-        let z = ole(ch, &mut s.cot, &g, &c, &mut s.rng);
-        let masks: Vec<F> = (0..4).map(|j| (0..kappa).fold(F::ZERO, |acc, k| acc.add(c[j * kappa + k]).sub(z[j * kappa + k]))).collect();
-        let db = z[4 * kappa..].iter().fold(self.delta_mac.mul(beta_share), |acc, &x| acc.add(x));
-
-        // 4. V, Ṽ and their signs.
-        let v = [masks[0].sub(masks[1]).sub(beta_share), masks[2].sub(masks[3]).sub(db)];
-        let t = st.lsb();
-        let corr: Vec<F> = v.iter().map(|&d| if t { d.neg() } else { d }).collect();
-        let z = ole(ch, &mut s.cot, &[t, t], &corr, &mut s.rng);
-        let signed: Vec<F> = (0..2).map(|i| {
-            let sd = (if t { v[i] } else { F::ZERO }).add(z[i]); // ⟨σ·D⟩
-            v[i].sub(sd.add(sd))
-        }).collect();
-
-        // 5. Open both words.
-        let mine = [signed[0].add(err(n)), signed[1].add(err(n + 1))];
-        let mut msg = Vec::with_capacity(2 * F::BYTES);
-        mine.iter().for_each(|x| x.put(&mut msg));
-        ch.send(msg);
-        let theirs = ch.recv();
-        assert_eq!(theirs.len(), 2 * F::BYTES, "malformed payload words");
-        let w_cw = mine[0].add(F::get(&theirs[..F::BYTES]));
-        let wm_cw = mine[1].add(F::get(&theirs[F::BYTES..]));
+        // 3. The leaf: W_CW and W^MAC_CW.
+        let masks = [[w[0], w[1]], [w[2], w[3]]];
+        let subs = [Sub::Share(beta_share), Sub::Product(self.delta_mac, beta_share)];
+        let words = arith_leaf(ch, &masks, &subs, st.lsb(), &mut fpre, &[err(n), err(n + 1)]);
+        let (w_cw, wm_cw) = (words[0], words[1]);
         let products = be.products;
         (ArithMalKey { party: b, n_size, root: delta, cws, w_cw, wm_cw }, products)
     }

@@ -9,11 +9,11 @@
 //!
 //! **Preprocessing** (before α and β are known): FOLEAGE expansion and the F4
 //! triples, n bit-times-block triples for the branch selection from Ferret
-//! random OTs ([`rot_string_triples`]), and Ferret COTs for the n α-bits and
-//! the 2ℓ + 1 MUXes.
+//! random OTs ([`rot_string_triples`]), Ferret COTs for the n α-bits, and the
+//! leaf's 2κ + 1 daBits and one Beaver triple over F_p ([`crate::leaf`]).
 //!
 //! **Generation**, with `α` XOR-shared (bit `n − 1 − i` is level i + 1) and
-//! `β` additively shared in Z_2^ℓ:
+//! `β` additively shared in `G = F_p` ([`crate::field`]):
 //!
 //! 1. `⟨α_ℓ·Δ⟩` for all levels from the derandomised COTs (one round):
 //!    `α_{ℓ,b}·Δ_b ⊕ M_b[α_{ℓ,b}] ⊕ K_b[α_{ℓ,1−b}]`.
@@ -22,17 +22,18 @@
 //!    rounds), then one exchange carrying the CW share and the Beaver opening
 //!    `(α_ℓ ⊕ a, st_{ℓ−1,0} ⊕ B)` of the branch selection; the new state is
 //!    local.
-//! 4. Leaf: `W_b = F^pay(s_{n,b} ∥ 0)` for both b (40 rounds), B2A of the 2ℓ
-//!    bits with one SIRNN MUX each and the sign with one more on `t_{n,0}`, as
-//!    FssNN's arithmetic final word (two rounds each), and the opening of
-//!    `W_CW = (−1)^{t_{n,0}}(W_0 − W_1 − β)`.
+//! 4. Leaf: `W_b = F^pay(s_{n,b} ∥ 0)` for both b (40 rounds), read in F_p
+//!    from their low κ bits; then the paper's leaf ([`arith_leaf`]): B2A of
+//!    the 2κ bits by daBits and `W_CW = (1 − 2c)·ρV` with `c = t_{n,0} ⊕ r`,
+//!    `ρ = 1 − 2r` for a daBit r and one Beaver triple (three rounds).
 //!
-//! Rounds: `1 + 41n + 40 + 2 + 2 + 1 = 41n + 46`.
+//! Rounds: `1 + 41n + 40 + 3 = 41n + 44`.
 
 use super::key::ShKey;
+use crate::field::Field;
+use crate::leaf::{arith_leaf, fp_pre, fp_pre_cots, leaf_dabits, FpPre, Sub};
 use crate::{leaf_seed, pay_hash, sh_products, state_hash};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, BeaverF4, Mmo, Shared128};
-use dpf_common::arith::{mux, Ring};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::bool2pc::rot_string_triples;
 use dpf_common::foleage::{self, seedgen::seed_gen, Params};
@@ -68,12 +69,6 @@ pub struct Pre {
     pub be: BeaverF4,
     /// `(a, B, a·B)` for the n branch selections.
     pub string_triples: Vec<(bool, Block, Block)>,
-}
-
-/// Preprocessing for depth `n` and width `bits`: FOLEAGE expansion and
-/// triples, string triples, Ferret COTs.
-pub fn precompute(ch: &mut Channel, cot: &mut CotPair, seed: &foleage::Seed, n: usize, bits: usize, rng: &mut ChaCha20Rng) -> Pre {
-    precompute_counts(ch, cot, seed, sh_products(n), n, n + 2 * bits + 1, rng)
 }
 
 /// `products` F4 triples from the FOLEAGE seed, `strings` bit-times-block
@@ -184,17 +179,7 @@ pub(crate) fn walk(
     (st, cws, reply)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn gen_with<T: Ring>(
-    cot: &mut CotPair,
-    pre: Pre,
-    rng: &mut ChaCha20Rng,
-    ch: &mut Channel,
-    n_size: u64,
-    bits: usize,
-    alpha_share: u64,
-    beta_share: T,
-) -> (ShKey<T>, usize) {
+fn gen_with<F: Field>(cot: &mut CotPair, pre: Pre, fpre: &mut FpPre<F>, rng: &mut ChaCha20Rng, ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F) -> (ShKey<F>, usize) {
     let b = ch.party();
     let n = depth_for(n_size);
     let Pre { mut be, string_triples } = pre;
@@ -205,50 +190,47 @@ fn gen_with<T: Ring>(
     // 4. Leaf word.
     let jobs: [(&Mmo, Shared128<bool>); 2] = [(fp, bits_of(leaf_seed(st))), (fp, bits_of(leaf_seed(st ^ delta)))];
     let w = mmo_shared(&mut be, ch, &jobs);
-    let wb = [block_of(&w[0]), block_of(&w[1])];
-    let g: Vec<bool> = wb.iter().flat_map(|w| (0..bits).map(move |i| w.bit(i))).collect();
-    let w1: Vec<T> = (0..2 * bits).map(|k| if b == 0 { T::ONE.shl(k % bits) } else { T::ZERO }).collect();
-    let y = mux(ch, cot, &g, &vec![T::ZERO; 2 * bits], &w1, bits, rng).expect("semi-honest MUX");
-    let msk = T::mask(bits);
-    let sum = |ys: &[T]| ys.iter().fold(T::ZERO, |acc, &v| acc.add(v)).and(msk);
-    let v = sum(&y[..bits]).sub(sum(&y[bits..])).sub(beta_share).and(msk);
-    let signed = mux(ch, cot, &[st.lsb()], &[v], &[v.neg().and(msk)], bits, rng).expect("semi-honest MUX")[0];
-    let mut out = Vec::with_capacity(T::BYTES);
-    signed.put(&mut out);
-    ch.send(out);
-    let theirs = ch.recv();
-    assert_eq!(theirs.len(), T::BYTES, "malformed payload share");
-    let w_cw = signed.add(T::get(&theirs)).and(msk);
-
+    let w_cw = arith_leaf(ch, &[[block_of(&w[0]), block_of(&w[1])]], &[Sub::Share(beta_share)], st.lsb(), fpre, &[F::ZERO])[0];
     let products = be.products;
-    (ShKey { party: b, n_size, bits, root: delta, cws, w_cw }, products)
+    (ShKey { party: b, n_size, root: delta, cws, w_cw }, products)
 }
 
 /// Runs this party's side of setup, preprocessing and generation.
 ///
-/// * `bits`: ℓ, `1 ≤ ℓ ≤ T::BITS` (≤ 128).
-/// * `alpha_share`: XOR share of `α < N`; `beta_share`: additive share of β.
+/// * `alpha_share`: XOR share of `α < N`; `beta_share`: additive share of
+///   `β ∈ F_p`.
 /// * `ferret`: the silent-OT parameters (`Some(FerretConfig::B13)` for
 ///   benchmarks); `None` keeps IKNP, for tests.
 /// * `foleage`: the PCG instance, at least [`foleage_for`]`(n)`.
 #[allow(clippy::too_many_arguments)]
-pub fn gen<T: Ring>(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: T, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> GenOutput<ShKey<T>> {
-    assert!(bits >= 1 && bits <= T::BITS && bits <= 128);
+pub fn gen<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> GenOutput<ShKey<F>> {
     let n = depth_for(n_size);
-    drive(ch, seed, ferret, foleage, n, n + 2 * bits + 1, |cot, pre, rng, ch| gen_with(cot, pre, rng, ch, n_size, bits, alpha_share, beta_share))
+    let (dabits, triples) = (leaf_dabits::<F>(1), 1);
+    drive(
+        ch,
+        seed,
+        ferret,
+        foleage,
+        n,
+        n + fp_pre_cots::<F>(dabits, triples),
+        |cot, rng, ch| fp_pre::<F, _>(ch, cot, dabits, triples, rng),
+        |cot, pre, mut fpre, rng, ch| gen_with(cot, pre, &mut fpre, rng, ch, n_size, alpha_share, beta_share),
+    )
 }
 
 /// Setup, then preprocessing ([`sh_products`]`(n)` F4 triples, n string
-/// triples, `cots` COTs per direction), then `body`, the generation proper,
-/// each phase timed and counted on its own.
-pub(crate) fn drive<K>(
+/// triples, `cots` COTs per direction, then `extra`), then `body`, the
+/// generation proper, each phase timed and counted on its own.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn drive<K, P>(
     ch: &mut Channel,
     seed: [u8; 32],
     ferret: Option<FerretConfig>,
     foleage: Params,
     n: usize,
     cots: usize,
-    body: impl FnOnce(&mut CotPair, Pre, &mut ChaCha20Rng, &mut Channel) -> (K, usize),
+    extra: impl FnOnce(&mut CotPair, &mut ChaCha20Rng, &mut Channel) -> P,
+    body: impl FnOnce(&mut CotPair, Pre, P, &mut ChaCha20Rng, &mut Channel) -> (K, usize),
 ) -> GenOutput<K> {
     let Setup { mut cot, mut rng, fseed, stats: setup_stats, time: setup_time, seedgen_stats, seedgen_time } = setup(ch, seed, ferret, foleage);
     let cots_before = cot.produced;
@@ -257,6 +239,7 @@ pub(crate) fn drive<K>(
     assert!(2 * sh_products(n) <= foleage.oles(), "FOLEAGE instance too small for depth {n}");
     let pre = precompute_counts(ch, &mut cot, &fseed, sh_products(n), n, cots, &mut rng);
     drop(fseed);
+    let more = extra(&mut cot, &mut rng, ch);
     let pre_stats = ch.stats().since(&setup_stats);
     let pre_time = t_pre.elapsed();
     // Timing only: neither party's gen time includes waiting for the other's
@@ -264,7 +247,7 @@ pub(crate) fn drive<K>(
     ch.sync();
     let gen_start = ch.stats();
     let t_gen = Instant::now();
-    let (key, products) = body(&mut cot, pre, &mut rng, ch);
+    let (key, products) = body(&mut cot, pre, more, &mut rng, ch);
     GenOutput {
         key,
         gen_stats: ch.stats().since(&gen_start),
@@ -288,11 +271,9 @@ pub fn foleage_for(n: usize) -> Params {
 
 /// Trusted-dealer generation for given roots (`lsb(root_b) = b`): the cleartext
 /// Gen, and the bit-exact oracle of [`gen`].
-pub fn deal<T: Ring>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: T) -> [ShKey<T>; 2] {
+pub fn deal<F: Field>(roots: [Block; 2], n_size: u64, alpha: u64, beta: F) -> [ShKey<F>; 2] {
     assert!(alpha < n_size);
     assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(Δ_b) = b");
-    let msk = T::mask(bits);
-    assert_eq!(beta, beta.and(msk), "β must fit in the output width");
     let n = depth_for(n_size);
     let delta = roots[0] ^ roots[1];
     let mut st = roots;
@@ -305,16 +286,16 @@ pub fn deal<T: Ring>(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, be
         cws.push(cw);
     }
     debug_assert_eq!(st[0] ^ st[1], delta);
-    let w = |s: Block| T::from_block(pay_hash().h(leaf_seed(s))).and(msk);
-    let v = w(st[0]).sub(w(st[1])).sub(beta).and(msk);
-    let w_cw = if st[0].lsb() { v.neg().and(msk) } else { v };
-    let mk = |party: usize| ShKey { party, n_size, bits, root: roots[party], cws: cws.clone(), w_cw };
+    let w = |s: Block| F::from_block(pay_hash().h(leaf_seed(s)));
+    let v = w(st[0]).sub(w(st[1])).sub(beta);
+    let w_cw = if st[0].lsb() { v.neg() } else { v };
+    let mk = |party: usize| ShKey { party, n_size, root: roots[party], cws: cws.clone(), w_cw };
     [mk(0), mk(1)]
 }
 
 /// Trusted-dealer generation from a seed.
-pub fn gen_reference<T: Ring>(n_size: u64, bits: usize, alpha: u64, beta: T, seed: [u8; 32]) -> [ShKey<T>; 2] {
+pub fn gen_reference<F: Field>(n_size: u64, alpha: u64, beta: F, seed: [u8; 32]) -> [ShKey<F>; 2] {
     let mut rng = ChaCha20Rng::from_seed(seed);
     let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
-    deal(roots, n_size, bits, alpha, beta)
+    deal(roots, n_size, alpha, beta)
 }

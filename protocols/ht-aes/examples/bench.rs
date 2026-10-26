@@ -4,8 +4,9 @@
 //! cargo run --release -p ht-aes --example bench-ht-aes -- <gen|eval|full|all> [--variant sh|sh-bin|mal|mal-arith|mal-auth] [options]
 //! ```
 //!
-//! * `sh`: semi-honest, payload in Z_2^ℓ (`--out-bits` ≤ 128; 64-bit words up
-//!   to ℓ = 64, 128-bit words above), F4 triples from FOLEAGE.
+//! * `sh`: semi-honest, payload in F_p (Goldilocks for `--out-bits` ≤ 64,
+//!   `2^127 − 1` above), the paper's leaf (daBits, one Beaver triple), F4
+//!   triples from FOLEAGE.
 //! * `sh-bin`: semi-honest, payload in F_2^ℓ (no B2A at the leaf).
 //! * `mal`: malicious on the same preprocessing, payload in
 //!   `{0,1}^ℓ ⊂ GF(2^128)` with a payload MAC and Π_Verify.
@@ -25,7 +26,6 @@
 //! outputs into a checksum. Gen only follows the path to α, so `--stream`
 //! applies to `eval` and `full` only.
 
-use dpf_common::arith::Ring;
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::block::depth_for;
 use dpf_common::net::run_two_party;
@@ -38,24 +38,23 @@ use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
 use std::time::Instant;
 
-fn gen_sh<T: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
+fn gen_sh<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
-    let bits = o.out_bits;
     let fp = foleage_for(depth_for(o.size));
     for _ in 0..o.reps {
         drop(last.take());
         let alpha = rng.gen_range(0..o.size);
-        let beta = T::random(rng).and(T::mask(bits));
+        let beta = F::random(rng);
         let a0: u64 = rng.gen::<u64>() & dpf_common::arith::mask(depth_for(o.size));
-        let b0 = T::random(rng).and(T::mask(bits));
-        let b1 = beta.sub(b0).and(T::mask(bits));
+        let b0 = F::random(rng);
+        let b1 = beta.sub(b0);
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
         let n = o.size;
-        let timed = |party: usize, a: u64, b: T| {
+        let timed = |party: usize, a: u64, b: F| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = gen(c, n, bits, a, b, seeds[party], Some(FerretConfig::B13), fp);
+                let out = gen(c, n, a, b, seeds[party], Some(FerretConfig::B13), fp);
                 (out, t.elapsed())
             }
         };
@@ -101,10 +100,10 @@ fn gen_sh<T: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
     );
 }
 
-fn eval_sh<T: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
+fn eval_sh<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
-    let beta = T::random(rng).and(T::mask(o.out_bits));
-    let keys = gen_reference::<T>(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
+    let beta = F::random(rng);
+    let keys = gen_reference::<F>(o.size, rng.gen_range(0..o.size), beta, rng.gen());
     let k = &keys[0];
     if o.runs("eval") {
         bench_eval(o, 1, &xs, |x| {
@@ -117,7 +116,7 @@ fn eval_sh<T: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
                 black_box(k.eval_full());
             }
             TreeMode::Stream { batch } => {
-                let mut acc = T::ZERO;
+                let mut acc = F::ZERO;
                 k.eval_full_stream(batch, |_, ys| acc = ys.iter().fold(acc, |a, y| a.add(*y)));
                 black_box(acc);
             }
@@ -453,10 +452,10 @@ fn main() {
         match o.variant.as_str() {
             "sh" => {
                 if o.runs("gen") {
-                    if wide { gen_sh::<u128>(o, &mut rng) } else { gen_sh::<u64>(o, &mut rng) }
+                    if wide { gen_sh::<M127>(o, &mut rng) } else { gen_sh::<Gold>(o, &mut rng) }
                 }
                 if o.runs("eval") || o.runs("full") {
-                    if wide { eval_sh::<u128>(o, &mut rng) } else { eval_sh::<u64>(o, &mut rng) }
+                    if wide { eval_sh::<M127>(o, &mut rng) } else { eval_sh::<Gold>(o, &mut rng) }
                 }
             }
             "sh-bin" => {

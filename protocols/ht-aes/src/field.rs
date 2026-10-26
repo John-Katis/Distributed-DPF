@@ -81,15 +81,17 @@ impl Field for Gold {
     const ONE: Self = Gold(1);
     #[inline]
     fn add(self, o: Self) -> Self {
-        Gold::reduce(self.0 as u128 + o.0 as u128)
+        let (s, carry) = self.0.overflowing_add(o.0);
+        Gold(if carry || s >= GOLD_P { s.wrapping_sub(GOLD_P) } else { s })
     }
     #[inline]
     fn sub(self, o: Self) -> Self {
-        Gold::reduce(self.0 as u128 + (GOLD_P - o.0) as u128)
+        let (s, borrow) = self.0.overflowing_sub(o.0);
+        Gold(if borrow { s.wrapping_add(GOLD_P) } else { s })
     }
     #[inline]
     fn neg(self) -> Self {
-        Gold::ZERO.sub(self)
+        Gold(if self.0 == 0 { 0 } else { GOLD_P - self.0 })
     }
     #[inline]
     fn mul(self, o: Self) -> Self {

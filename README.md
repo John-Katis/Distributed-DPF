@@ -36,10 +36,10 @@ REFERENCES.md        papers and techniques this code implements
 | `half-tree` (`malicious`) | malicious, one-bit leakage | BDOZ-authenticated bits | `GF(2^128)^bm` + SPDZ MACs | as above, plus a batch MAC check |
 | `floram-arith` | semi-honest | additive shares mod 2^n (BitDec from bit triples) | `Z_2^ℓ`, ℓ ≤ 64 | COT-based block MUX per level, CCMP + arithmetic MUX for the last word |
 | `fssnn` (`bin`, `arith`) | semi-honest | XOR shares | `F_2^ℓ` (`bin`) or `Z_2^ℓ` (`arith`), ℓ ≤ 256 | both trees' seeds XOR-shared, LPN-PRG (DGH+21) in 2PC per level, COT MUX; correlations from IKNP + KK13 OT |
-| `ht-aes` (`sh`) | semi-honest | XOR shares | `Z_2^ℓ`, ℓ ≤ 128 | shared on-path state, AES-MMO in 2PC per level (F4 tower, FOLEAGE triples), COT for α·Δ; FssNN's MUX B2A + sign at the leaf |
+| `ht-aes` (`sh`) | semi-honest | XOR shares | `F_p` (Goldilocks for ℓ ≤ 64, `2^127 − 1` above) | shared on-path state, AES-MMO in 2PC per level (F4 tower, FOLEAGE triples), COT for α·Δ; at the leaf B2A by daBits and the sign by a daBit and one Beaver triple (the paper's leaf, three rounds) |
 | `ht-aes` (`sh-bin`) | semi-honest | XOR shares | `F_2^ℓ`, ℓ ≤ 128 | as `sh`; the leaf opens `W_0 ⊕ W_1 ⊕ β` (no B2A, no sign) |
 | `ht-aes` (`mal`) | malicious with abort (the paper's §malicious: key material checked by Π_Verify; selective failure as in Prop. "Selective-failure channel") | XOR shares | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | the `sh` Gen on the same FOLEAGE/Ferret preprocessing, plus `F^mac` at the leaf, `δ·β` from ℓ string triples, the payload-MAC word under a persistent δ; Π_Verify on outputs |
-| `ht-aes` (`mal-arith`) | malicious with abort, as `mal` | XOR shares | `F_p` + payload MAC in `F_p` (Goldilocks for ℓ ≤ 64, `2^127 − 1` above) | the `sh` Gen on the same preprocessing; at the leaf `F^pay`, `F^mac`, then COT-based OLEs for the B2A of the masks, `δ·β` (Gilboa) and the sign `(1 − 2t)·V`; Π_Verify over `F_p` |
+| `ht-aes` (`mal-arith`) | malicious with abort, as `mal` | XOR shares | `F_p` + payload MAC in `F_p` (Goldilocks for ℓ ≤ 64, `2^127 − 1` above) | the `sh` Gen on the same preprocessing; at the leaf `F^pay`, `F^mac` and the `sh` leaf on both words, `δ·β` by one more Beaver product; Π_Verify over `F_p` |
 | `ht-aes` (`mal-auth`) | malicious with abort, no leakage | authenticated bits | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | as `mal` on SPDZ bit MACs ((A1)–(A5)), F4 triples from leaky triples + bucketing on malicious-Ferret aBits; one check of all openings, Π_Verify on outputs |
 | `duoram` (`2p`, `3p`) | semi-honest | additive shares mod 2^n (online shift) | `Z_2^ℓ`, ℓ ≤ 64 | Du–Atallah product per level at a random target; triples from helper P2 (`3p`) or IKNP OT (`2p`); one-round online phase |
 
@@ -154,10 +154,10 @@ bit (one round), as Ferret does:
 | fssnn | PRG correlations for 2n (+2) calls, 2n bit triples, 3n (+2ℓ+1 for `arith`) Ferret COTs per direction |
 | duoram (`2p`) | n AND triples from COTs, n + 2·w random COTs for the Gilboa products |
 | duoram (`3p`) | P2's one message to each party (n AND triples, n + 2 product triples) |
-| ht-aes (`sh`) | FOLEAGE expansion into (2n + 2)·1,920 F4 triples (local), n bit-times-block triples from Ferret random OTs, n + 2ℓ + 1 Ferret COTs per direction; the FOLEAGE seeds (≥ 3^12 OLEs, ~26 MB) are generated without a dealer in setup |
+| ht-aes (`sh`) | FOLEAGE expansion into (2n + 2)·1,920 F4 triples (local), n bit-times-block triples from Ferret random OTs, n Ferret COTs per direction, 2κ + 1 daBits and one Beaver triple over F_p from COT OLEs (κ = min(⌈log p⌉ + 40, 128)); the FOLEAGE seeds (≥ 3^12 OLEs, ~26 MB) are generated without a dealer in setup |
 | ht-aes (`mal`) | as `sh`: FOLEAGE expansion into (2n + 4)·1,920 F4 triples, n + ℓ bit-times-block triples from Ferret random OTs (branch selection, δ·β), n Ferret COTs per direction; FOLEAGE seeds generated in setup |
 | ht-aes (`sh-bin`) | as `sh` with n Ferret COTs per direction (the α-bits only) |
-| ht-aes (`mal-arith`) | as `mal` with n string triples (branch selection) and n + 4κ + ⌈log p⌉ + 2 Ferret COTs per direction for the leaf OLEs (κ = min(⌈log p⌉ + 40, 128)) |
+| ht-aes (`mal-arith`) | as `mal` with n string triples (branch selection), n Ferret COTs per direction, 4κ + 1 daBits and three Beaver triples over F_p (two signs, δ·β) from COT OLEs |
 | ht-aes (`mal-auth`) | (2n + 4)·1,920 + 64·(2n + ℓ) authenticated F4 triples: 4× as many leaky triples from malicious-Ferret aBits, bucketed and checked; COTs for the n + ℓ + 254 input bits |
 
 For Duoram, generation proper is its own preprocessing (the DPF at a random

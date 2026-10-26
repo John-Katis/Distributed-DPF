@@ -100,7 +100,7 @@ impl BinKey {
 pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> GenOutput<BinKey> {
     assert!((1..=128).contains(&bits));
     let n = depth_for(n_size);
-    drive(ch, seed, ferret, foleage, n, n, |cot, pre, rng, ch| {
+    drive(ch, seed, ferret, foleage, n, n, |_, _, _| (), |cot, pre, (), rng, ch| {
         let b = ch.party();
         let Pre { mut be, string_triples } = pre;
         let delta = cot.delta();

@@ -18,19 +18,21 @@
 //! half-tree walk with `L = F(st)`, `R = st ⊕ L`, `st' = child ⊕ t·CW`. The
 //! payload is read at the leaf through a second hash `F^pay(s) = H'(s ∥ 0)`.
 //!
-//! * [`semi_honest`]: payload in Z_2^ℓ (ℓ ≤ 128), F4 triples from FOLEAGE
-//!   ([`dpf_common::foleage`]), leaf B2A and sign as in FssNN (SIRNN MUXes).
+//! * [`semi_honest`]: payload in `G = F_p` ([`field`]), F4 triples from
+//!   FOLEAGE ([`dpf_common::foleage`]), the paper's leaf ([`leaf`]: B2A by
+//!   daBits, the sign by a daBit and one Beaver triple).
 //! * [`malicious`]: the semi-honest Gen on the same preprocessing, plus the
 //!   paper's payload-MAC word `W^MAC_CW` under a persistent key δ and
 //!   Π_Verify on the outputs; payload in `{0,1}^ℓ ⊂ GF(2^128)`.
-//! * [`malicious_arith`]: the same for an arithmetic payload, `G = F_p`
-//!   ([`field`]): B2A, `δ·β` and the sign from COT-based OLEs.
+//! * [`malicious_arith`]: the same for an arithmetic payload in F_p, on the
+//!   leaf of [`leaf`] (`δ·β` by one more Beaver product).
 //! * [`semi_honest::bin`]: the semi-honest Gen with a binary payload, no B2A.
 //! * [`malicious_auth`]: additionally every share authenticated (bit MACs in
 //!   GF(2^128), the layer (A1)–(A5) against selective failure), F4 triples
 //!   from leaky authenticated triples with bucketing on malicious Ferret.
 
 pub mod field;
+pub mod leaf;
 pub mod malicious;
 pub mod malicious_arith;
 pub mod malicious_auth;
