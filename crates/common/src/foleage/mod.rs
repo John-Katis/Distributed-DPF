@@ -209,8 +209,9 @@ fn fold<P: Packed>(w: P, lanes: usize) -> u8 {
     (0..lanes).fold(0u8, |acc, l| acc ^ w.lane(l))
 }
 
-/// Lanes of `⟨u⟩` packed per word in [`Seed::expand`].
-const U_LANES: usize = 16;
+/// Lanes of `⟨u⟩` packed per word in [`Seed::expand`] (a `u16`, so that
+/// both parties expand `3^19` OLEs in memory).
+const U_LANES: usize = 8;
 
 impl Seed {
     /// Seed size in bytes (noise and DPF keys).
@@ -237,15 +238,15 @@ impl Seed {
         drop(e);
 
         // ⟨u_{i,j}⟩: the DPFs of each block summed, lane i·c + j, packed
-        // U_LANES lanes per word (one pass per group of lanes).
+        // U_LANES lanes per u16 (one pass per group of lanes).
         let leaf = leaf_len(p.leaf_trits);
         let leaves = 3usize.pow(p.depth() as u32);
         let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).min(T);
         let mut z = vec![0u8; n];
         for g in (0..c * c).step_by(U_LANES) {
             let lanes = g..(g + U_LANES).min(c * c);
-            let mut u = vec![0u32; n];
-            let blocks: Vec<(usize, &mut [u32])> = u.chunks_mut(bs).enumerate().collect();
+            let mut u = vec![0u16; n];
+            let blocks: Vec<(usize, &mut [u16])> = u.chunks_mut(bs).enumerate().collect();
             let per = blocks.len().div_ceil(threads);
             let mut blocks = blocks.into_iter();
             std::thread::scope(|sc| loop {
@@ -270,7 +271,7 @@ impl Seed {
                             for l in 0..leaves {
                                 for s in 0..leaf {
                                     let v = acc[l * LEAF_BLOCKS + s / 64].0.lane(s % 64);
-                                    ub[l * leaf + s] |= (v as u32) << (2 * (lane - g));
+                                    ub[l * leaf + s] |= (v as u16) << (2 * (lane - g));
                                 }
                             }
                         }
@@ -279,7 +280,7 @@ impl Seed {
             });
             fft::fft(&mut u);
             for k in 0..n {
-                let a2 = lanes.clone().fold(0u32, |w, l| w.xor_lane(l - g, f4::mul(a[k].lane(l / c), a[k].lane(l % c))));
+                let a2 = lanes.clone().fold(0u16, |w, l| w.xor_lane(l - g, f4::mul(a[k].lane(l / c), a[k].lane(l % c))));
                 z[k] ^= fold(f4::mul_packed(a2, u[k]), lanes.len());
             }
         }
