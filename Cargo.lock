@@ -166,6 +166,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "exp-f4-triples"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "dpf-common",
+ "ht-aes",
+ "rand",
+ "rand_chacha",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

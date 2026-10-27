@@ -1,0 +1,16 @@
+[package]
+name = "exp-f4-triples"
+description = "Experiment: F4 triples for ht-aes from FOLEAGE with c = 4, 5, 6 at the largest instance outside ePrint 2025/892, or from Ferret random COTs."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+ht-aes = { path = "../../protocols/ht-aes" }
+aes.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[[example]]
+name = "bench-f4-triples"
+path = "examples/bench.rs"
