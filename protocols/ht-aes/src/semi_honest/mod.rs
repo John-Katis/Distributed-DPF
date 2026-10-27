@@ -5,5 +5,5 @@ pub mod bin;
 pub mod gen;
 pub mod key;
 
-pub use gen::{deal, foleage_for, gen, gen_reference, F4Source, GenOutput};
+pub use gen::{deal, foleage_for, gen, gen_reference, GenOutput};
 pub use key::ShKey;

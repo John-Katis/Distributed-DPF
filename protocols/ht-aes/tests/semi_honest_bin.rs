@@ -6,7 +6,6 @@ use dpf_common::foleage::Params;
 use dpf_common::net::run_two_party;
 use ht_aes::malicious::low;
 use ht_aes::semi_honest::bin::{deal, gen, gen_reference, BinKey};
-use ht_aes::semi_honest::F4Source;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -49,28 +48,6 @@ fn gen_matches_point_function_and_dealer() {
         check(&keys, n, alpha, beta);
         assert_eq!(deal([keys[0].root, keys[1].root], n, bits, alpha, beta), keys);
     }
-}
-
-/// F4 triples from random COTs instead of FOLEAGE: same keys, same rounds,
-/// no seed generation.
-#[test]
-fn gen_with_ot_triples() {
-    let mut rng = ChaCha20Rng::seed_from_u64(3);
-    let (n, bits) = (16u64, 64usize);
-    let alpha = rng.gen_range(0..n);
-    let beta = low(Block::random(&mut rng), bits);
-    let a0: u64 = rng.gen::<u64>() % n;
-    let b0 = low(Block::random(&mut rng), bits);
-    let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-    let (o0, o1) = run_two_party(
-        move |c| gen(c, n, bits, a0, b0, seeds[0], None, F4Source::Ot),
-        move |c| gen(c, n, bits, alpha ^ a0, beta ^ b0, seeds[1], None, F4Source::Ot),
-    );
-    assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), 41 * 4 + 42);
-    assert_eq!((o0.foleage, o0.seedgen_stats.total_bytes()), (None, 0));
-    let keys = [o0.key, o1.key];
-    check(&keys, n, alpha, beta);
-    assert_eq!(deal([keys[0].root, keys[1].root], n, bits, alpha, beta), keys);
 }
 
 #[test]
