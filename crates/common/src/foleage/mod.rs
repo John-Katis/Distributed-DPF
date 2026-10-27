@@ -25,8 +25,9 @@
 //! Fig. 1). ePrint 2025/892 (Bouillaguet, Delaplace, Hamdad, Vergnaud) breaks
 //! the aggressive set in practice and the conservative one for large N; their
 //! countermeasure `3^{N−1} < 4^{3(c−1)}` limits `c = 4` to `N ≤ 12`, which
-//! [`Params::new`] enforces. Larger instances need a larger c (e.g. `c = 5`
-//! allows `N ≤ 16`, the choice recommended by the LXYZ25 code).
+//! [`Params::with_c`] enforces. Larger instances need a larger c
+//! ([`Params::max_log3`]: `c = 5` allows `N ≤ 16`, `c = 6` allows `N ≤ 19`) at
+//! `(ct)²` DPFs; [`Params::new`] keeps `c = 4`.
 //!
 //! * [`fft`]: the packed FFT over `R`.
 //! * [`tdpf`]: the ternary random DPF and its full-domain evaluation.
@@ -43,41 +44,56 @@ use crate::hash::CtrPrg;
 use rand::{CryptoRng, Rng, RngCore};
 use tdpf::{leaf_len, TdpfKey, LEAF_BLOCKS};
 
-/// Compression factor `c` (number of noise polynomials per party).
+/// Default compression factor `c` (number of noise polynomials per party).
 pub const C: usize = 4;
+/// Largest supported `c`: `a` is packed in a `u16`.
+pub const MAX_C: usize = 8;
 /// Noise weight per polynomial, `t = 3^T_TRITS`.
 pub const T_TRITS: usize = 3;
 pub const T: usize = 27;
 
-/// Instance size.
+/// Instance size and compression factor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Params {
     /// `N`: the instance yields `3^N` OLEs.
     pub log3: usize,
     /// `v`: trits resolved inside a DPF leaf (early termination).
     pub leaf_trits: usize,
+    /// `c`: noise polynomials per party.
+    pub c: usize,
 }
 
 impl Params {
-    /// `3^log3` OLEs, with up to 5 leaf trits.
+    /// `3^log3` OLEs with `c = 4`, with up to 5 leaf trits.
     pub fn new(log3: usize) -> Params {
+        Self::with_c(log3, C)
+    }
+
+    /// `3^log3` OLEs with compression factor `c`.
+    pub fn with_c(log3: usize, c: usize) -> Params {
         assert!(log3 >= T_TRITS + 2, "need at least two trits per block");
+        assert!((2..=MAX_C).contains(&c), "c = {c} outside 2..={MAX_C}");
         assert!(
-            Self::outside_bczv_attack(log3),
-            "3^{log3} OLEs with c = {C} is in reach of the QA-SD attack of ePrint 2025/892 (needs 3^(N-1) < 4^(3(c-1)), i.e. N <= 12 for c = 4)"
+            Self::outside_bczv_attack(log3, c),
+            "3^{log3} OLEs with c = {c} is in reach of the QA-SD attack of ePrint 2025/892 (needs 3^(N-1) < 4^(3(c-1)), e.g. N <= 12 for c = 4)"
         );
-        Params { log3, leaf_trits: (log3 - T_TRITS - 1).min(5) }
+        Params { log3, leaf_trits: (log3 - T_TRITS - 1).min(5), c }
     }
 
     /// Bouillaguet–Delaplace–Hamdad–Vergnaud (ePrint 2025/892) recover the
     /// noise from the coordinates where all of `a_1, …, a_{c−1}` vanish; their
     /// countermeasure is `(q−1)^{N−1} < q^{(q−1)(c−1)}`, i.e. `3^{N−1} <
     /// 4^{3(c−1)}` over F4, so that no such evaluation point is expected.
-    pub fn outside_bczv_attack(log3: usize) -> bool {
-        3u128.pow(log3 as u32 - 1) < 4u128.pow(3 * (C as u32 - 1))
+    pub fn outside_bczv_attack(log3: usize, c: usize) -> bool {
+        3u128.pow(log3 as u32 - 1) < 4u128.pow(3 * (c as u32 - 1))
     }
 
-    /// The smallest instance (at least `3^12`) with `n` OLEs.
+    /// The largest N that [`Params::with_c`] accepts for `c`.
+    pub fn max_log3(c: usize) -> usize {
+        (T_TRITS + 2..).take_while(|&k| Self::outside_bczv_attack(k, c)).last().expect("c too small")
+    }
+
+    /// The smallest instance (at least `3^12`) with `n` OLEs, `c = 4`.
     pub fn for_oles(n: usize) -> Params {
         let mut k = 12;
         while 3usize.pow(k as u32) < n {
@@ -106,14 +122,30 @@ impl Params {
 
     /// `c²t²`.
     pub fn dpfs(&self) -> usize {
-        C * C * T * T
+        self.c * self.c * T * T
     }
 
     /// DPF number for the noise entries `(i_A, j_A)` of party 0 and
     /// `(i_B, j_B)` of party 1.
-    pub fn dpf_index(ia: usize, ib: usize, ja: usize, jb: usize) -> usize {
-        ((ia * C + ib) * T + ja) * T + jb
+    pub fn dpf_index(&self, ia: usize, ib: usize, ja: usize, jb: usize) -> usize {
+        ((ia * self.c + ib) * T + ja) * T + jb
     }
+
+    /// `(i_A, i_B, j_A, j_B)` of DPF `d`, the inverse of [`Params::dpf_index`].
+    pub fn dpf_entries(&self, d: usize) -> (usize, usize, usize, usize) {
+        (d / (T * T * self.c), d / (T * T) % self.c, d / T % T, d % T)
+    }
+}
+
+/// `f(0), …, f(n − 1)`, computed on all cores in contiguous chunks.
+pub(crate) fn par_map<X: Send>(n: usize, f: impl Fn(usize) -> X + Sync) -> Vec<X> {
+    let threads = std::thread::available_parallelism().map_or(1, |t| t.get());
+    let per = n.div_ceil(threads).max(1);
+    let f = &f;
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..n).step_by(per).map(|lo| sc.spawn(move || (lo..(lo + per).min(n)).map(f).collect::<Vec<X>>())).collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    })
 }
 
 /// Trit-wise sum mod 3 of `a` and `b` over `k` trits.
@@ -142,7 +174,7 @@ pub struct NoiseEntry {
 
 /// `c·t` regular noise entries, entry `i·t + j` in block j of polynomial i.
 pub fn sample_noise<R: RngCore + CryptoRng>(p: &Params, rng: &mut R) -> Vec<NoiseEntry> {
-    (0..C * T).map(|_| NoiseEntry { offset: rng.gen_range(0..p.block_size()), value: rng.gen_range(1..4) }).collect()
+    (0..p.c * T).map(|_| NoiseEntry { offset: rng.gen_range(0..p.block_size()), value: rng.gen_range(1..4) }).collect()
 }
 
 /// One party's PCG seed.
@@ -165,11 +197,20 @@ pub struct Ole {
 
 /// The public `a` in the FFT domain: lane 0 is the constant 1, lanes 1..c
 /// uniform (`sample_a_and_a2`).
-pub fn sample_a(p: &Params, seed: Block) -> Vec<u8> {
+pub fn sample_a(p: &Params, seed: Block) -> Vec<u16> {
     let n = p.oles();
-    let words = CtrPrg::new(seed).next_words(n.div_ceil(16));
-    (0..n).map(|i| ((words[i / 16] >> (8 * (i % 16))) as u8 & !3) | 1).collect()
+    let mask = ((1u32 << (2 * p.c)) - 1) as u16;
+    let words = CtrPrg::new(seed).next_words(n.div_ceil(8));
+    (0..n).map(|i| ((words[i / 8] >> (16 * (i % 8))) as u16 & mask & !3) | 1).collect()
 }
+
+/// Sum of the first `lanes` lanes of `w`.
+fn fold<P: Packed>(w: P, lanes: usize) -> u8 {
+    (0..lanes).fold(0u8, |acc, l| acc ^ w.lane(l))
+}
+
+/// Lanes of `⟨u⟩` packed per word in [`Seed::expand`].
+const U_LANES: usize = 16;
 
 impl Seed {
     /// Seed size in bytes (noise and DPF keys).
@@ -177,59 +218,71 @@ impl Seed {
         16 + self.noise.len() * 8 + self.keys.iter().map(|k| k.size_bytes()).sum::<usize>()
     }
 
-    /// PCG.Expand: the `3^N` OLEs.
+    /// PCG.Expand: the `3^N` OLEs. The DPFs are evaluated on all cores.
     pub fn expand(&self) -> Ole {
         let p = &self.params;
-        let n = p.oles();
-        let bs = p.block_size();
+        let (n, bs, c) = (p.oles(), p.block_size(), p.c);
         let a = sample_a(p, self.a_seed);
 
-        // x = Σ a_i·FFT(e_i), the c FFTs packed in a u8.
-        let mut e = vec![0u8; n];
-        for i in 0..C {
+        // x = Σ a_i·FFT(e_i), the c FFTs packed in a u16.
+        let mut e = vec![0u16; n];
+        for i in 0..c {
             for j in 0..T {
                 let ne = self.noise[i * T + j];
-                e[j * bs + ne.offset] ^= ne.value << (2 * i);
+                e[j * bs + ne.offset] ^= (ne.value as u16) << (2 * i);
             }
         }
         fft::fft(&mut e);
-        let fold = |w: u32, lanes: usize| (0..lanes).fold(0u8, |acc, l| acc ^ w.lane(l));
-        let x: Vec<u8> = (0..n).map(|k| fold(f4::mul_packed(a[k], e[k]) as u32, C)).collect();
+        let x: Vec<u8> = (0..n).map(|k| fold(f4::mul_packed(a[k], e[k]), c)).collect();
         drop(e);
 
-        // ⟨u_{i,j}⟩: the DPFs of each block summed, then packed lane i·c + j.
+        // ⟨u_{i,j}⟩: the DPFs of each block summed, lane i·c + j, packed
+        // U_LANES lanes per word (one pass per group of lanes).
         let leaf = leaf_len(p.leaf_trits);
         let leaves = 3usize.pow(p.depth() as u32);
-        let mut u = vec![0u32; n];
-        let mut acc = vec![Block::ZERO; leaves * LEAF_BLOCKS];
-        for ia in 0..C {
-            for ib in 0..C {
-                let lane = ia * C + ib;
-                for blk in 0..T {
-                    acc.iter_mut().for_each(|b| *b = Block::ZERO);
-                    for ja in 0..T {
-                        let jb = (0..T).find(|&jb| trit_add(ja, jb, T_TRITS) == blk).unwrap();
-                        let y = self.keys[Params::dpf_index(ia, ib, ja, jb)].full_eval();
-                        for (a, b) in acc.iter_mut().zip(&y) {
-                            *a ^= *b;
-                        }
-                    }
-                    for l in 0..leaves {
-                        for s in 0..leaf {
-                            let v = acc[l * LEAF_BLOCKS + s / 64].0.lane(s % 64);
-                            u[blk * bs + l * leaf + s] |= (v as u32) << (2 * lane);
-                        }
-                    }
+        let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).min(T);
+        let mut z = vec![0u8; n];
+        for g in (0..c * c).step_by(U_LANES) {
+            let lanes = g..(g + U_LANES).min(c * c);
+            let mut u = vec![0u32; n];
+            let blocks: Vec<(usize, &mut [u32])> = u.chunks_mut(bs).enumerate().collect();
+            let per = blocks.len().div_ceil(threads);
+            let mut blocks = blocks.into_iter();
+            std::thread::scope(|sc| loop {
+                let mine: Vec<_> = blocks.by_ref().take(per).collect();
+                if mine.is_empty() {
+                    break;
                 }
+                let lanes = lanes.clone();
+                sc.spawn(move || {
+                    let mut acc = vec![Block::ZERO; leaves * LEAF_BLOCKS];
+                    for (blk, ub) in mine {
+                        for lane in lanes.clone() {
+                            let (ia, ib) = (lane / c, lane % c);
+                            acc.iter_mut().for_each(|b| *b = Block::ZERO);
+                            for ja in 0..T {
+                                let jb = (0..T).find(|&jb| trit_add(ja, jb, T_TRITS) == blk).unwrap();
+                                let y = self.keys[p.dpf_index(ia, ib, ja, jb)].full_eval();
+                                for (a, b) in acc.iter_mut().zip(&y) {
+                                    *a ^= *b;
+                                }
+                            }
+                            for l in 0..leaves {
+                                for s in 0..leaf {
+                                    let v = acc[l * LEAF_BLOCKS + s / 64].0.lane(s % 64);
+                                    ub[l * leaf + s] |= (v as u32) << (2 * (lane - g));
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+            fft::fft(&mut u);
+            for k in 0..n {
+                let a2 = lanes.clone().fold(0u32, |w, l| w.xor_lane(l - g, f4::mul(a[k].lane(l / c), a[k].lane(l % c))));
+                z[k] ^= fold(f4::mul_packed(a2, u[k]), lanes.len());
             }
         }
-        fft::fft(&mut u);
-        let z: Vec<u8> = (0..n)
-            .map(|k| {
-                let a2 = (0..C * C).fold(0u32, |w, l| w.xor_lane(l, f4::mul(a[k].lane(l / C), a[k].lane(l % C))));
-                fold(f4::mul_packed(a2, u[k]), C * C)
-            })
-            .collect();
         Ole { x, z }
     }
 }
@@ -260,8 +313,8 @@ pub fn deal<R: RngCore + CryptoRng>(p: Params, rng: &mut R) -> [Seed; 2] {
     let noise = [sample_noise(&p, rng), sample_noise(&p, rng)];
     let leaf = leaf_len(p.leaf_trits);
     let mut keys = [Vec::with_capacity(p.dpfs()), Vec::with_capacity(p.dpfs())];
-    for ia in 0..C {
-        for ib in 0..C {
+    for ia in 0..p.c {
+        for ib in 0..p.c {
             for ja in 0..T {
                 for jb in 0..T {
                     let (ea, eb) = (noise[0][ia * T + ja], noise[1][ib * T + jb]);
@@ -306,6 +359,15 @@ mod tests {
         for (x, y) in t[0].iter().zip(&t[1]) {
             assert_eq!(x.2 ^ y.2, f4::mul(x.0 ^ y.0, x.1 ^ y.1));
         }
+    }
+
+    #[test]
+    fn dealt_seeds_for_other_c() {
+        let mut rng = ChaCha20Rng::seed_from_u64(12);
+        for c in [3, 5, 6, 8] {
+            check_oles(&deal(Params::with_c(6, c), &mut rng));
+        }
+        assert_eq!([Params::max_log3(4), Params::max_log3(5), Params::max_log3(6)], [12, 16, 19]);
     }
 
     #[test]

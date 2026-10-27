@@ -99,21 +99,7 @@ impl TdpfKey {
 
     /// The `3^depth` corrected leaf seeds.
     pub fn leaves(&self) -> Vec<Block> {
-        let prg = tri_prg();
-        let mut nodes = vec![self.root];
-        let mut next = Vec::new();
-        for cw in &self.cws {
-            prg.expand(&nodes, &mut next);
-            for (p, &parent) in nodes.iter().enumerate() {
-                if parent.lsb() {
-                    for j in 0..3 {
-                        next[3 * p + j] ^= cw[j];
-                    }
-                }
-            }
-            std::mem::swap(&mut nodes, &mut next);
-        }
-        nodes
+        corrected_nodes(self.root, &self.cws)
     }
 
     /// The full-domain output: `LEAF_BLOCKS` packed blocks per leaf, in leaf
@@ -132,6 +118,25 @@ impl TdpfKey {
         }
         out
     }
+}
+
+/// The corrected nodes `3^{cws.len()}` levels below `root`.
+pub fn corrected_nodes(root: Block, cws: &[[Block; 3]]) -> Vec<Block> {
+    let prg = tri_prg();
+    let mut nodes = vec![root];
+    let mut next = Vec::new();
+    for cw in cws {
+        prg.expand(&nodes, &mut next);
+        for (p, &parent) in nodes.iter().enumerate() {
+            if parent.lsb() {
+                for j in 0..3 {
+                    next[3 * p + j] ^= cw[j];
+                }
+            }
+        }
+        std::mem::swap(&mut nodes, &mut next);
+    }
+    nodes
 }
 
 /// The leaf vector with `beta` in lane `slot` (F4 lane order of [`crate::f4::Packed`]).

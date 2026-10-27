@@ -28,8 +28,8 @@
 //! Rounds: coin toss for `a` (2), derandomisation (1), 2 per level, 1 per leaf
 //! trit, 1 for `CW_out`; the OLE message rides with the first level.
 
-use super::tdpf::{leaf_len, tri_prg, TdpfKey, LEAF_BLOCKS};
-use super::{sample_noise, trit, Params, Seed, C, T};
+use super::tdpf::{corrected_nodes, tri_prg, TdpfKey, LEAF_BLOCKS};
+use super::{par_map, sample_noise, trit, Params, Seed, T};
 use crate::block::{blocks_from_bytes, blocks_to_bytes, Block};
 use crate::coin::coin_block;
 use crate::f4::{self, Packed};
@@ -125,7 +125,7 @@ pub fn seed_gen<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, par
 
     // This party's noise entry in DPF d.
     let entry = |d: usize| {
-        let (jb, ja, ib, ia) = (d % T, d / T % T, d / (T * T) % C, d / (T * T * C));
+        let (ia, ib, ja, jb) = p.dpf_entries(d);
         if me == 0 { noise[ia * T + ja] } else { noise[ib * T + jb] }
     };
     // This party's trit for OT l of DPF d: tree level l + 1 takes trit
@@ -178,22 +178,26 @@ pub fn seed_gen<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, par
         ch.send(msg);
     }
 
+    // The trees are not kept: level l of DPF d is recomputed from its root and
+    // the CWs so far (about 1.5× the PRG calls, memory per DPF and thread).
     let prg = tri_prg();
-    let mut nodes: Vec<Block> = (0..dpfs).map(|_| Block::random(rng).with_lsb(me == 1)).collect();
-    let roots = nodes.clone();
+    let roots: Vec<Block> = (0..dpfs).map(|_| Block::random(rng).with_lsb(me == 1)).collect();
     let mut cws: Vec<Vec<[Block; 3]>> = vec![Vec::with_capacity(depth); dpfs];
-    let mut kids = Vec::new();
     for l in 0..depth {
-        let width = 3usize.pow(l as u32);
-        prg.expand(&nodes, &mut kids);
-        // S_j, z, and the OT messages for the peer's trit.
-        let mut s_z = Vec::with_capacity(dpfs);
-        let mut msg = Vec::with_capacity(dpfs * 9);
-        for d in 0..dpfs {
+        // S_j: the j-children of all nodes on level l, uncorrected.
+        let sums = par_map(dpfs, |d| {
+            let mut kids = Vec::new();
+            prg.expand(&corrected_nodes(roots[d], &cws[d]), &mut kids);
             let mut s = [Block::ZERO; 3];
-            for (i, &kid) in kids[3 * width * d..3 * width * (d + 1)].iter().enumerate() {
+            for (i, &kid) in kids.iter().enumerate() {
                 s[i % 3] ^= kid;
             }
+            s
+        });
+        // z, and the OT messages for the peer's trit.
+        let mut zs = Vec::with_capacity(dpfs);
+        let mut msg = Vec::with_capacity(dpfs * 9);
+        for d in 0..dpfs {
             let r = Block::random(rng).with_lsb(me == 0);
             let z: [Block; 3] = std::array::from_fn(|_| Block::random(rng));
             let a = my_trit(d, l);
@@ -205,7 +209,7 @@ pub fn seed_gen<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, par
                     msg.push(zw ^ placed ^ pd[w]);
                 }
             }
-            s_z.push((s, z));
+            zs.push(z);
         }
         ch.send_blocks(&msg);
         if l == 0 && me == 0 {
@@ -226,25 +230,15 @@ pub fn seed_gen<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, par
             let g = d * ots + l;
             let c = my_trit(d, l);
             let pr = pad_recv(rmac(g), g, c, 3);
-            let (s, z) = s_z[d];
             for w in 0..3 {
-                share.push(s[w] ^ z[w] ^ got[9 * d + 3 * c + w] ^ pr[w]);
+                share.push(sums[d][w] ^ zs[d][w] ^ got[9 * d + 3 * c + w] ^ pr[w]);
             }
         }
         ch.send_blocks(&share);
         let peer = ch.recv_blocks(3 * dpfs);
         for d in 0..dpfs {
-            let cw: [Block; 3] = std::array::from_fn(|w| share[3 * d + w] ^ peer[3 * d + w]);
-            for (pi, &parent) in nodes[width * d..width * (d + 1)].iter().enumerate() {
-                if parent.lsb() {
-                    for j in 0..3 {
-                        kids[3 * width * d + 3 * pi + j] ^= cw[j];
-                    }
-                }
-            }
-            cws[d].push(cw);
+            cws[d].push(std::array::from_fn(|w| share[3 * d + w] ^ peer[3 * d + w]));
         }
-        std::mem::swap(&mut nodes, &mut kids);
     }
 
     // Output word: ⟨e_slot·β⟩, one leaf trit per round.
@@ -294,23 +288,23 @@ pub fn seed_gen<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, par
             vecs[d] = clean;
         }
     }
-    let leaf = leaf_len(v);
-    let mut ext = Vec::new();
-    prg.extend(&nodes, &mut ext);
-    let leaves = 3usize.pow(depth as u32);
+    let ext = par_map(dpfs, |d| {
+        let mut ext = Vec::new();
+        prg.extend(&corrected_nodes(roots[d], &cws[d]), &mut ext);
+        let mut acc = [Block::ZERO; LEAF_BLOCKS];
+        for (i, &e) in ext.iter().enumerate() {
+            acc[i % LEAF_BLOCKS] ^= e;
+        }
+        acc
+    });
     let mut share = Vec::with_capacity(dpfs * LEAF_BLOCKS);
     for d in 0..dpfs {
-        let mut acc = vecs[d];
-        for i in 0..leaves {
-            for w in 0..LEAF_BLOCKS {
-                acc[w] ^= ext[LEAF_BLOCKS * (leaves * d + i) + w];
-            }
+        for w in 0..LEAF_BLOCKS {
+            share.push(vecs[d][w] ^ ext[d][w]);
         }
-        share.extend(acc);
     }
     ch.send_blocks(&share);
     let peer = ch.recv_blocks(dpfs * LEAF_BLOCKS);
-    debug_assert!(leaf <= 64 * LEAF_BLOCKS);
     let keys = (0..dpfs)
         .map(|d| TdpfKey {
             root: roots[d],
@@ -325,6 +319,7 @@ pub fn seed_gen<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, par
 mod tests {
     use super::*;
     use crate::foleage::tests::check_oles;
+    use crate::foleage::tdpf::leaf_len;
     use crate::foleage::{trit_add, triples};
     use crate::net::run_two_party;
     use crate::ot::FerretConfig;
@@ -332,6 +327,10 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
 
     fn run(log3: usize, ferret: bool) -> ([Seed; 2], [crate::net::CommStats; 2]) {
+        run_c(Params::new(log3), ferret)
+    }
+
+    fn run_c(p: Params, ferret: bool) -> ([Seed; 2], [crate::net::CommStats; 2]) {
         let party = |seed: u64| {
             move |ch: &mut Channel| {
                 let mut rng = ChaCha20Rng::seed_from_u64(seed);
@@ -341,7 +340,7 @@ mod tests {
                     cot.enable_ferret(ch, FerretConfig::TOY, &mut rng).unwrap();
                 }
                 let before = ch.stats();
-                let s = seed_gen(ch, &mut cot, Params::new(log3), &mut rng);
+                let s = seed_gen(ch, &mut cot, p, &mut rng);
                 (s, ch.stats().since(&before))
             }
         };
@@ -357,7 +356,7 @@ mod tests {
         let leaf = leaf_len(p.leaf_trits);
         // Every DPF is the point function of its cross term.
         for d in [0, 1, 500, p.dpfs() - 1] {
-            let (jb, ja, ib, ia) = (d % T, d / T % T, d / (T * T) % C, d / (T * T * C));
+            let (ia, ib, ja, jb) = p.dpf_entries(d);
             let (ea, eb) = (s[0].noise[ia * T + ja], s[1].noise[ib * T + jb]);
             let off = trit_add(ea.offset, eb.offset, p.block_trits());
             let (y0, y1) = (s[0].keys[d].full_eval(), s[1].keys[d].full_eval());
@@ -375,6 +374,15 @@ mod tests {
         }
         // 2 (coin) + 1 (derandomisation) + 2 per level + 1 per leaf trit + 1.
         assert_eq!(stats[0].rounds.max(stats[1].rounds), 2 + 1 + 2 * p.depth() + p.leaf_trits + 1);
+    }
+
+    #[test]
+    fn seed_gen_with_c_5_and_6() {
+        for c in [5, 6] {
+            let (s, _) = run_c(Params::with_c(6, c), false);
+            assert_eq!(s[0].keys.len(), c * c * T * T);
+            check_oles(&s);
+        }
     }
 
     #[test]

@@ -79,6 +79,7 @@ macro_rules! packed_impl {
 }
 
 packed_impl!(u8);
+packed_impl!(u16);
 packed_impl!(u32);
 packed_impl!(u64);
 packed_impl!(u128);
