@@ -275,7 +275,12 @@ impl CotPair {
         rng: &mut R,
     ) -> Result<(Vec<Block>, Vec<Block>), Abort> {
         if let Some(p) = self.pool.as_mut() {
-            return Ok(p.derandomise(ch, self.sender.delta, mine, theirs));
+            let out = p.derandomise(ch, self.sender.delta, mine, theirs);
+            // An exhausted pool is gone, so later calls extend afresh.
+            if p.r.is_empty() && p.k.is_empty() {
+                self.pool = None;
+            }
+            return Ok(out);
         }
         self.produced += mine.len() + theirs;
         if let Some(f) = self.ferret.as_mut() {

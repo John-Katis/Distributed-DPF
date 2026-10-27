@@ -238,8 +238,14 @@ impl Seed {
 /// `a_0·b_1` (party 0's `x` is `a_0`, party 1's is `b_1`), OLE `2i + 1` gives
 /// `b_0·a_1`; then `c_σ = a_σ b_σ + z_σ[2i] + z_σ[2i + 1]`.
 pub fn triples(ole: &Ole, party: usize, count: usize) -> Vec<(u8, u8, u8)> {
-    assert!(2 * count <= ole.x.len(), "instance too small for {count} triples");
-    (0..count)
+    triples_at(ole, party, 0, count)
+}
+
+/// [`triples`] from triple `start` on, so that the Gens of one session take
+/// disjoint OLEs from the same instance.
+pub fn triples_at(ole: &Ole, party: usize, start: usize, count: usize) -> Vec<(u8, u8, u8)> {
+    assert!(2 * (start + count) <= ole.x.len(), "instance too small for {count} more triples");
+    (start..start + count)
         .map(|i| {
             let (x0, x1) = (ole.x[2 * i], ole.x[2 * i + 1]);
             let (a, b) = if party == 0 { (x0, x1) } else { (x1, x0) };
