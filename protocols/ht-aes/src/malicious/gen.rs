@@ -22,7 +22,7 @@
 //! Rounds: `1 + 41n + 40 + 1 = 41n + 42`.
 
 use super::key::{low, MalKey};
-use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup};
+use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup, Walk};
 use crate::{leaf_seed, mac_hash, pay_hash};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128, PRODUCTS_PER_CALL};
 use dpf_common::block::{depth_for, Block};
@@ -71,9 +71,9 @@ impl MalSession {
     /// FOLEAGE expansion into [`mal_products`] triples, `n + ℓ` string
     /// triples (branch selection, δ·β) and n COTs per direction.
     pub fn precompute(&mut self, ch: &mut Channel, n: usize, bits: usize) -> Pre {
-        assert!(2 * mal_products(n) <= self.s.fseed.params.oles(), "FOLEAGE instance too small for depth {n}");
+        assert!(2 * (self.s.fused + mal_products(n)) <= self.s.fseed.params.oles(), "FOLEAGE instance too small for depth {n}");
         let s = &mut self.s;
-        precompute_counts(ch, &mut s.cot, &s.fseed, mal_products(n), n + bits, n, &mut s.rng)
+        precompute_counts(ch, &mut s.cot, &s.fseed, &mut s.fused, mal_products(n), n + bits, n, &mut s.rng)
     }
 
     /// One generation: XOR shares of α and of β ∈ {0,1}^ℓ.
@@ -99,7 +99,7 @@ impl MalSession {
 
         let s = &mut self.s;
         let cw_err = fault.filter(|f| f.level < n).map(|f| (f.level, f.err));
-        let (st, cws, reply) = walk(&mut be, branch, &mut s.cot, &mut s.rng, ch, n, alpha_share, &extra, cw_err);
+        let Walk { root, st, cws, reply } = walk(&mut be, branch, &mut s.cot, &mut s.rng, ch, n, alpha_share, &extra, cw_err);
         assert_eq!(reply.len(), 17 * bits, "malformed δ·β opening");
         let mut db = Block::ZERO;
         for i in 0..bits {
@@ -125,7 +125,7 @@ impl MalSession {
         let w_cw = w_share ^ Block::from_bytes(&theirs[..16]);
         let wm_cw = wm_share ^ Block::from_bytes(&theirs[16..]);
         let products = be.products;
-        (MalKey { party: b, n_size, bits, root: delta, cws, w_cw: low(w_cw, bits), wm_cw }, products)
+        (MalKey { party: b, n_size, bits, root, cws, w_cw: low(w_cw, bits), wm_cw }, products)
     }
 }
 

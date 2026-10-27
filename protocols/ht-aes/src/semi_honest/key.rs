@@ -1,4 +1,4 @@
-//! The semi-honest key: root `Δ_b`, n level words, the payload word in F_p,
+//! The semi-honest key: root `st_{0,b}`, n level words, the payload word in F_p,
 //! and its point and full-domain evaluation.
 
 use crate::field::Field;
@@ -10,7 +10,7 @@ use dpf_common::stream::walk;
 pub struct ShKey<T: Field> {
     pub party: usize,
     pub n_size: u64,
-    /// `st_{0,b} = Δ_b`.
+    /// `st_{0,b}`, with `st_{0,0} ⊕ st_{0,1} = Δ`.
     pub root: Block,
     pub cws: Vec<Block>,
     /// `W_CW = (−1)^{t_{n,0}}·(W_0 − W_1 − β)`.

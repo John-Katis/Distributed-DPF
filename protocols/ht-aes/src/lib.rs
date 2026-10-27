@@ -13,8 +13,9 @@
 //! * C: `st_{ℓ,0} = L_0 ⊕ α_ℓ·st_{ℓ−1,0} ⊕ t_{ℓ−1,0}·CW_ℓ`, one bit-times-block
 //!   product, whose opening rides with B.
 //!
-//! The key of party b is its root `st_{0,b} = Δ_b` (`lsb(Δ_b) = b`, so
-//! `Δ = Δ_0 ⊕ Δ_1` has lsb 1) and the public words; evaluation is a local
+//! `Δ = Δ_0 ⊕ Δ_1` (`lsb(Δ_b) = b`, so lsb(Δ) = 1) is the XOR of the parties'
+//! COT keys. The key of party b is its root `st_{0,b}`, fresh per Gen with
+//! `st_{0,0} ⊕ st_{0,1} = Δ` and `lsb(st_{0,b}) = b`, and the public words; evaluation is a local
 //! half-tree walk with `L = F(st)`, `R = st ⊕ L`, `st' = child ⊕ t·CW`. The
 //! payload is read at the leaf through a second hash `F^pay(s) = H'(s ∥ 0)`.
 //!

@@ -28,7 +28,7 @@ use super::key::ArithMalKey;
 use crate::field::Field;
 use crate::leaf::{arith_leaf, fp_pre, fp_pre_cots, leaf_dabits, FpPre, Sub};
 use crate::malicious::{mal_products, Fault};
-use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup};
+use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup, Walk};
 use crate::{child, leaf_seed, mac_hash, pay_hash, state_hash};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128};
 use dpf_common::block::{depth_for, Block};
@@ -64,10 +64,10 @@ impl<F: Field> ArithMalSession<F> {
     /// (branch selection), n COTs per direction, and the leaf's daBits and
     /// Beaver triples over F_p ([`leaf_counts`]).
     pub fn precompute(&mut self, ch: &mut Channel, n: usize) -> (Pre, FpPre<F>) {
-        assert!(2 * mal_products(n) <= self.s.fseed.params.oles(), "FOLEAGE instance too small for depth {n}");
+        assert!(2 * (self.s.fused + mal_products(n)) <= self.s.fseed.params.oles(), "FOLEAGE instance too small for depth {n}");
         let s = &mut self.s;
         let (dabits, triples) = leaf_counts::<F>();
-        let pre = precompute_counts(ch, &mut s.cot, &s.fseed, mal_products(n), n, n + fp_pre_cots::<F>(dabits, triples), &mut s.rng);
+        let pre = precompute_counts(ch, &mut s.cot, &s.fseed, &mut s.fused, mal_products(n), n, n + fp_pre_cots::<F>(dabits, triples), &mut s.rng);
         let fpre = fp_pre(ch, &mut s.cot, dabits, triples, &mut s.rng);
         (pre, fpre)
     }
@@ -85,7 +85,7 @@ impl<F: Field> ArithMalSession<F> {
         let (Pre { mut be, string_triples }, mut fpre) = pre;
         let s = &mut self.s;
         let cw_err = fault.filter(|f| f.level < n).map(|f| (f.level, f.err));
-        let (st, cws, _) = walk(&mut be, &string_triples, &mut s.cot, &mut s.rng, ch, n, alpha_share, &[], cw_err);
+        let Walk { root, st, cws, .. } = walk(&mut be, &string_triples, &mut s.cot, &mut s.rng, ch, n, alpha_share, &[], cw_err);
 
         // 2. Leaf masks, XOR-shared.
         let delta = s.cot.delta();
@@ -100,7 +100,7 @@ impl<F: Field> ArithMalSession<F> {
         let words = arith_leaf(ch, &masks, &subs, st.lsb(), &mut fpre, &[err(n), err(n + 1)]);
         let (w_cw, wm_cw) = (words[0], words[1]);
         let products = be.products;
-        (ArithMalKey { party: b, n_size, root: delta, cws, w_cw, wm_cw }, products)
+        (ArithMalKey { party: b, n_size, root, cws, w_cw, wm_cw }, products)
     }
 }
 

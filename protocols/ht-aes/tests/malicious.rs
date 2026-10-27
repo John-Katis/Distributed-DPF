@@ -4,7 +4,7 @@
 use dpf_common::block::Block;
 use dpf_common::coin::Abort;
 use dpf_common::net::run_two_party;
-use ht_aes::malicious::{deal, low, mal_products, run_mal, verify, Fault, MalKey, MalRun};
+use ht_aes::malicious::{deal, low, mal_products, run_mal, verify, Fault, MalKey, MalRun, MalSession};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -101,4 +101,47 @@ fn full_eval_matches_point_eval() {
             }
         }
     }
+}
+
+/// Two Gens on one session: fresh roots and disjoint F4 triples per Gen. With
+/// the session's COT key as the root, the two keys' words at the first level
+/// where the α differ would XOR to Δ and reveal both α.
+#[test]
+fn two_gens_in_one_session() {
+    let mut rng = ChaCha20Rng::seed_from_u64(7);
+    let (n, bits) = (1u64 << 10, 64usize);
+    let depth = dpf_common::block::depth_for(n);
+    let p = dpf_common::foleage::Params::for_oles(4 * mal_products(depth));
+    let alphas = [0x0f3u64, 0x2f3]; // differ at level 2
+    let betas = [low(Block::random(&mut rng), bits), low(Block::random(&mut rng), bits)];
+    let a0: [u64; 2] = [rng.gen_range(0..n), rng.gen_range(0..n)];
+    let b0 = [low(Block::random(&mut rng), bits), low(Block::random(&mut rng), bits)];
+    let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
+    let party = |b: usize| {
+        move |c: &mut dpf_common::net::Channel| {
+            let mut s = MalSession::setup(c, seeds[b], None, p);
+            let keys: Vec<MalKey> = (0..2)
+                .map(|g| {
+                    let pre = s.precompute(c, depth, bits);
+                    let (a, be) = if b == 0 { (a0[g], b0[g]) } else { (alphas[g] ^ a0[g], betas[g] ^ b0[g]) };
+                    s.gen(c, n, bits, a, be, pre, None).0
+                })
+                .collect();
+            (keys, s.delta_mac)
+        }
+    };
+    let ((k0, d0), (k1, d1)) = run_two_party(party(0), party(1));
+    for g in 0..2 {
+        assert_eq!(deal([k0[g].root, k1[g].root], n, bits, alphas[g], betas[g], d0 ^ d1), [k0[g].clone(), k1[g].clone()]);
+        let [y0, _] = eval_and_verify([k0[g].clone(), k1[g].clone()], [d0, d1], (0..n).collect(), false);
+        let y0 = y0.unwrap();
+        for x in 0..n {
+            assert_eq!(y0[x as usize], if x == alphas[g] { betas[g] } else { Block::ZERO });
+        }
+    }
+    assert_ne!(k0[0].root, k0[1].root);
+    assert_ne!(k1[0].root, k1[1].root);
+    let delta = k0[0].root ^ k1[0].root;
+    assert_eq!(delta, k0[1].root ^ k1[1].root, "Δ is the session's");
+    assert_ne!(k0[0].cws[1] ^ k0[1].cws[1], delta);
 }

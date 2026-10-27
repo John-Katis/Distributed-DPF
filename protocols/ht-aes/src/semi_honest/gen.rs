@@ -17,7 +17,11 @@
 //!
 //! 1. `⟨α_ℓ·Δ⟩` for all levels from the derandomised COTs (one round):
 //!    `α_{ℓ,b}·Δ_b ⊕ M_b[α_{ℓ,b}] ⊕ K_b[α_{ℓ,1−b}]`.
-//! 2. `⟨st_{0,0}⟩ = (Δ_0, 0)`, `⟨Δ⟩ = (Δ_0, Δ_1)`, so `⟨st_{0,1}⟩ = (0, Δ_1)`.
+//! 2. A fresh root per Gen: party 0 samples `R` (lsb 0) as `st_{0,0}` and
+//!    sends `R ⊕ Δ_0` with the level-1 message, party 1 sets
+//!    `st_{0,1} = R ⊕ Δ_0 ⊕ Δ_1`; `⟨st_{0,0}⟩ = (R, 0)`, `⟨Δ⟩ = (Δ_0, Δ_1)`.
+//!    Δ is the session's COT key, so roots `Δ_b` would repeat across Gens and
+//!    two keys would reveal Δ (hence α) by `CW_ℓ ⊕ CW'_ℓ`.
 //! 3. Per level: two AES–MMO calls on `⟨st_{ℓ−1,0}⟩`, `⟨st_{ℓ−1,0}⟩ ⊕ ⟨Δ⟩` (40
 //!    rounds), then one exchange carrying the CW share and the Beaver opening
 //!    `(α_ℓ ⊕ a, st_{ℓ−1,0} ⊕ B)` of the branch selection; the new state is
@@ -71,11 +75,15 @@ pub struct Pre {
     pub string_triples: Vec<(bool, Block, Block)>,
 }
 
-/// `products` F4 triples from the FOLEAGE seed, `strings` bit-times-block
-/// triples from Ferret random OTs and `cots` COTs per direction.
-pub(crate) fn precompute_counts(ch: &mut Channel, cot: &mut CotPair, seed: &foleage::Seed, products: usize, strings: usize, cots: usize, rng: &mut ChaCha20Rng) -> Pre {
+/// `products` F4 triples from the FOLEAGE seed, starting at triple `*used`
+/// (advanced past them, so no two Gens of a session share a triple),
+/// `strings` bit-times-block triples from Ferret random OTs and `cots` COTs per
+/// direction.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn precompute_counts(ch: &mut Channel, cot: &mut CotPair, seed: &foleage::Seed, used: &mut usize, products: usize, strings: usize, cots: usize, rng: &mut ChaCha20Rng) -> Pre {
     let ole = seed.expand();
-    let be = BeaverF4::new(ch.party(), foleage::triples(&ole, ch.party(), products));
+    let be = BeaverF4::new(ch.party(), foleage::triples_at(&ole, ch.party(), *used, products));
+    *used += products;
     drop(ole);
     let string_triples = rot_string_triples(ch, cot, strings, rng);
     cot.precompute(ch, cots, cots, rng).expect("semi-honest COT");
@@ -87,6 +95,8 @@ pub(crate) struct Setup {
     pub cot: CotPair,
     pub rng: ChaCha20Rng,
     pub fseed: foleage::Seed,
+    /// F4 triples of `fseed` already handed out.
+    pub fused: usize,
     pub stats: CommStats,
     pub time: Duration,
     pub seedgen_stats: CommStats,
@@ -109,7 +119,7 @@ pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfi
     let seedgen_stats = ch.stats().since(&before_seed);
     let seedgen_time = t_seed.elapsed();
     ch.sync();
-    Setup { cot, rng, fseed, stats: ch.stats(), time: t_setup.elapsed(), seedgen_stats, seedgen_time }
+    Setup { cot, rng, fseed, fused: 0, stats: ch.stats(), time: t_setup.elapsed(), seedgen_stats, seedgen_time }
 }
 
 /// Steps 1–3: `⟨α_ℓ·Δ⟩`, then the n levels. `extra` rides with the level-0
@@ -117,6 +127,15 @@ pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfi
 /// returned. `cw_err = Some((ℓ, ε))` XORs ε into this party's CW share at
 /// level ℓ (a deliberate deviation, for the malicious abort tests). Returns
 /// this party's share of `st_{n,0}`, the words, the reply.
+/// What [`walk`] leaves: this party's root `st_{0,b}`, its share of
+/// `st_{n,0}`, the n level words, and the peer's `extra`.
+pub(crate) struct Walk {
+    pub root: Block,
+    pub st: Block,
+    pub cws: Vec<Block>,
+    pub reply: Vec<u8>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn walk(
     be: &mut BeaverF4,
@@ -128,7 +147,7 @@ pub(crate) fn walk(
     alpha_share: u64,
     extra: &[u8],
     cw_err: Option<(usize, Block)>,
-) -> (Block, Vec<Block>, Vec<u8>) {
+) -> Walk {
     assert!(n >= 1);
     let b = ch.party();
     let delta = cot.delta();
@@ -139,8 +158,14 @@ pub(crate) fn walk(
     let (k, m) = cot.extend(ch, &a, n, rng).expect("semi-honest COT");
     let a_delta: Vec<Block> = (0..n).map(|i| delta.and_bit(a[i]) ^ m[i] ^ k[i]).collect();
 
-    // 2. Root shares.
-    let mut st = if b == 0 { delta } else { Block::ZERO };
+    // 2. A fresh root per Gen: party 0 takes `R` (lsb 0), party 1 gets
+    //    `R ⊕ Δ_0 ⊕ Δ_1` from `R ⊕ Δ_0`, sent with the level-1 message, so
+    //    `⟨st_{0,0}⟩ = (R, 0)`. Roots equal to `Δ_b` would repeat across the
+    //    Gens of a session, and two keys on the same roots give
+    //    `CW_ℓ ⊕ CW'_ℓ = Δ` at the first level where α and α' differ.
+    let r0 = Block::random(rng).with_lsb(false);
+    let mut root = r0;
+    let mut st = if b == 0 { r0 } else { Block::ZERO };
     let mut cws = Vec::with_capacity(n);
     let mut reply = Vec::new();
     for i in 0..n {
@@ -158,14 +183,26 @@ pub(crate) fn walk(
         let (ta, tb, tc) = string_triples[i];
         let (e, f) = (a[i] ^ ta, st ^ tb);
         let x = if i == 0 { extra.len() } else { 0 };
-        let mut msg = Vec::with_capacity(33 + x);
+        // Level 1 also carries `R ⊕ Δ_0`, from party 0 to party 1.
+        let (rx_out, rx_in) = match (i, b) {
+            (0, 0) => (16, 0),
+            (0, _) => (0, 16),
+            _ => (0, 0),
+        };
+        let mut msg = Vec::with_capacity(33 + x + rx_out);
         msg.extend_from_slice(&cw_share.to_bytes());
         msg.extend_from_slice(&f.to_bytes());
         msg.push(e as u8);
         msg.extend_from_slice(&extra[..x]);
+        if rx_out > 0 {
+            msg.extend_from_slice(&(r0 ^ delta).to_bytes());
+        }
         ch.send(msg);
         let mut theirs = ch.recv();
-        assert_eq!(theirs.len(), 33 + x, "malformed level message");
+        assert_eq!(theirs.len(), 33 + x + rx_in, "malformed level message");
+        if rx_in > 0 {
+            root = Block::from_bytes(&theirs.split_off(33 + x)) ^ delta;
+        }
         if i == 0 {
             reply = theirs.split_off(33);
         }
@@ -176,7 +213,7 @@ pub(crate) fn walk(
         st = l0 ^ prod ^ cw.and_bit(st.lsb());
         cws.push(cw);
     }
-    (st, cws, reply)
+    Walk { root, st, cws, reply }
 }
 
 fn gen_with<F: Field>(cot: &mut CotPair, pre: Pre, fpre: &mut FpPre<F>, rng: &mut ChaCha20Rng, ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F) -> (ShKey<F>, usize) {
@@ -185,14 +222,14 @@ fn gen_with<F: Field>(cot: &mut CotPair, pre: Pre, fpre: &mut FpPre<F>, rng: &mu
     let Pre { mut be, string_triples } = pre;
     let delta = cot.delta();
     let fp = pay_hash();
-    let (st, cws, _) = walk(&mut be, &string_triples, cot, rng, ch, n, alpha_share, &[], None);
+    let Walk { root, st, cws, .. } = walk(&mut be, &string_triples, cot, rng, ch, n, alpha_share, &[], None);
 
     // 4. Leaf word.
     let jobs: [(&Mmo, Shared128<bool>); 2] = [(fp, bits_of(leaf_seed(st))), (fp, bits_of(leaf_seed(st ^ delta)))];
     let w = mmo_shared(&mut be, ch, &jobs);
     let w_cw = arith_leaf(ch, &[[block_of(&w[0]), block_of(&w[1])]], &[Sub::Share(beta_share)], st.lsb(), fpre, &[F::ZERO])[0];
     let products = be.products;
-    (ShKey { party: b, n_size, root: delta, cws, w_cw }, products)
+    (ShKey { party: b, n_size, root, cws, w_cw }, products)
 }
 
 /// Runs this party's side of setup, preprocessing and generation.
@@ -232,12 +269,12 @@ pub(crate) fn drive<K, P>(
     extra: impl FnOnce(&mut CotPair, &mut ChaCha20Rng, &mut Channel) -> P,
     body: impl FnOnce(&mut CotPair, Pre, P, &mut ChaCha20Rng, &mut Channel) -> (K, usize),
 ) -> GenOutput<K> {
-    let Setup { mut cot, mut rng, fseed, stats: setup_stats, time: setup_time, seedgen_stats, seedgen_time } = setup(ch, seed, ferret, foleage);
+    let Setup { mut cot, mut rng, fseed, mut fused, stats: setup_stats, time: setup_time, seedgen_stats, seedgen_time } = setup(ch, seed, ferret, foleage);
     let cots_before = cot.produced;
 
     let t_pre = Instant::now();
     assert!(2 * sh_products(n) <= foleage.oles(), "FOLEAGE instance too small for depth {n}");
-    let pre = precompute_counts(ch, &mut cot, &fseed, sh_products(n), n, cots, &mut rng);
+    let pre = precompute_counts(ch, &mut cot, &fseed, &mut fused, sh_products(n), n, cots, &mut rng);
     drop(fseed);
     let more = extra(&mut cot, &mut rng, ch);
     let pre_stats = ch.stats().since(&setup_stats);
@@ -273,7 +310,7 @@ pub fn foleage_for(n: usize) -> Params {
 /// Gen, and the bit-exact oracle of [`gen`].
 pub fn deal<F: Field>(roots: [Block; 2], n_size: u64, alpha: u64, beta: F) -> [ShKey<F>; 2] {
     assert!(alpha < n_size);
-    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(Δ_b) = b");
+    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
     let n = depth_for(n_size);
     let delta = roots[0] ^ roots[1];
     let mut st = roots;

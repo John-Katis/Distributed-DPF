@@ -9,7 +9,7 @@
 //! Rounds: `1 + 41n + 40 + 1 = 41n + 42`. Preprocessing: [`crate::sh_products`]
 //! F4 triples, n string triples, n COTs per direction (the α-bits).
 
-use super::gen::{drive, walk, GenOutput, Pre};
+use super::gen::{drive, walk, GenOutput, Pre, Walk};
 use crate::malicious::low;
 use crate::{child, children, leaf_seed, pay_hash, state_hash};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128};
@@ -104,7 +104,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_sh
         let b = ch.party();
         let Pre { mut be, string_triples } = pre;
         let delta = cot.delta();
-        let (st, cws, _) = walk(&mut be, &string_triples, cot, rng, ch, n, alpha_share, &[], None);
+        let Walk { root, st, cws, .. } = walk(&mut be, &string_triples, cot, rng, ch, n, alpha_share, &[], None);
         let fp = pay_hash();
         let jobs: [(&Mmo, Shared128<bool>); 2] = [(fp, bits_of(leaf_seed(st))), (fp, bits_of(leaf_seed(st ^ delta)))];
         let w = mmo_shared(&mut be, ch, &jobs);
@@ -113,7 +113,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_sh
         let theirs = ch.recv();
         assert_eq!(theirs.len(), 16, "malformed payload share");
         let w_cw = w_share ^ Block::from_bytes(&theirs);
-        (BinKey { party: b, n_size, bits, root: delta, cws, w_cw }, be.products)
+        (BinKey { party: b, n_size, bits, root, cws, w_cw }, be.products)
     })
 }
 
@@ -121,7 +121,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_sh
 /// Gen, and the bit-exact oracle of [`gen`].
 pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: Block) -> [BinKey; 2] {
     assert!(alpha < n_size);
-    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(Δ_b) = b");
+    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
     assert_eq!(beta, low(beta, bits), "β must fit in the output width");
     let n = depth_for(n_size);
     let delta = roots[0] ^ roots[1];
