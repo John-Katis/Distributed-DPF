@@ -14,7 +14,7 @@ This is an experiment on where the F4 Beaver triples of the ht-aes Gen (the 2PC 
 `ot_triples::rot_f4_triples` is Gilboa's OLE on random COTs, run in both directions:
 
 - It takes 2 COTs per triple and direction.
-- Each party sends 4 bits per triple, all in one round.
+- Each party sends 2 bits per triple (4 bits per triple in total), all in one round.
 
 ## Running
 

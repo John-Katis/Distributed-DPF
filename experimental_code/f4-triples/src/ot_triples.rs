@@ -14,7 +14,7 @@ use rand::{CryptoRng, RngCore};
 /// `a = r_h·ω + r_l` is its choice; the sender takes `b = A_l` and sends
 /// `d = A_h ⊕ ω·A_l` (2 bits) so that the receiver's `x_{r_h} ⊕ r_h·d` turns
 /// `A_h` into `ω·b`: shares of `a_{1−s}·b_s`. Both directions in one round,
-/// then `c_b = a_b·b_b ⊕ (cross shares)`. Sends 4 bits per triple and party.
+/// then `c_b = a_b·b_b ⊕ (cross shares)`. Each party sends 2 bits per triple.
 pub fn rot_f4_triples<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, m: usize, rng: &mut R) -> Vec<(u8, u8, u8)> {
     let delta = cot.delta();
     let h = |x: Block, i: usize| cot_hash().h(x, (9 << 60) | i as u64).0 as u8 & 3;

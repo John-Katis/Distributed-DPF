@@ -6,7 +6,7 @@
 //!   ePrint 2025/892 allows `N ≤ 12, 16, 19` for `c = 4, 5, 6`), seed
 //!   generation that recomputes each tree level from the CWs instead of
 //!   holding all trees, and an expansion on all cores.
-//! * [`ot_triples`]: F4 triples from Ferret random COTs, 4 bits per triple and
+//! * [`ot_triples`]: F4 triples from Ferret random COTs, 2 bits per triple and
 //!   party in one round.
 //!
 //! The Gen itself does not depend on where the triples come from, so the
