@@ -22,7 +22,7 @@
 //! Rounds: `1 + 41n + 40 + 1 = 41n + 42`.
 
 use super::key::{low, MalKey};
-use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup, Walk};
+use crate::semi_honest::gen::{precompute_counts, setup, walk, F4Source, Pre, Setup, Walk};
 use crate::{leaf_seed, mac_hash, pay_hash};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128, PRODUCTS_PER_CALL};
 use dpf_common::block::{depth_for, Block};
@@ -62,8 +62,8 @@ pub struct MalSession {
 
 impl MalSession {
     /// The semi-honest setup (base OTs, Ferret, FOLEAGE seed generation) and δ_b.
-    pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> Self {
-        let mut s = setup(ch, seed, ferret, foleage);
+    pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: impl Into<F4Source>) -> Self {
+        let mut s = setup(ch, seed, ferret, foleage.into());
         let delta_mac = Block::random(&mut s.rng);
         MalSession { s, delta_mac }
     }
@@ -71,9 +71,8 @@ impl MalSession {
     /// FOLEAGE expansion into [`mal_products`] triples, `n + ℓ` string
     /// triples (branch selection, δ·β) and n COTs per direction.
     pub fn precompute(&mut self, ch: &mut Channel, n: usize, bits: usize) -> Pre {
-        assert!(2 * (self.s.fused + mal_products(n)) <= self.s.fseed.params.oles(), "FOLEAGE instance too small for depth {n}");
         let s = &mut self.s;
-        precompute_counts(ch, &mut s.cot, &s.fseed, &mut s.fused, mal_products(n), n + bits, n, &mut s.rng)
+        precompute_counts(ch, &mut s.cot, s.fseed.as_ref(), &mut s.fused, mal_products(n), n + bits, n, &mut s.rng)
     }
 
     /// One generation: XOR shares of α and of β ∈ {0,1}^ℓ.
@@ -144,7 +143,7 @@ pub struct MalRun {
     pub products: usize,
     /// COTs consumed after setup (α-bits, string triples).
     pub cots: usize,
-    pub foleage: Params,
+    pub foleage: Option<Params>,
     pub seedgen_stats: CommStats,
     pub seedgen_time: Duration,
 }
@@ -152,9 +151,10 @@ pub struct MalRun {
 /// Setup, preprocessing and generation for one party. `foleage`: at least
 /// [`mal_foleage_for`]`(n)`.
 #[allow(clippy::too_many_arguments)]
-pub fn run_mal(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params, fault: Option<Fault>) -> MalRun {
+pub fn run_mal(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: impl Into<F4Source>, fault: Option<Fault>) -> MalRun {
     assert!((1..=128).contains(&bits));
-    let mut s = MalSession::setup(ch, seed, ferret, foleage);
+    let f4: F4Source = foleage.into();
+    let mut s = MalSession::setup(ch, seed, ferret, f4);
     let (setup_stats, setup_time) = (s.s.stats, s.s.time);
     let cots_before = s.s.cot.produced;
     let n = depth_for(n_size);
@@ -178,7 +178,7 @@ pub fn run_mal(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, bet
         gen_time: t.elapsed(),
         products,
         cots: s.s.cot.produced - cots_before,
-        foleage,
+        foleage: f4.foleage(),
         seedgen_stats: s.s.seedgen_stats,
         seedgen_time: s.s.seedgen_time,
     }

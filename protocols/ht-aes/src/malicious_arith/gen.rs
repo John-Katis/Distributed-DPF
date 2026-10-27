@@ -28,7 +28,7 @@ use super::key::ArithMalKey;
 use crate::field::Field;
 use crate::leaf::{arith_leaf, fp_pre, fp_pre_cots, leaf_dabits, FpPre, Sub};
 use crate::malicious::{mal_products, Fault};
-use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup, Walk};
+use crate::semi_honest::gen::{precompute_counts, setup, walk, F4Source, Pre, Setup, Walk};
 use crate::{child, leaf_seed, mac_hash, pay_hash, state_hash};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128};
 use dpf_common::block::{depth_for, Block};
@@ -54,8 +54,8 @@ pub struct ArithMalSession<F: Field> {
 
 impl<F: Field> ArithMalSession<F> {
     /// The semi-honest setup (base OTs, Ferret, FOLEAGE seed generation) and δ_b.
-    pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> Self {
-        let mut s = setup(ch, seed, ferret, foleage);
+    pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: impl Into<F4Source>) -> Self {
+        let mut s = setup(ch, seed, ferret, foleage.into());
         let delta_mac = F::random(&mut s.rng);
         ArithMalSession { s, delta_mac }
     }
@@ -64,10 +64,9 @@ impl<F: Field> ArithMalSession<F> {
     /// (branch selection), n COTs per direction, and the leaf's daBits and
     /// Beaver triples over F_p ([`leaf_counts`]).
     pub fn precompute(&mut self, ch: &mut Channel, n: usize) -> (Pre, FpPre<F>) {
-        assert!(2 * (self.s.fused + mal_products(n)) <= self.s.fseed.params.oles(), "FOLEAGE instance too small for depth {n}");
         let s = &mut self.s;
         let (dabits, triples) = leaf_counts::<F>();
-        let pre = precompute_counts(ch, &mut s.cot, &s.fseed, &mut s.fused, mal_products(n), n, n + fp_pre_cots::<F>(dabits, triples), &mut s.rng);
+        let pre = precompute_counts(ch, &mut s.cot, s.fseed.as_ref(), &mut s.fused, mal_products(n), n, n + fp_pre_cots::<F>(dabits, triples), &mut s.rng);
         let fpre = fp_pre(ch, &mut s.cot, dabits, triples, &mut s.rng);
         (pre, fpre)
     }
@@ -119,7 +118,7 @@ pub struct ArithMalRun<F: Field> {
     pub products: usize,
     /// COTs consumed after setup (α-bits, string triples, leaf OLEs).
     pub cots: usize,
-    pub foleage: Params,
+    pub foleage: Option<Params>,
     pub seedgen_stats: CommStats,
     pub seedgen_time: Duration,
 }
@@ -127,8 +126,9 @@ pub struct ArithMalRun<F: Field> {
 /// Setup, preprocessing and generation for one party. `foleage`: at least
 /// [`crate::malicious::mal_foleage_for`]`(n)`.
 #[allow(clippy::too_many_arguments)]
-pub fn run_mal_arith<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params, fault: Option<Fault>) -> ArithMalRun<F> {
-    let mut s = ArithMalSession::<F>::setup(ch, seed, ferret, foleage);
+pub fn run_mal_arith<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: impl Into<F4Source>, fault: Option<Fault>) -> ArithMalRun<F> {
+    let f4: F4Source = foleage.into();
+    let mut s = ArithMalSession::<F>::setup(ch, seed, ferret, f4);
     let (setup_stats, setup_time) = (s.s.stats, s.s.time);
     let cots_before = s.s.cot.produced;
     let n = depth_for(n_size);
@@ -152,7 +152,7 @@ pub fn run_mal_arith<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, 
         gen_time: t.elapsed(),
         products,
         cots: s.s.cot.produced - cots_before,
-        foleage,
+        foleage: f4.foleage(),
         seedgen_stats: s.s.seedgen_stats,
         seedgen_time: s.s.seedgen_time,
     }

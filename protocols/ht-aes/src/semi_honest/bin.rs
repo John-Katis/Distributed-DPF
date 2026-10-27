@@ -14,7 +14,7 @@ use crate::malicious::low;
 use crate::{child, children, leaf_seed, pay_hash, state_hash};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128};
 use dpf_common::block::{depth_for, Block};
-use dpf_common::foleage::Params;
+use super::gen::F4Source;
 use dpf_common::net::Channel;
 use dpf_common::ot::FerretConfig;
 use dpf_common::stream::walk as stream_walk;
@@ -97,10 +97,10 @@ impl BinKey {
 /// Setup, preprocessing and generation for one party: XOR shares of α and of
 /// `β ∈ F_2^ℓ`. `foleage`: at least [`super::foleage_for`]`(n)`.
 #[allow(clippy::too_many_arguments)]
-pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> GenOutput<BinKey> {
+pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: impl Into<F4Source>) -> GenOutput<BinKey> {
     assert!((1..=128).contains(&bits));
     let n = depth_for(n_size);
-    drive(ch, seed, ferret, foleage, n, n, |_, _, _| (), |cot, pre, (), rng, ch| {
+    drive(ch, seed, ferret, foleage.into(), n, n, |_, _, _| (), |cot, pre, (), rng, ch| {
         let b = ch.party();
         let Pre { mut be, string_triples } = pre;
         let delta = cot.delta();
