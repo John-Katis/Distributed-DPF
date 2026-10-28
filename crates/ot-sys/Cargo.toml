@@ -1,0 +1,10 @@
+[package]
+name = "dpf-ot-sys"
+description = "Bindings to emp-ot (Naor–Pinkas, IKNP/KOS, Ferret) and libOTe (Masny–Rindal) over a caller-supplied message transport."
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+links = "dpf_ot"
+
+[build-dependencies]
+cc = "1.2"
