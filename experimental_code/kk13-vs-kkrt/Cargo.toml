@@ -1,0 +1,14 @@
+[package]
+name = "exp-kk13-vs-kkrt"
+description = "Experiment: CrypTFlow2 bit triples (as floram-arith's F_AND) from our KK13 against libOTe's KKRT (kkrt_triples.cpp)."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+
+[[example]]
+name = "kk13-triples"
+path = "examples/kk13_triples.rs"
