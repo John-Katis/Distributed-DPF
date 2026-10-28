@@ -199,10 +199,6 @@ impl CotPair {
         Ok(())
     }
 
-    pub fn is_malicious(&self) -> bool {
-        self.malicious
-    }
-
     /// Preprocessing: makes `mine` random COTs as receiver and `theirs` as
     /// sender now, before any input is known, for the `extend` calls that
     /// follow. Those then only derandomise (one bit per COT, one round) and

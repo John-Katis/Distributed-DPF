@@ -141,12 +141,6 @@ impl BoolParty {
         one ^ self.and1(ch, x ^ one, y ^ one)
     }
 
-    /// Opens XOR-shared bits to both parties. One round.
-    pub fn reveal_bits(&self, ch: &mut Channel, bits: &[bool]) -> Vec<bool> {
-        ch.send_bits(bits);
-        let theirs = ch.recv_bits(bits.len());
-        bits.iter().zip(theirs).map(|(a, b)| a ^ b).collect()
-    }
 }
 
 /// `m` bit triples from random COTs, one per direction (ABY's R-OT triples,

@@ -129,11 +129,6 @@ pub fn sample_delta<R: rand::RngCore + rand::CryptoRng>(rng: &mut R, party: usiz
     Block::random(rng).with_lsb(party == 1)
 }
 
-/// The `Δ_b` that [`MacParty::setup`] picks for `seed`.
-pub fn delta_for_seed(seed: [u8; 32], party: usize) -> Block {
-    sample_delta(&mut ChaCha20Rng::from_seed(seed), party)
-}
-
 /// One party's authenticated-sharing engine: its MAC key, the KOS-checked COTs
 /// that implement F_aBit, and the openings awaiting the batch check.
 pub struct MacParty {
@@ -259,6 +254,7 @@ pub mod dealer {
         [AuthGf { x: x0, m: m0 }, AuthGf { x: x ^ x0, m: m1 }]
     }
 
+    #[cfg(test)]
     /// A random BDOZ sharing of the bit `x`.
     pub fn share_bit<R: RngCore + CryptoRng>(rng: &mut R, x: bool, deltas: [Block; 2]) -> [AuthBit; 2] {
         let x0: bool = rng.gen();

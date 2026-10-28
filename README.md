@@ -58,7 +58,7 @@ REFERENCES.md        papers and techniques this code implements
 | `ot`      | base OTs over secp256r1 (Naor–Pinkas, semi-honest; Masny–Rindal endemic OT, malicious), semi-honest IKNP extension, 128-bit correlated OT (`CotPair`, sender-chosen Δ; in malicious mode endemic base OTs + KOS15 check), Ferret LPN-based COT extension (`CotPair::enable_ferret`), and KK13 1-of-N OT (`kkot`) |
 | `gf128`   | GF(2^128) multiplication (`pclmulqdq` with a portable fallback) |
 | `coin`    | SHA-256 commitments, coin tossing, `Abort` |
-| `mac`     | authenticated sharing: `binary` (BDOZ bits + SPDZ over GF(2^128)), `z2k` (SPDZ2k), `fp` (SPDZ over F_p), all with deferred batch MAC checks; `af4`: SPDZ bit MACs for F4 circuits, leaky F4 triples (Π_LaAND over F4) with WRK17 bucketing, the hash-and-commit check of all openings, and the authenticated `TowerBackend` |
+| `mac`     | authenticated sharing: `binary` (BDOZ bits + SPDZ over GF(2^128)) with a deferred batch MAC check; `af4`: SPDZ bit MACs for F4 circuits, leaky F4 triples (Π_LaAND over F4) with WRK17 bucketing, the hash-and-commit check of all openings, and the authenticated `TowerBackend` |
 | `arith`   | Z_2^ℓ helpers and SIRNN's COT-based arithmetic MUX |
 | `bool2pc` | F_AND / F_OR on XOR-shared bits from CrypTFlow2 bit triples, COT-based block MUX |
 | `bench`   | shared CLI and CSV schema for every `examples/bench*.rs` |

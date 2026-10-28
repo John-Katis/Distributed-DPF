@@ -294,6 +294,7 @@ pub fn sbox_shared<K: TowerBackend>(be: &mut K, ch: &mut Channel, bytes: &[[K::B
         .collect()
 }
 
+#[cfg(test)]
 /// The tower S-box in the clear: the same steps on plain F4 elements.
 pub fn sbox_tower(a: u8) -> u8 {
     let tw = tower();
@@ -393,6 +394,7 @@ impl Mmo {
         }
     }
 
+    #[cfg(test)]
     /// The round keys (public).
     pub fn round_keys(&self) -> &[[u8; 16]; 11] {
         &self.rk
@@ -511,6 +513,7 @@ impl TowerBackend for BeaverF4 {
     }
 }
 
+#[cfg(test)]
 /// Trusted-dealer F4 triples for tests: `n` triples for each party.
 pub fn dealer_triples<R: rand::RngCore>(rng: &mut R, n: usize) -> [Vec<(u8, u8, u8)>; 2] {
     let mut t = [Vec::with_capacity(n), Vec::with_capacity(n)];

@@ -92,6 +92,7 @@ pub fn mul(a: Block, b: Block) -> Block {
     Block(reduce(hi, lo))
 }
 
+#[cfg(test)]
 /// Product computed with the portable path only; used to test the fast path.
 pub fn mul_soft(a: Block, b: Block) -> Block {
     let (hi, lo) = clmul128_soft(a.0, b.0);

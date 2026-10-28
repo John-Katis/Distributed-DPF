@@ -34,9 +34,6 @@ use crate::net::Channel;
 use dpf_ot_sys::{Ferret, FerretParams};
 use rand::{CryptoRng, Rng, RngCore};
 
-/// Nonzero entries per column of the LPN code (emp's `LpnF2<_, 10>`).
-pub const LPN_D: usize = 10;
-
 /// COTs emp sets aside per iteration for the SPCOT consistency check. emp
 /// reserves them in both modes.
 const CHECK_COTS: usize = 128;
