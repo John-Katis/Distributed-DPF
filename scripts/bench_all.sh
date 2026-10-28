@@ -3,7 +3,10 @@
 # FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal} and the leakage-free mal-auth) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen) or results-eval/ (eval, full, all).
 #
-#   [OUT_LIST=a,b,..] scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [--batch-log b] [mode]
+#   [OUT_LIST=a,b,..] [SKIP_OURS=1] scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [--batch-log b] [mode]
+#
+# SKIP_OURS=1 runs only the other papers' protocols and leaves the ht-aes
+# CSVs as they are.
 #
 # mode is gen|eval|full|all (default gen). The sweep covers in-bits 8..=32
 # (--max-in-bits) and out-bits OUT_LIST (default 64,128), so each output
@@ -59,6 +62,7 @@ echo "fssnn-bin"     && "$BIN/bench-fssnn"        "$MODE" "${S[@]}" "${FS[@]}" -
 echo "fssnn-arith"   && "$BIN/bench-fssnn"        "$MODE" "${S[@]}" "${FS[@]}" --variant arith            | tee "$OUT"/fssnn-arith.csv
 echo "duoram-2p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 2p           | tee "$OUT"/duoram-2p.csv
 echo "duoram-3p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 3p           | tee "$OUT"/duoram-3p.csv
+[[ ${SKIP_OURS:-0} == 1 ]] && exit 0
 echo "ht-aes-sh-bin"    && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh-bin    | tee "$OUT"/ht-aes-sh-bin.csv
 echo "ht-aes-sh"        && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh        | tee "$OUT"/ht-aes-sh.csv
 echo "ht-aes-mal"       && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal       | tee "$OUT"/ht-aes-mal.csv
