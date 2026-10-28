@@ -3,6 +3,13 @@
 //! 128-bit correlated OT (optionally KOS-checked) for the Half-Tree protocols
 //! and the MAC library, Ferret (LPN-based silent COT extension) on top, and
 //! KK13 1-out-of-N OT extension for CrypTFlow2-style bit triples.
+//!
+//! The base OTs, IKNP/KOS and Ferret come from libraries through
+//! [`dpf_ot_sys`]: emp-ot 0.3.0 (Naor–Pinkas, IKNP, KOS check, Ferret) and
+//! libOTe (Masny–Rindal). KK13 is ours ([`kkot`], after SCI's `kkot.h`).
+//! This module adds what the libraries do not: both directions per party
+//! ([`CotPair`]), chosen choices by derandomisation, preprocessing pools, and
+//! the lsb(Δ) handling of [`ferret`].
 
 pub mod cot;
 pub mod endemic;
@@ -12,8 +19,18 @@ pub mod kkot;
 pub mod np;
 
 pub use ferret::{FerretConfig, LpnParams};
-pub use cot::{BaseOt, CotPair, CotReceiver, CotSender, RandomCots, COT_KEY_BITS, KOS_EXTRA};
+pub use cot::{BaseOt, CotPair, CotReceiver, CotSender, RandomCots, COT_KEY_BITS};
 pub use iknp::{IknpReceiver, IknpSender, OT_KEY_BITS};
+
+/// A library error as an [`Abort`]: `what` for a failed check, or "peer
+/// aborted" if the peer closed the channel.
+pub(crate) fn abort(e: dpf_ot_sys::OtError, what: &'static str) -> crate::coin::Abort {
+    if e.0.contains("closed") {
+        crate::coin::Abort("peer aborted")
+    } else {
+        crate::coin::Abort(what)
+    }
+}
 
 #[cfg(test)]
 mod tests {

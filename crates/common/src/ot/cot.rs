@@ -1,4 +1,5 @@
-//! Correlated OT (COT) from IKNP with 128 columns and a sender-chosen Δ.
+//! Correlated OT (COT) from IKNP with 128 columns and a sender-chosen Δ, from
+//! emp-ot's `IKNP` through [`dpf_ot_sys`].
 //!
 //! After `extend`, the sender holds `K_j` and the receiver holds `(r_j, M_j)` with
 //!
@@ -11,46 +12,40 @@
 //! IT-MAC on `r_j` under `(Δ, K_j)`. The sender picks Δ itself (it is its choice
 //! vector in the base OTs), so callers can fix `lsb(Δ)`.
 //!
-//! With `malicious = true` every `extend` runs the KOS15 consistency check: the
-//! receiver pads its choices with [`KOS_EXTRA`] random bits, both parties toss a
-//! coin for χ, the receiver sends `x = Σ χ_j r_j` and `t = Σ χ_j M_j`, and the
-//! sender checks `t = Σ χ_j K_j ⊕ x·Δ`. A cheating receiver that sent
-//! inconsistent columns is caught except with probability 2^-40, at the cost of
-//! a few bits of Δ leaking, as in KOS15. Malicious mode also bootstraps from
-//! the maliciously secure endemic base OT ([`super::endemic`], Masny–Rindal);
-//! semi-honest mode keeps the cheaper Naor–Pinkas base OT.
+//! With `malicious = true` every extension runs emp's KOS15-style consistency
+//! check (the receiver pads its choices, χ comes from a hash of the
+//! transcript, so the check adds no round). A cheating receiver is caught, at
+//! the cost of a few bits of Δ leaking, as in KOS15. Malicious mode bootstraps
+//! from the maliciously secure endemic base OT ([`super::endemic`],
+//! Masny–Rindal, libOTe); semi-honest mode from Naor–Pinkas ([`super::np`]).
 //!
 //! [`CotPair`] holds both directions for one party: it is the sender (with its
 //! own Δ) in one instance and the receiver in the other, and `extend` runs both
-//! directions in the same rounds.
+//! directions in the same round (each party plays receiver first, which only
+//! sends, then sender, which only receives).
 //!
 //! [`CotPair::precompute`] moves the extension into an input-independent
 //! preprocessing phase: it makes random COTs in advance, and every later
 //! `extend` derandomises them with one bit per COT (one round), as Ferret's
 //! `extend` does.
 
-use super::iknp::{bytes_to_cols, pack_words, transpose, words_to_bytes};
 use super::ferret::{FerretConfig, FerretPair};
 use super::{endemic, np};
 use crate::block::Block;
-use crate::coin::{coin_block, Abort};
-use crate::gf128;
-use crate::hash::CtrPrg;
+use crate::coin::Abort;
 use crate::net::Channel;
+use dpf_ot_sys::Iknp;
 use rand::{CryptoRng, Rng, RngCore};
 
 /// Column count, i.e. the bit length of Δ.
 pub const COT_KEY_BITS: usize = 128;
 
-/// Padding COTs sacrificed by the KOS check: κ + s = 128 + 40.
-pub const KOS_EXTRA: usize = 128 + 40;
-
 /// Which base OT bootstraps the extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BaseOt {
-    /// Naor–Pinkas, semi-honest.
+    /// Naor–Pinkas (emp-ot), semi-honest.
     NaorPinkas,
-    /// Masny–Rindal endemic OT, malicious (ROM).
+    /// Masny–Rindal endemic OT (libOTe), malicious (ROM).
     Endemic,
 }
 
@@ -68,18 +63,28 @@ impl BaseOt {
             BaseOt::Endemic => endemic::send_random(ch, k, rng),
         }
     }
+
+    /// The endemic base OT goes with the malicious (KOS-checked) extension.
+    fn malicious(self) -> bool {
+        self == BaseOt::Endemic
+    }
 }
 
 pub struct CotSender {
     delta: Block,
-    prgs: Vec<CtrPrg>,
+    ot: Iknp,
 }
 
 impl CotSender {
     /// Runs the base OTs as base-OT receiver with choice bits `delta`.
     pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R, delta: Block, base: BaseOt) -> Result<Self, Abort> {
-        let seeds = base.recv(ch, &delta.to_bits(), rng)?;
-        Ok(CotSender { delta, prgs: seeds.into_iter().map(CtrPrg::new).collect() })
+        let s: [bool; COT_KEY_BITS] = std::array::from_fn(|i| delta.bit(i));
+        let seeds = base.recv(ch, &s, rng)?;
+        let k0: [u128; COT_KEY_BITS] = std::array::from_fn(|i| seeds[i].0);
+        let mut ot = Iknp::new(base.malicious());
+        ot.setup_send(ch, &s, &k0).map_err(|e| super::abort(e, "IKNP setup failed"))?;
+        debug_assert_eq!(ot.delta(), delta.0);
+        Ok(CotSender { delta, ot })
     }
 
     pub fn delta(&self) -> Block {
@@ -87,60 +92,45 @@ impl CotSender {
     }
 
     /// Receives the receiver's correction columns for `m` COTs and returns `K`.
-    pub fn recv_extend(&mut self, ch: &mut Channel, m: usize) -> Vec<Block> {
-        let words = m.div_ceil(128);
-        let u = bytes_to_cols(&ch.recv(), COT_KEY_BITS, m);
-        let cols: Vec<Vec<u128>> = self
-            .prgs
-            .iter_mut()
-            .zip(&u)
-            .enumerate()
-            .map(|(i, (prg, ui))| {
-                let mut q = prg.next_words(words);
-                if self.delta.bit(i) {
-                    for (qw, uw) in q.iter_mut().zip(ui) {
-                        *qw ^= uw;
-                    }
-                }
-                q
-            })
-            .collect();
-        transpose(&cols, m).into_iter().map(Block).collect()
+    /// Malicious: also checks them.
+    pub fn recv_extend(&mut self, ch: &mut Channel, m: usize) -> Result<Vec<Block>, Abort> {
+        let k = self.ot.send_cot(ch, m).map_err(|e| super::abort(e, "KOS consistency check failed"))?;
+        Ok(k.into_iter().map(Block).collect())
+    }
+
+    /// Flips a bit of the next call's outgoing bytes (tests).
+    #[doc(hidden)]
+    pub fn fault_next(&mut self, byte: usize) {
+        self.ot.fault_next = Some(byte);
     }
 }
 
 pub struct CotReceiver {
-    prgs: Vec<(CtrPrg, CtrPrg)>,
+    ot: Iknp,
 }
 
 impl CotReceiver {
     /// Runs the base OTs as base-OT sender.
     pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R, base: BaseOt) -> Result<Self, Abort> {
         let pairs = base.send(ch, COT_KEY_BITS, rng)?;
-        Ok(CotReceiver { prgs: pairs.into_iter().map(|(a, b)| (CtrPrg::new(a), CtrPrg::new(b))).collect() })
+        let k0: [u128; COT_KEY_BITS] = std::array::from_fn(|i| pairs[i].0 .0);
+        let k1: [u128; COT_KEY_BITS] = std::array::from_fn(|i| pairs[i].1 .0);
+        let mut ot = Iknp::new(base.malicious());
+        ot.setup_recv(ch, &k0, &k1).map_err(|e| super::abort(e, "IKNP setup failed"))?;
+        Ok(CotReceiver { ot })
     }
 
     /// Sends the correction columns for the given choice bits and returns `M`.
-    pub fn send_extend(&mut self, ch: &mut Channel, choices: &[bool]) -> Vec<Block> {
-        let m = choices.len();
-        let words = m.div_ceil(128);
-        let r = pack_words(choices);
-        let mut ts = Vec::with_capacity(COT_KEY_BITS);
-        let mut us = Vec::with_capacity(COT_KEY_BITS);
-        for (p0, p1) in self.prgs.iter_mut() {
-            let t = p0.next_words(words);
-            let g1 = p1.next_words(words);
-            us.push(t.iter().zip(&g1).zip(&r).map(|((a, b), c)| a ^ b ^ c).collect::<Vec<_>>());
-            ts.push(t);
-        }
-        ch.send(words_to_bytes(&us, m));
-        transpose(&ts, m).into_iter().map(Block).collect()
+    pub fn send_extend(&mut self, ch: &mut Channel, choices: &[bool]) -> Result<Vec<Block>, Abort> {
+        let m = self.ot.recv_cot(ch, choices).map_err(|e| super::abort(e, "IKNP extension failed"))?;
+        Ok(m.into_iter().map(Block).collect())
     }
-}
 
-/// χ_j for the KOS check of the instance whose receiver is party `recv_party`.
-fn kos_chi(seed: Block, recv_party: usize, n: usize) -> Vec<Block> {
-    CtrPrg::new(seed ^ Block(recv_party as u128 + 1)).next_words(n).into_iter().map(Block).collect()
+    /// Flips a bit of the next call's outgoing bytes (tests).
+    #[doc(hidden)]
+    pub fn fault_next(&mut self, byte: usize) {
+        self.ot.fault_next = Some(byte);
+    }
 }
 
 /// One party's end of a batch of random COTs ([`CotPair::random_cots`]).
@@ -266,7 +256,7 @@ impl CotPair {
     /// `mine` (returned `M`, with `M = K_peer ⊕ r·Δ_peer`) and sends `theirs` COTs
     /// to the peer (returned `K`, with `M_peer = K ⊕ r_peer·Δ`).
     ///
-    /// Semi-honest: one round. Malicious: four (columns, coin, proof).
+    /// One round, semi-honest or malicious.
     pub fn extend<R: RngCore + CryptoRng>(
         &mut self,
         ch: &mut Channel,
@@ -286,32 +276,10 @@ impl CotPair {
         if let Some(f) = self.ferret.as_mut() {
             return f.extend(ch, mine, theirs, rng);
         }
-        if !self.malicious {
-            let m = self.receiver.send_extend(ch, mine);
-            let k = self.sender.recv_extend(ch, theirs);
-            return Ok((k, m));
-        }
-
-        let mut padded = mine.to_vec();
-        padded.extend((0..KOS_EXTRA).map(|_| rng.gen::<bool>()));
-        let mut m = self.receiver.send_extend(ch, &padded);
-        let mut k = self.sender.recv_extend(ch, theirs + KOS_EXTRA);
-
-        let seed = coin_block(ch, rng)?;
-        // Proof as receiver.
-        let chi = kos_chi(seed, self.party, padded.len());
-        let x = padded.iter().zip(&chi).fold(Block::ZERO, |a, (&r, c)| a ^ c.and_bit(r));
-        let t = gf128::inner(&chi, &m);
-        ch.send_blocks(&[x, t]);
-        // Check as sender.
-        let proof = ch.recv_blocks(2);
-        let chi = kos_chi(seed, 1 - self.party, k.len());
-        let q = gf128::inner(&chi, &k);
-        if proof[1] != q ^ gf128::mul(proof[0], self.delta()) {
-            return Err(Abort("KOS consistency check failed"));
-        }
-        m.truncate(mine.len());
-        k.truncate(theirs);
+        // Receiver role first (only sends), then sender role (only receives):
+        // both directions' messages are in flight in the same round.
+        let m = if mine.is_empty() { vec![] } else { self.receiver.send_extend(ch, mine)? };
+        let k = if theirs == 0 { vec![] } else { self.sender.recv_extend(ch, theirs)? };
         Ok((k, m))
     }
 }
@@ -409,33 +377,18 @@ mod tests {
         let (r0, _) = run_two_party(
             |c| {
                 let mut r = ChaCha20Rng::seed_from_u64(1);
-                let mut p = CotPair::setup(c, &mut r, Block(5), true).unwrap();
+                // Δ = all ones, so every corrupted column takes effect.
+                let mut p = CotPair::setup(c, &mut r, Block(u128::MAX), true).unwrap();
                 p.extend(c, &[true; 10], 10, &mut r).map(|_| ())
             },
             |c| {
                 let mut r = ChaCha20Rng::seed_from_u64(2);
                 let mut p = CotPair::setup(c, &mut r, Block(6), true).unwrap();
-                // Cheating receiver: column 2 uses the flipped choice vector, the
-                // proof is computed honestly from its own rows.
-                let padded: Vec<bool> = (0..10 + KOS_EXTRA).map(|_| r.gen()).collect();
-                let words = padded.len().div_ceil(128);
-                let rw = pack_words(&padded);
-                let (mut ts, mut us) = (Vec::new(), Vec::new());
-                for (i, (p0, p1)) in p.receiver.prgs.iter_mut().enumerate() {
-                    let t = p0.next_words(words);
-                    let g1 = p1.next_words(words);
-                    let flip = if i == 2 { u128::MAX } else { 0 };
-                    us.push(t.iter().zip(&g1).zip(&rw).map(|((a, b), c)| a ^ b ^ c ^ flip).collect::<Vec<_>>());
-                    ts.push(t);
-                }
-                c.send(words_to_bytes(&us, padded.len()));
-                let m: Vec<Block> = transpose(&ts, padded.len()).into_iter().map(Block).collect();
-                let _ = p.sender.recv_extend(c, 10 + KOS_EXTRA);
-                let seed = coin_block(c, &mut r).unwrap();
-                let chi = kos_chi(seed, 1, padded.len());
-                let x = padded.iter().zip(&chi).fold(Block::ZERO, |a, (&b, c)| a ^ c.and_bit(b));
-                c.send_blocks(&[x, gf128::inner(&chi, &m)]);
-                c.recv_blocks(2);
+                // Cheating receiver: one bit of its correction columns flipped,
+                // in column 1 at a row that becomes an output (byte 16 of 16 per
+                // column for 10 COTs).
+                p.receiver.fault_next(16);
+                p.extend(c, &[false; 10], 10, &mut r).map(|_| ())
             },
         );
         assert_eq!(r0, Err(Abort("KOS consistency check failed")));

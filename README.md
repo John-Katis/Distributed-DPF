@@ -7,6 +7,8 @@ Each protocol is its own crate, and all of them build on one shared library.
 ```
 crates/
   common/            dpf-common: the shared library
+  ot-sys/            bindings to emp-ot (Naor–Pinkas, IKNP/KOS, Ferret) and
+                     libOTe (Masny–Rindal), used by dpf_common::ot
 protocols/
   floram-cprg/       Floram-CPRG distributed DPF (Doerner–shelat, CCS'17)
   half-tree/         Half-Tree distributed DPF (Guo et al., EC'23), semi-honest,
@@ -82,6 +84,13 @@ REFERENCES.md        papers and techniques this code implements
 4. Code that more than one protocol needs goes into `crates/common`.
 
 ## Commands
+
+The OT libraries are fetched and built once into `third_party/` (git-ignored;
+needs cmake ≥ 3.20, g++ ≥ 11, python3, OpenSSL):
+
+```
+crates/ot-sys/fetch.sh
+```
 
 ```
 cargo test --workspace --release                 # everything

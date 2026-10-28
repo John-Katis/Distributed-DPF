@@ -1,22 +1,26 @@
-//! Semi-honest IKNP OT extension, after Obliv-C's `honestOTExt*` in `ot.c`.
+//! Semi-honest IKNP OT extension (chosen messages, as Obliv-C's
+//! `honestOTExt*` in `ot.c`), from emp-ot's `IKNP` through [`dpf_ot_sys`].
 //!
 //! The extension sender (Floram party 1, the garbler) plays *receiver* in the
-//! `OT_KEY_BITS` base OTs with a secret choice vector `s`. The extension receiver
-//! plays base-OT *sender*. Every later batch of `m` OTs costs two rounds: the
-//! receiver sends `OT_KEY_BITS × m` bits of columns, then the sender sends `2m`
-//! padded messages.
+//! `OT_KEY_BITS` Naor–Pinkas base OTs with a secret choice vector `s`. The
+//! extension receiver plays base-OT *sender*. Every batch of `m` OTs costs two
+//! rounds: the receiver sends `OT_KEY_BITS × m` bits of columns, then the
+//! sender sends `2m` padded messages.
 //!
 //! `precompute` moves the column message into an input-independent
 //! preprocessing phase: it makes random OTs (random pads, random choices) in
 //! advance, and every later batch derandomises them as Beaver does. The
 //! receiver sends `d = c ⊕ r` (one bit per OT), the sender `x_0 ⊕ p_d` and
 //! `x_1 ⊕ p_{1⊕d}`; still two rounds.
+//!
+//! The column helpers below are those of the KK13 extension ([`super::kkot`]).
 
 use super::np;
 use crate::block::Block;
-use crate::hash::{ot_hash, CtrPrg};
 use crate::net::Channel;
+use dpf_ot_sys::Iknp;
 use rand::{CryptoRng, Rng, RngCore};
+
 
 /// Number of base OTs, i.e. the OT-extension key width. 128 bits, the
 /// computational security level of every other protocol here; Obliv-C's
@@ -77,33 +81,30 @@ pub(crate) fn bytes_to_cols(u: &[u8], ncols: usize, m: usize) -> Vec<Vec<u128>> 
         .collect()
 }
 
+
 pub struct IknpSender {
-    s: u128,
-    prgs: Vec<CtrPrg>,
-    nonce: u64,
+    ot: Iknp,
     /// Random-OT pads `(p_0, p_1)` from [`precompute`](Self::precompute).
     pool: Option<Vec<(Block, Block)>>,
 }
 
 impl IknpSender {
     pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
-        let s_bits: Vec<bool> = (0..OT_KEY_BITS).map(|_| rng.gen()).collect();
+        let s: [bool; OT_KEY_BITS] = std::array::from_fn(|_| rng.gen());
         // Semi-honest IKNP: a malformed base-OT message is a protocol violation.
-        let seeds = np::recv_random(ch, &s_bits, rng).expect("base OT");
-        IknpSender {
-            s: Block::from_bits(&s_bits).0,
-            prgs: seeds.into_iter().map(CtrPrg::new).collect(),
-            nonce: 0,
-            pool: None,
-        }
+        let seeds = np::recv_random(ch, &s, rng).expect("base OT");
+        let k0: [u128; OT_KEY_BITS] = std::array::from_fn(|i| seeds[i].0);
+        let mut ot = Iknp::new(false);
+        ot.setup_send(ch, &s, &k0).expect("IKNP setup");
+        IknpSender { ot, pool: None }
     }
 
     /// Preprocessing: `m` random OTs for the `send` calls that follow, which
     /// then only derandomise and must not ask for more.
     pub fn precompute(&mut self, ch: &mut Channel, m: usize) {
         assert!(self.pool.is_none(), "OTs already precomputed");
-        let pads = self.pads(ch, m);
-        self.pool = Some(pads);
+        let (p0, p1) = self.ot.send_rot(ch, m).expect("IKNP random OT");
+        self.pool = Some(p0.into_iter().zip(p1).map(|(a, b)| (Block(a), Block(b))).collect());
     }
 
     /// Sends one batch of chosen-message OTs. The receiver gets `msgs[j].0` or
@@ -122,55 +123,14 @@ impl IknpSender {
             ch.send_blocks(&out);
             return;
         }
-        let pads = self.pads(ch, m);
-        let mut out = Vec::with_capacity(2 * m);
-        for ((x0, x1), (p0, p1)) in msgs.iter().zip(pads) {
-            out.push(*x0 ^ p0);
-            out.push(*x1 ^ p1);
-        }
-        ch.send_blocks(&out);
-    }
-
-    /// Receives the receiver's columns for `m` OTs and returns each OT's pads
-    /// `(H(q_j), H(q_j ⊕ s))`.
-    fn pads(&mut self, ch: &mut Channel, m: usize) -> Vec<(Block, Block)> {
-        let words = m.div_ceil(128);
-        let u = bytes_to_cols(&ch.recv(), OT_KEY_BITS, m);
-
-        let cols: Vec<Vec<u128>> = self
-            .prgs
-            .iter_mut()
-            .zip(&u)
-            .enumerate()
-            .map(|(i, (prg, ui))| {
-                let mut q = prg.next_words(words);
-                if (self.s >> i) & 1 == 1 {
-                    for (qw, uw) in q.iter_mut().zip(ui) {
-                        *qw ^= uw;
-                    }
-                }
-                q
-            })
-            .collect();
-        let rows = transpose(&cols, m);
-
-        let h = ot_hash();
-        let pads = rows
-            .iter()
-            .enumerate()
-            .map(|(j, q)| {
-                let t = self.nonce + j as u64;
-                (h.h(Block(*q), t), h.h(Block(*q ^ self.s), t))
-            })
-            .collect();
-        self.nonce += m as u64;
-        pads
+        let m0: Vec<u128> = msgs.iter().map(|x| x.0 .0).collect();
+        let m1: Vec<u128> = msgs.iter().map(|x| x.1 .0).collect();
+        self.ot.send(ch, &m0, &m1).expect("IKNP send");
     }
 }
 
 pub struct IknpReceiver {
-    prgs: Vec<(CtrPrg, CtrPrg)>,
-    nonce: u64,
+    ot: Iknp,
     /// Random choices `r_j` and pads `p_{r_j}` from
     /// [`precompute`](Self::precompute).
     pool: Option<(Vec<bool>, Vec<Block>)>,
@@ -179,11 +139,11 @@ pub struct IknpReceiver {
 impl IknpReceiver {
     pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
         let pairs = np::send_random(ch, OT_KEY_BITS, rng).expect("base OT");
-        IknpReceiver {
-            prgs: pairs.into_iter().map(|(a, b)| (CtrPrg::new(a), CtrPrg::new(b))).collect(),
-            nonce: 0,
-            pool: None,
-        }
+        let k0: [u128; OT_KEY_BITS] = std::array::from_fn(|i| pairs[i].0 .0);
+        let k1: [u128; OT_KEY_BITS] = std::array::from_fn(|i| pairs[i].1 .0);
+        let mut ot = Iknp::new(false);
+        ot.setup_recv(ch, &k0, &k1).expect("IKNP setup");
+        IknpReceiver { ot, pool: None }
     }
 
     /// Preprocessing: `m` random OTs for the `recv` calls that follow, which
@@ -191,48 +151,25 @@ impl IknpReceiver {
     pub fn precompute<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, m: usize, rng: &mut R) {
         assert!(self.pool.is_none(), "OTs already precomputed");
         let r: Vec<bool> = (0..m).map(|_| rng.gen()).collect();
-        let pads = self.pads(ch, &r);
-        self.pool = Some((r, pads));
+        let pads = self.ot.recv_rot(ch, &r).expect("IKNP random OT");
+        self.pool = Some((r, pads.into_iter().map(Block).collect()));
     }
 
     /// Receives one batch of OTs with the given choice bits.
     pub fn recv(&mut self, ch: &mut Channel, choices: &[bool]) -> Vec<Block> {
         let m = choices.len();
-        let pads: Vec<Block> = match self.pool.as_mut() {
+        match self.pool.as_mut() {
             Some((r, p)) => {
                 assert!(m <= r.len(), "OT pool exhausted");
                 let d: Vec<bool> = choices.iter().zip(r.drain(..m)).map(|(c, r)| c ^ r).collect();
                 ch.send_bits(&d);
-                p.drain(..m).collect()
+                let pads: Vec<Block> = p.drain(..m).collect();
+                // y_c = x_c ⊕ p_{c ⊕ d} = x_c ⊕ p_r.
+                let y = ch.recv_blocks(2 * m);
+                (0..m).map(|j| y[2 * j + choices[j] as usize] ^ pads[j]).collect()
             }
-            None => self.pads(ch, choices),
-        };
-        // With the pool, y_c = x_c ⊕ p_{c ⊕ d} = x_c ⊕ p_r; without, r = c.
-        let y = ch.recv_blocks(2 * m);
-        (0..m).map(|j| y[2 * j + choices[j] as usize] ^ pads[j]).collect()
-    }
-
-    /// Sends the columns for the choice bits `r` and returns the pads
-    /// `H(t_j) = p_{r_j}`.
-    fn pads(&mut self, ch: &mut Channel, choices: &[bool]) -> Vec<Block> {
-        let m = choices.len();
-        let words = m.div_ceil(128);
-        let r = pack_words(choices);
-
-        let mut ts = Vec::with_capacity(OT_KEY_BITS);
-        let mut us = Vec::with_capacity(OT_KEY_BITS);
-        for (p0, p1) in self.prgs.iter_mut() {
-            let t = p0.next_words(words);
-            let g1 = p1.next_words(words);
-            us.push(t.iter().zip(&g1).zip(&r).map(|((a, b), c)| a ^ b ^ c).collect::<Vec<_>>());
-            ts.push(t);
+            None => self.ot.recv(ch, choices).expect("IKNP recv").into_iter().map(Block).collect(),
         }
-        ch.send(words_to_bytes(&us, m));
-        let rows = transpose(&ts, m);
-        let h = ot_hash();
-        let pads = (0..m).map(|j| h.h(Block(rows[j]), self.nonce + j as u64)).collect();
-        self.nonce += m as u64;
-        pads
     }
 }
 

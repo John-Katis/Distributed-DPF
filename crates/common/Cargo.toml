@@ -5,8 +5,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+dpf-ot-sys = { path = "../ot-sys" }
 aes.workspace = true
-p256.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 sha2.workspace = true

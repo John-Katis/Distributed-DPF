@@ -155,3 +155,43 @@ fn ferret_both_modes() {
         }
     }
 }
+
+
+/// emp's check covers exactly the rows handed out (and its 256 extra ones):
+/// a flipped bit in a used row aborts, one in a padding row is harmless.
+#[test]
+fn iknp_malicious_small_batch() {
+    for (off, caught) in [(16usize, true), (3, false)] {
+        let ((mut s, _), mut r) = iknp_pair(true, u128::MAX);
+        let b = choices(10, 7);
+        r.fault_next = Some(off);
+        let (k, _) = two(|t| s.send_cot(t, 10), |t| r.recv_cot(t, &b));
+        assert_eq!(k.is_err(), caught, "offset {off}");
+    }
+}
+
+/// A corrupted secret sum (the first tree's, after its `log_bin` levels of
+/// 32 bytes) makes the malicious receiver abort. Needs fetch.sh's patch of
+/// emp's `consistency_check_f2k`, which otherwise only prints a warning.
+#[test]
+fn ferret_malicious_tamper_aborts() {
+    let nb = ferret_base_cots(&TOY);
+    let delta = rnd(5) | 1;
+    let k: Vec<u128> = (0..nb).map(|i| rnd(i as u64 + 9000)).collect();
+    let bits = choices(nb, 11);
+    let m: Vec<u128> = (0..nb).map(|i| k[i] ^ if bits[i] { delta } else { 0 }).collect();
+    let (_, r) = two(
+        move |t| {
+            let mut f = Ferret::new(true, true, &TOY).unwrap();
+            f.setup(t, Some(delta), &k, &[]).unwrap();
+            f.fault_next = Some(32 * TOY[3] as usize);
+            f.rcot(t, 700).map(|_| ())
+        },
+        move |t| {
+            let mut f = Ferret::new(false, true, &TOY).unwrap();
+            f.setup(t, None, &m, &bits).unwrap();
+            f.rcot(t, 700).map(|_| ())
+        },
+    );
+    assert_eq!(r, Err(OtError("SPCOT consistency check fails".into())));
+}

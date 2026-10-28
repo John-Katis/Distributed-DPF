@@ -30,16 +30,27 @@ thread_local std::string g_err;
 template <class Task>
 void drive(Task proto, coproto::BufferingSocket &sock, const OtsMsg *io, void *ctx) {
 	auto t = std::move(proto) | macoro::make_eager();
-	while (true) {
-		auto b = sock.getOutbound();
-		if (b && b->size() && io->send(ctx, b->data(), b->size())) throw std::runtime_error("channel closed");
-		if (t.is_ready()) break;
-		const uint8_t *p;
-		size_t n;
-		if (io->recv(ctx, &p, &n)) throw std::runtime_error("peer closed the channel");
-		sock.processInbound(span<u8>((u8 *)p, n));
+	std::exception_ptr err;
+	try {
+		while (true) {
+			auto b = sock.getOutbound();
+			if (b && b->size() && io->send(ctx, b->data(), b->size())) throw std::runtime_error("channel closed");
+			if (t.is_ready()) break;
+			const uint8_t *p;
+			size_t n;
+			if (io->recv(ctx, &p, &n)) throw std::runtime_error("peer closed the channel");
+			sock.processInbound(span<u8>((u8 *)p, n));
+		}
+		macoro::sync_wait(std::move(t));
+		return;
+	} catch (...) {
+		err = std::current_exception();
 	}
-	macoro::sync_wait(std::move(t));
+	// coproto terminates if a socket dies with pending operations: cancel
+	// them, which also lets the protocol task finish with an error.
+	macoro::sync_wait(sock.close());
+	if (!t.is_ready()) std::terminate();
+	std::rethrow_exception(err);
 }
 
 template <class F>

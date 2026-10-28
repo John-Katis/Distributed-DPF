@@ -5,6 +5,9 @@
 # * emp-tool 0.3.0 and emp-ot 0.3.0 (headers only; the OT code needs no
 #   compiled emp-tool sources). emp-tool's error() exits the process; it is
 #   patched to throw, so a failed check (KOS, Ferret) becomes an Abort.
+#   emp-ot's malicious Ferret only prints "SPCOT consistency check fails" and
+#   carries on (mpcot_reg.h, consistency_check_f2k); it is patched to call
+#   error(), i.e. to abort, as the protocol requires.
 # * libOTe 5d419c34, built with only the Masny–Rindal base OT (static libs).
 #
 # Needs git, cmake ≥ 3.20, g++ ≥ 11, python3 and OpenSSL headers.
@@ -12,6 +15,7 @@ set -e
 cd "$(dirname "$0")/../.."
 T=$PWD/third_party
 mkdir -p "$T"
+printf '*\n' > "$T/.gitignore"
 
 clone() { # dir url rev
 	[ -d "$T/$1" ] || git clone -q --recursive "$2" "$T/$1"
@@ -27,6 +31,10 @@ if grep -q '^	exit(1);$' "$U"; then
 	sed -i 's|^#include <string>|#include <string>\n#include <stdexcept>|' "$T/emp-tool/emp-tool/utils/utils.h"
 fi
 grep -q 'throw std::runtime_error(s);' "$U"
+
+M=$T/emp-ot/emp-ot/ferret/mpcot_reg.h
+sed -i 's|std::cout << "SPCOT consistency check fails" << std::endl;|error("SPCOT consistency check fails");|' "$M"
+grep -q 'error("SPCOT consistency check fails");' "$M"
 
 cd "$T/libOTe"
 python3 build.py --par=8 -DENABLE_MR=ON -DENABLE_SIMPLESTOT=OFF -DENABLE_MRR=OFF -DENABLE_MRR_TWIST=OFF \

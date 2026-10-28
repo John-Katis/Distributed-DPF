@@ -105,11 +105,31 @@ impl Channel {
     }
 
     pub fn recv(&mut self) -> Vec<u8> {
-        let (stamp, msg) = self.rx.recv().expect("peer hung up");
+        self.try_recv().expect("peer hung up")
+    }
+
+    /// As [`send`](Self::send), but `false` instead of a panic if the peer
+    /// has closed its end.
+    pub fn try_send(&mut self, msg: Vec<u8>) -> bool {
+        let stamp = self.clock.load(Ordering::Relaxed) + 1;
+        let len = msg.len();
+        if self.tx.send((stamp, msg)).is_err() {
+            return false;
+        }
+        self.stats.rounds = self.stats.rounds.max(stamp);
+        self.stats.bytes_sent += len;
+        self.stats.messages_sent += 1;
+        true
+    }
+
+    /// As [`recv`](Self::recv), but `None` instead of a panic if the peer
+    /// has closed its end.
+    pub fn try_recv(&mut self) -> Option<Vec<u8>> {
+        let (stamp, msg) = self.rx.recv().ok()?;
         self.clock.fetch_max(stamp, Ordering::Relaxed);
         self.stats.rounds = self.stats.rounds.max(stamp);
         self.stats.bytes_recv += msg.len();
-        msg
+        Some(msg)
     }
 
     /// A round trip (party 1 → party 0 → party 1) after which both parties
@@ -154,6 +174,18 @@ impl Channel {
         let m = self.recv();
         assert_eq!(m.len(), n.div_ceil(8), "unexpected message length");
         unpack_bits(&m, n)
+    }
+}
+
+/// The OT libraries of [`dpf_ot_sys`] send their messages over a `Channel`,
+/// so they are counted like every other message.
+impl dpf_ot_sys::Transport for Channel {
+    fn send_msg(&mut self, msg: Vec<u8>) -> bool {
+        self.try_send(msg)
+    }
+
+    fn recv_msg(&mut self) -> Option<Vec<u8>> {
+        self.try_recv()
     }
 }
 

@@ -1,121 +1,35 @@
 //! Maliciously secure random base OT: the "endemic OT" of Masny–Rindal
-//! ("Endemic Oblivious Transfer", CCS'19), built from Diffie–Hellman over
-//! secp256r1 with hash-to-curve, in the random-oracle model. libOTe uses this
-//! construction to bootstrap KOS-style OT extension.
+//! ("Endemic Oblivious Transfer", CCS'19), from libOTe (`MasnyRindal`, over
+//! Curve25519 in the random-oracle model) through [`dpf_ot_sys`]. libOTe uses
+//! this construction to bootstrap KOS-style OT extension.
 //!
-//! This is MR19 Fig. 8 for n = 2 with Diffie–Hellman as the key agreement.
-//! For OT `i` with receiver choice `c`:
-//!
-//! ```text
-//! receiver: sk ← Z_q, m_c = g^sk, r_{1−c} uniform, r_c = m_c − H_c(i, r_{1−c})
-//!           sends (r_0, r_1)
-//! sender:   for j ∈ {0,1}: t_j ← Z_q, sends B_j = g^{t_j}
-//!           m_j = r_j + H_j(i, r_{1−j}),  K_i^j = KDF(B_j, i, j, m_j^{t_j})
-//! receiver: K_i^c = KDF(B_c, i, c, B_c^sk)
-//! ```
-//!
-//! `H_0`, `H_1` are separate random oracles (Fig. 8's `H_j`), and the sender
-//! uses a fresh key-agreement secret `t_{B,j}` for every OT and every j.
-//!
-//! A malicious receiver cannot know the discrete logs of both `m_0` and `m_1`,
-//! because each depends on a random-oracle image of the other. A malicious
-//! sender sees `(r_0, r_1)`, which are uniform whatever `c` is. Malformed,
-//! off-curve and identity points make the calls return [`Abort`].
-//!
-//! Message order: the base-OT receiver speaks first, then the sender. That is
-//! the reverse of Naor–Pinkas.
+//! The receiver sends a pair of encodings per OT, one of them derived from a
+//! key-agreement key and the other from a random-oracle image of it. A
+//! malicious receiver cannot know the secrets of both. The sender's message
+//! does not depend on the receiver's, so both are in flight in one round.
+//! A malformed message makes the calls return [`Abort`].
 
-use super::np::{decode, encode};
 use crate::block::Block;
 use crate::coin::Abort;
 use crate::net::Channel;
-use p256::elliptic_curve::hash2curve::{ExpandMsgXmd, GroupDigest};
-use p256::elliptic_curve::Field;
-use p256::{NistP256, ProjectivePoint, Scalar};
 use rand::{CryptoRng, RngCore};
-use sha2::{Digest, Sha256};
 
-const POINT_BYTES: usize = 33;
-const DST: &[u8] = b"dpf-common/endemic-ot/P256_XMD:SHA-256_SSWU_RO_";
-
-/// The random oracle `H_j` into the group, domain-separated per OT index.
-fn h(j: bool, i: usize, r: &ProjectivePoint) -> Result<ProjectivePoint, Abort> {
-    let idx = (i as u64).to_le_bytes();
-    let enc = encode(r);
-    NistP256::hash_from_bytes::<ExpandMsgXmd<Sha256>>(&[&[j as u8], &idx, &enc], &[DST]).map_err(|_| Abort("hash to curve failed"))
-}
-
-fn kdf(s: &ProjectivePoint, i: usize, j: bool, p: &ProjectivePoint) -> Block {
-    let mut d = Sha256::new();
-    d.update(b"dpf-common/endemic-ot/kdf");
-    d.update(encode(s));
-    d.update((i as u64).to_le_bytes());
-    d.update([j as u8]);
-    d.update(encode(p));
-    Block::from_bytes(&d.finalize()[..16])
+fn seed<R: RngCore + CryptoRng>(rng: &mut R) -> [u8; 16] {
+    let mut s = [0u8; 16];
+    rng.fill_bytes(&mut s);
+    s
 }
 
 /// Base-OT sender. Returns `k` random key pairs `(K_i^0, K_i^1)`.
 pub fn send_random<R: RngCore + CryptoRng>(ch: &mut Channel, k: usize, rng: &mut R) -> Result<Vec<(Block, Block)>, Abort> {
-    let msg = ch.recv();
-    if msg.len() != 2 * k * POINT_BYTES {
-        return Err(Abort("unexpected base-OT message length"));
-    }
-    // Validate every point before answering.
-    let ms = msg
-        .chunks_exact(2 * POINT_BYTES)
-        .enumerate()
-        .map(|(i, pair)| {
-            let r0 = decode(&pair[..POINT_BYTES])?;
-            let r1 = decode(&pair[POINT_BYTES..])?;
-            Ok([r0 + h(false, i, &r1)?, r1 + h(true, i, &r0)?])
-        })
-        .collect::<Result<Vec<_>, Abort>>()?;
-    let g = ProjectivePoint::GENERATOR;
-    let mut out = Vec::with_capacity(2 * k * POINT_BYTES);
-    let mut keys = Vec::with_capacity(k);
-    for (i, m) in ms.iter().enumerate() {
-        let mut pair = [Block::ZERO; 2];
-        for j in 0..2 {
-            let t = Scalar::random(&mut *rng);
-            let big_b = g * t;
-            out.extend_from_slice(&encode(&big_b));
-            pair[j] = kdf(&big_b, i, j == 1, &(m[j] * t));
-        }
-        keys.push((pair[0], pair[1]));
-    }
-    ch.send(out);
-    Ok(keys)
+    let pairs = dpf_ot_sys::mr_send(ch, seed(rng), k, None).map_err(|e| super::abort(e, "Masny–Rindal base OT failed"))?;
+    Ok(pairs.into_iter().map(|(a, b)| (Block(a), Block(b))).collect())
 }
 
-/// Base-OT receiver with choice bits `choices`. Returns `K_i^{choices[i]}`.
+/// Base-OT receiver with the given choice bits. Returns `K_i^{c_i}`.
 pub fn recv_random<R: RngCore + CryptoRng>(ch: &mut Channel, choices: &[bool], rng: &mut R) -> Result<Vec<Block>, Abort> {
-    let g = ProjectivePoint::GENERATOR;
-    let mut msg = Vec::with_capacity(2 * choices.len() * POINT_BYTES);
-    let mut sks = Vec::with_capacity(choices.len());
-    for (i, &c) in choices.iter().enumerate() {
-        let sk = Scalar::random(&mut *rng);
-        let other = g * Scalar::random(&mut *rng);
-        let mine = g * sk - h(c, i, &other)?;
-        let (r0, r1) = if c { (other, mine) } else { (mine, other) };
-        msg.extend_from_slice(&encode(&r0));
-        msg.extend_from_slice(&encode(&r1));
-        sks.push(sk);
-    }
-    ch.send(msg);
-    let bs = ch.recv();
-    if bs.len() != 2 * choices.len() * POINT_BYTES {
-        return Err(Abort("unexpected base-OT message length"));
-    }
-    sks.iter()
-        .zip(choices)
-        .enumerate()
-        .map(|(i, (sk, &c))| {
-            let off = (2 * i + c as usize) * POINT_BYTES;
-            let big_b = decode(&bs[off..off + POINT_BYTES])?;
-            Ok(kdf(&big_b, i, c, &(big_b * sk)))
-        })
-        .collect()
+    let got = dpf_ot_sys::mr_recv(ch, seed(rng), choices, None).map_err(|e| super::abort(e, "Masny–Rindal base OT failed"))?;
+    Ok(got.into_iter().map(Block).collect())
 }
 
 #[cfg(test)]
@@ -144,24 +58,22 @@ mod tests {
     }
 
     #[test]
-    fn bad_points_abort() {
-        // A receiver that sends bytes that are not a point.
+    fn bad_messages_abort() {
+        // A receiver that sends bytes that are not a protocol message.
         let (r, _) = run_two_party(
             |c| send_random(c, 1, &mut ChaCha20Rng::seed_from_u64(2)),
             |c| {
-                let mut junk = vec![0x02u8; 2 * POINT_BYTES];
-                junk[1] = 0xff;
-                junk[POINT_BYTES] = 0x07; // invalid SEC1 tag
-                c.send(junk);
+                c.send(vec![0x07u8; 70]);
+                let _ = c.try_recv();
             },
         );
         assert!(r.is_err());
 
-        // A sender that answers with the identity encoding.
+        // A sender that answers with junk.
         let (_, r) = run_two_party(
             |c| {
-                c.recv();
-                c.send(vec![0u8; 2 * POINT_BYTES]);
+                c.send(vec![0u8; 40]);
+                let _ = c.try_recv();
             },
             |c| recv_random(c, &[true], &mut ChaCha20Rng::seed_from_u64(3)),
         );
