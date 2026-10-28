@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "protocols/*", "experimental_code/*"]
+# Own workspace (Rust 1.95, rand 0.10 through mpz).
+exclude = ["experimental_code/mpz-ferret"]
 
 [workspace.package]
 version = "0.1.0"
