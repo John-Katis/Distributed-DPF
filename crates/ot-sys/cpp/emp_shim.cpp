@@ -4,7 +4,7 @@
 //
 // Every call takes the I/O callbacks and their context; emp's channel is a
 // RustIO whose bytes go through them. Exceptions (emp's error(), patched by
-// fetch.sh to throw, and a closed channel) are caught here and returned as -1,
+// build.sh to throw, and a closed channel) are caught here and returned as -1,
 // with the message available from ots_last_error().
 //
 // Ferret's base COTs: emp's FerretCOT draws them from BaseCot<IO>, which runs

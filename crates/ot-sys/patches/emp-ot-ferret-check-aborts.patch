@@ -1,0 +1,13 @@
+diff --git a/emp-ot/ferret/mpcot_reg.h b/emp-ot/ferret/mpcot_reg.h
+index 6659aa7..ccfe88f 100644
+--- a/emp-ot/ferret/mpcot_reg.h
++++ b/emp-ot/ferret/mpcot_reg.h
+@@ -207,7 +207,7 @@ public:
+ 			block recv[2];
+ 			this->netio->recv_data(recv, 2*sizeof(block));
+ 			if(!cmpBlock(dig, recv, 2))
+-				std::cout << "SPCOT consistency check fails" << std::endl;
++				error("SPCOT consistency check fails");
+ 		}
+ 	}
+ };

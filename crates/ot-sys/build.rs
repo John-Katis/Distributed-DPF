@@ -1,6 +1,6 @@
 //! Compiles the C++ shims (emp-ot, libOTe, SCI with its sources) and links
 //! libOTe's static libraries, OpenSSL and OpenMP (SCI). The libraries live in `third_party/` at the repo root (run
-//! `crates/ot-sys/fetch.sh` once), or wherever `DPF_OT_DEPS` points.
+//! `./build.sh` once; they are git submodules), or wherever `DPF_OT_DEPS` points.
 
 use std::path::PathBuf;
 
@@ -19,7 +19,7 @@ fn main() {
         sci.join("OT/split-kkot.h"),
     ];
     for p in &need {
-        assert!(p.exists(), "{} is missing: run crates/ot-sys/fetch.sh", p.display());
+        assert!(p.exists(), "{} is missing: run ./build.sh at the repo root", p.display());
     }
 
     cc::Build::new()

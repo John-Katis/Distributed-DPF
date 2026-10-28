@@ -171,7 +171,7 @@ fn iknp_malicious_small_batch() {
 }
 
 /// A corrupted secret sum (the first tree's, after its `log_bin` levels of
-/// 32 bytes) makes the malicious receiver abort. Needs fetch.sh's patch of
+/// 32 bytes) makes the malicious receiver abort. Needs build.sh's patch of
 /// emp's `consistency_check_f2k`, which otherwise only prints a warning.
 #[test]
 fn ferret_malicious_tamper_aborts() {

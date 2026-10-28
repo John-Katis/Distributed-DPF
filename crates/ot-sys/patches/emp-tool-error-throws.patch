@@ -1,0 +1,25 @@
+diff --git a/emp-tool/utils/utils.h b/emp-tool/utils/utils.h
+index 2f0b47f..a82a140 100644
+--- a/emp-tool/utils/utils.h
++++ b/emp-tool/utils/utils.h
+@@ -1,6 +1,7 @@
+ #ifndef EMP_UTILS_H__
+ #define EMP_UTILS_H__
+ #include <string>
++#include <stdexcept>
+ #include "emp-tool/utils/block.h"
+ #include <sstream>
+ #include <cstddef>//https://gcc.gnu.org/gcc-4.9/porting_to.html
+diff --git a/emp-tool/utils/utils.hpp b/emp-tool/utils/utils.hpp
+index 13e2cef..ea949cc 100644
+--- a/emp-tool/utils/utils.hpp
++++ b/emp-tool/utils/utils.hpp
+@@ -24,7 +24,7 @@ inline void error(const char * s, int line, const char * file) {
+ 	if(file != nullptr) {
+ 		fprintf(stderr, "at %d, %s\n", line, file);
+ 	}
+-	exit(1);
++	throw std::runtime_error(s);
+ }
+ 
+ inline void parse_party_and_port(const char *const * arg, int * party, int * port) {

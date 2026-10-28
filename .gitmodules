@@ -1,0 +1,15 @@
+[submodule "third_party/emp-tool"]
+	path = third_party/emp-tool
+	url = https://github.com/emp-toolkit/emp-tool.git
+	ignore = dirty
+[submodule "third_party/emp-ot"]
+	path = third_party/emp-ot
+	url = https://github.com/emp-toolkit/emp-ot.git
+	ignore = dirty
+[submodule "third_party/libOTe"]
+	path = third_party/libOTe
+	url = https://github.com/osu-crypto/libOTe.git
+[submodule "third_party/EzPC"]
+	path = third_party/EzPC
+	url = https://github.com/mpc-msri/EzPC.git
+	shallow = true

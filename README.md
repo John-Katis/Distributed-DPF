@@ -87,11 +87,17 @@ REFERENCES.md        papers and techniques this code implements
 
 ## Commands
 
-The OT libraries are fetched and built once into `third_party/` (git-ignored;
-needs cmake ≥ 3.20, g++ ≥ 11, python3, OpenSSL):
+The OT libraries (emp-tool, emp-ot, libOTe, EzPC/SCI) are git submodules in
+`third_party/`, pinned to fixed revisions; `build.sh` checks the prerequisites
+(git, cmake ≥ 3.20, g++ ≥ 11 with OpenMP, python3, OpenSSL headers, rustup),
+fetches the submodules, applies `crates/ot-sys/patches/`, builds libOTe and
+then the workspace. The first run needs network (libOTe's cmake also clones
+four small dependencies of its own).
 
 ```
-crates/ot-sys/fetch.sh
+git clone --recursive https://github.com/John-Katis/Distributed-DPF.git
+cd Distributed-DPF
+./build.sh            # or ./build.sh --test to also run the test suite
 ```
 
 ```
