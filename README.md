@@ -7,8 +7,10 @@ Each protocol is its own crate, and all of them build on one shared library.
 ```
 crates/
   common/            dpf-common: the shared library
-  ot-sys/            bindings to emp-ot (Naor–Pinkas, IKNP/KOS, Ferret) and
-                     libOTe (Masny–Rindal), used by dpf_common::ot
+  ot-sys/            bindings to emp-ot/emp-tool (Naor–Pinkas, IKNP/KOS,
+                     Ferret, half-gates), libOTe (Masny–Rindal) and SCI
+                     (KK13, CrypTFlow2 triples, SiRNN MUX), used by
+                     dpf_common::{ot, gc, bool2pc, arith}
 protocols/
   floram-cprg/       Floram-CPRG distributed DPF (Doerner–shelat, CCS'17)
   half-tree/         Half-Tree distributed DPF (Guo et al., EC'23), semi-honest,

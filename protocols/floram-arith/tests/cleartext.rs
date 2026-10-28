@@ -59,14 +59,17 @@ fn two_party_gen_matches_cleartext_function_128() {
     two_party_gen::<u128>(WIDE, 33);
 }
 
-/// The ℓ-dependent traffic is MUX words and the W_CW opening: one 64-bit word
-/// each for ℓ ≤ 64, one 128-bit word each for ℓ = 128.
+/// The ℓ-dependent traffic is the F^{A,ℓ}_MUX and the W_CW opening. For
+/// ℓ ≤ 64 the MUX is SCI's multiplexer on 64-bit words, above it ours on
+/// 128-bit words, so traffic is constant within each range; rounds never
+/// depend on ℓ.
 #[test]
 fn traffic_follows_word_width() {
-    let b64 = run_gen(1000, 64, 3, 5u64, 1).outs[0].gen_stats.bytes_sent;
-    let b128 = run_gen(1000, 128, 3, 5u128, 1).outs[0].gen_stats.bytes_sent;
-    // One MUX message and one opening per party.
-    assert_eq!(b128 - b64, 2 * 8);
+    let s = |bits: usize| if bits <= 64 { run_gen(1000, bits, 3, 5u64, 1).outs[0].gen_stats } else { run_gen(1000, bits, 3, 5u128, 1).outs[0].gen_stats };
+    let (s32, s64, s65, s128) = (s(32), s(64), s(65), s(128));
+    assert_eq!(s32.bytes_sent, s64.bytes_sent);
+    assert_eq!(s65.bytes_sent, s128.bytes_sent);
+    assert!([s32.rounds, s64.rounds, s65.rounds].iter().all(|&r| r == s128.rounds));
 }
 
 #[test]

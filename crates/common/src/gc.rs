@@ -1,10 +1,12 @@
 //! Semi-honest Yao garbling with free-XOR, point-and-permute and half-gates
 //! (Zahur–Rosulek–Evans 2015). This is the Obliv-C protocol Floram runs in.
 //!
-//! The half-gate hash is `H'_S(x, j) = MMO^σ(S ⊕ x ⊕ j)` with a uniform public
-//! key S that the garbler samples and sends at setup, which GKWY20 Thm. 3
-//! proves sufficient for half-gates (circular correlation robustness for
-//! naturally derived keys).
+//! AND gates are garbled and evaluated by emp-tool's half-gates
+//! (`halfgates_garble` / `halfgates_eval`, the gate code of emp-sh2pc's
+//! `HalfGateGen` / `HalfGateEva`) through [`dpf_ot_sys::HalfGates`], with
+//! emp's MITCCRH hash keyed by a uniform public S that the garbler samples
+//! and sends at setup. Inputs follow Obliv-C (one OT per shared bit, emp-ot's
+//! IKNP on Naor–Pinkas), and outputs are revealed by their permute bits.
 //!
 //! A circuit is written once against [`GcParty`], and the garbler (party 0 =
 //! Floram's party 1) and the evaluator (party 1) each run the same code. A wire
@@ -12,7 +14,7 @@
 //! evaluator.
 
 use crate::block::Block;
-use crate::hash::CcrHash;
+use dpf_ot_sys::HalfGates;
 use crate::net::Channel;
 use crate::ot::{IknpReceiver, IknpSender};
 use rand::{CryptoRng, RngCore, SeedableRng};
@@ -57,9 +59,8 @@ pub trait GcParty {
 }
 
 pub struct Garbler {
-    hash: CcrHash,
+    hg: HalfGates,
     delta: Block,
-    gid: u64,
     ands: usize,
     ot: IknpSender,
     rng: ChaCha20Rng,
@@ -72,7 +73,7 @@ impl Garbler {
         let s = Block::random(rng);
         ch.send_blocks(&[s]);
         let ot = IknpSender::setup(ch, rng);
-        Garbler { hash: CcrHash::new(s), delta, gid: 0, ands: 0, ot, rng: ChaCha20Rng::from_rng(rng).unwrap() }
+        Garbler { hg: HalfGates::new(s.0), delta, ands: 0, ot, rng: ChaCha20Rng::from_rng(rng).unwrap() }
     }
 }
 
@@ -95,30 +96,12 @@ impl GcParty for Garbler {
     }
 
     fn and_many(&mut self, ch: &mut Channel, pairs: &[(Wire, Wire)]) -> Vec<Wire> {
-        let h = &self.hash;
-        let r = self.delta;
-        let mut tables = Vec::with_capacity(2 * pairs.len());
-        let mut out = Vec::with_capacity(pairs.len());
-        for &(a0, b0) in pairs {
-            let (j0, j1) = (2 * self.gid, 2 * self.gid + 1);
-            self.gid += 1;
-            let pa = a0.lsb();
-            let pb = b0.lsb();
-            let (ha0, hb0) = h.h2_tweak(a0, j0, b0, j1);
-            let (ha1, hb1) = h.h2_tweak(a0 ^ r, j0, b0 ^ r, j1);
-            // Garbler half gate.
-            let tg = ha0 ^ ha1 ^ r.and_bit(pb);
-            let wg = ha0 ^ tg.and_bit(pa);
-            // Evaluator half gate.
-            let te = hb0 ^ hb1 ^ a0;
-            let we = hb0 ^ (te ^ a0).and_bit(pb);
-            tables.push(tg);
-            tables.push(te);
-            out.push(wg ^ we);
-        }
+        let a0: Vec<u128> = pairs.iter().map(|p| p.0 .0).collect();
+        let b0: Vec<u128> = pairs.iter().map(|p| p.1 .0).collect();
+        let (out, tables) = self.hg.garble(self.delta.0, &a0, &b0);
         self.ands += pairs.len();
-        ch.send_blocks(&tables);
-        out
+        ch.send_blocks(&tables.into_iter().map(Block).collect::<Vec<_>>());
+        out.into_iter().map(Block).collect()
     }
 
     fn not(&self, a: Wire) -> Wire {
@@ -137,8 +120,7 @@ impl GcParty for Garbler {
 }
 
 pub struct Evaluator {
-    hash: CcrHash,
-    gid: u64,
+    hg: HalfGates,
     ands: usize,
     ot: IknpReceiver,
 }
@@ -146,7 +128,7 @@ pub struct Evaluator {
 impl Evaluator {
     pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
         let s = ch.recv_blocks(1)[0];
-        Evaluator { hash: CcrHash::new(s), gid: 0, ands: 0, ot: IknpReceiver::setup(ch, rng) }
+        Evaluator { hg: HalfGates::new(s.0), ands: 0, ot: IknpReceiver::setup(ch, rng) }
     }
 }
 
@@ -160,20 +142,11 @@ impl GcParty for Evaluator {
     }
 
     fn and_many(&mut self, ch: &mut Channel, pairs: &[(Wire, Wire)]) -> Vec<Wire> {
-        let h = &self.hash;
-        let tables = ch.recv_blocks(2 * pairs.len());
-        let mut out = Vec::with_capacity(pairs.len());
-        for (i, &(a, b)) in pairs.iter().enumerate() {
-            let (j0, j1) = (2 * self.gid, 2 * self.gid + 1);
-            self.gid += 1;
-            let (tg, te) = (tables[2 * i], tables[2 * i + 1]);
-            let (ha, hb) = h.h2_tweak(a, j0, b, j1);
-            let wg = ha ^ tg.and_bit(a.lsb());
-            let we = hb ^ (te ^ a).and_bit(b.lsb());
-            out.push(wg ^ we);
-        }
+        let tables: Vec<u128> = ch.recv_blocks(2 * pairs.len()).into_iter().map(|b| b.0).collect();
+        let a: Vec<u128> = pairs.iter().map(|p| p.0 .0).collect();
+        let b: Vec<u128> = pairs.iter().map(|p| p.1 .0).collect();
         self.ands += pairs.len();
-        out
+        self.hg.eval(&a, &b, &tables).into_iter().map(Block).collect()
     }
 
     fn not(&self, a: Wire) -> Wire {

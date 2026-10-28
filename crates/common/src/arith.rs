@@ -152,6 +152,18 @@ fn pad<R: Ring>(k: Block, tweak: u64, bits: usize) -> R {
     R::from_block(cot_hash().h(k, tweak)).and(R::mask(bits))
 }
 
+/// [`mux`] by SiRNN's own multiplexer in SCI ([`crate::ot::sci`]), as XLH+25
+/// instantiate F^{A,ℓ}_MUX, for `bits ≤ 64`: shares of `W_g = W_0 + g·(W_1 − W_0)`
+/// with SCI computing `g·(W_1 − W_0)`.
+pub fn mux_sci<T: Ring>(ch: &mut Channel, sci: &mut crate::ot::sci::Sci, g: &[bool], w0: &[T], w1: &[T], bits: usize) -> Result<Vec<T>, Abort> {
+    assert!(bits <= 64, "SCI's multiplexer works on 64-bit words");
+    assert!(w0.len() == g.len() && w1.len() == g.len());
+    let m = T::mask(bits);
+    let x: Vec<u64> = w0.iter().zip(w1).map(|(a, b)| b.sub(*a).and(m).low_u64()).collect();
+    let y = sci.mux(ch, g, &x, bits)?;
+    Ok(w0.iter().zip(y).map(|(a, yi)| a.add(T::from_u64(yi)).and(m)).collect())
+}
+
 /// Additive shares of `W_{g_i}` for each i, given this party's XOR share of
 /// every `g_i` and additive shares of `W0_i`, `W1_i` in Z_2^bits.
 ///

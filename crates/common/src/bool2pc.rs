@@ -2,9 +2,10 @@
 //! instantiations XLH+25 (NDSS'25) App. A names and its reference code
 //! (`src/mpc/secure_ops.cpp`) uses:
 //!
-//! * F_AND: Beaver bit triples from CrypTFlow2's generator. One 1-out-of-8
-//!   KKOT of 2-bit messages yields a pair of correlated triples (`_8KKOT`,
-//!   CrypTFlow2 App. A.2). As in the reference `and_wrapper`, every AND uses
+//! * F_AND: Beaver bit triples from CrypTFlow2's generator, run by SCI
+//!   ([`crate::ot::sci`], its `TripleGenerator` with `_8KKOT`). One 1-out-of-8
+//!   KKOT of 2-bit messages yields a pair of correlated triples (CrypTFlow2
+//!   App. A.2). As in the reference `and_wrapper`, every AND uses
 //!   the first triple of its own pair, so no two ANDs share a triple
 //!   component. Online: open `x ⊕ a`, `y ⊕ b` (2 bits, one round).
 //!   [`BoolParty::precompute`] makes the triples for a whole protocol in one
@@ -22,15 +23,14 @@
 use crate::block::Block;
 use crate::hash::cot_hash;
 use crate::net::Channel;
-use crate::ot::kkot::{KkotReceiver, KkotSender};
+use crate::ot::sci::Sci;
 use crate::ot::{CotPair, RandomCots};
 use crate::coin::Abort;
-use rand::{CryptoRng, Rng, RngCore, SeedableRng};
-use rand_chacha::ChaCha20Rng;
+use rand::{CryptoRng, RngCore};
 
 enum Kkot {
-    Sender(KkotSender),
-    Receiver(KkotReceiver),
+    /// SCI's OTPack and triple generator.
+    Sci(Sci),
     /// Precomputed triples, used front to back.
     Pool(std::vec::IntoIter<(bool, bool, bool)>),
 }
@@ -39,27 +39,33 @@ enum Kkot {
 pub struct BoolParty {
     party: usize,
     kkot: Kkot,
-    rng: ChaCha20Rng,
     /// F_AND invocations so far.
     pub ands: usize,
 }
 
 impl BoolParty {
-    /// Runs the 256 base OTs of the KKOT instance (party 0 sends KKOTs).
-    pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, rng: &mut R) -> Self {
+    /// Runs SCI's setup (party 0 sends KKOTs).
+    /// `_rng` is unused: SCI draws its own randomness.
+    pub fn setup<R: RngCore + CryptoRng>(ch: &mut Channel, _rng: &mut R) -> Self {
         let party = ch.party();
-        let kkot = if party == 0 {
-            Kkot::Sender(KkotSender::setup(ch, rng))
-        } else {
-            Kkot::Receiver(KkotReceiver::setup(ch, rng))
-        };
-        BoolParty { party, kkot, rng: ChaCha20Rng::from_rng(rng).unwrap(), ands: 0 }
+        let kkot = Kkot::Sci(Sci::setup(ch).expect("SCI setup"));
+        BoolParty { party, kkot, ands: 0 }
+    }
+
+    /// SCI's state, for its other functionalities (e.g. SiRNN's multiplexer,
+    /// [`crate::arith::mux_sci`]). Panics for a party made by
+    /// [`with_triples`](Self::with_triples).
+    pub fn sci(&mut self) -> &mut Sci {
+        match &mut self.kkot {
+            Kkot::Sci(s) => s,
+            Kkot::Pool(_) => panic!("this BoolParty has no SCI state"),
+        }
     }
 
     /// A party that takes its F_AND triples from `triples` (no setup, no
     /// triple traffic) instead of KKOT; it panics when they run out.
-    pub fn with_triples<R: RngCore + CryptoRng>(party: usize, triples: Vec<(bool, bool, bool)>, rng: &mut R) -> Self {
-        BoolParty { party, kkot: Kkot::Pool(triples.into_iter()), rng: ChaCha20Rng::from_rng(rng).unwrap(), ands: 0 }
+    pub fn with_triples<R: RngCore + CryptoRng>(party: usize, triples: Vec<(bool, bool, bool)>, _rng: &mut R) -> Self {
+        BoolParty { party, kkot: Kkot::Pool(triples.into_iter()), ands: 0 }
     }
 
     /// Preprocessing: makes `m` triples now, in one KKOT batch, for the F_AND
@@ -88,35 +94,11 @@ impl BoolParty {
             assert_eq!(t.len(), m, "triple pool exhausted");
             return t;
         }
-        // Per pair: a (shared by the pair), b[0], b[1], c[0], c[1].
-        let a: Vec<bool> = (0..m).map(|_| self.rng.gen()).collect();
-        let b: Vec<[bool; 2]> = (0..m).map(|_| [self.rng.gen(), self.rng.gen()]).collect();
-        match &mut self.kkot {
-            Kkot::Sender(s) => {
-                let c: Vec<[bool; 2]> = (0..m).map(|_| [self.rng.gen(), self.rng.gen()]).collect();
-                let msgs: Vec<Vec<u8>> = (0..m)
-                    .map(|i| {
-                        (0..8u8)
-                            .map(|j| {
-                                // j = a_1 ∥ b_1[0] ∥ b_1[1] (LSB → MSB).
-                                let (ja, jb0, jb1) = (j & 1 == 1, j & 2 == 2, j & 4 == 4);
-                                let t0 = ((a[i] ^ ja) & (b[i][0] ^ jb0)) ^ c[i][0];
-                                let t1 = ((a[i] ^ ja) & (b[i][1] ^ jb1)) ^ c[i][1];
-                                (t1 as u8) << 1 | t0 as u8
-                            })
-                            .collect()
-                    })
-                    .collect();
-                s.send(ch, &msgs, 8, 2);
-                (0..m).map(|i| (a[i], b[i][0], c[i][0])).collect()
-            }
-            Kkot::Pool(_) => unreachable!(),
-            Kkot::Receiver(r) => {
-                let sel: Vec<u8> = (0..m).map(|i| (b[i][1] as u8) << 2 | (b[i][0] as u8) << 1 | a[i] as u8).collect();
-                let res = r.recv(ch, &sel, 8, 2);
-                (0..m).map(|i| (a[i], b[i][0], res[i] & 1 == 1)).collect()
-            }
-        }
+        let Kkot::Sci(s) = &mut self.kkot else { unreachable!() };
+        let t = s.triples(ch, 2 * m).expect("SCI triples");
+        // The first triple of each correlated pair, as the reference
+        // `and_wrapper` uses it.
+        (0..m).map(|i| t[2 * i]).collect()
     }
 
     /// F_AND on each pair of XOR-shared bits, all in one round after the
@@ -270,6 +252,8 @@ pub fn mux_block<R: RngCore + CryptoRng>(
 mod tests {
     use super::*;
     use crate::net::run_two_party;
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
 
     fn split(rng: &mut ChaCha20Rng, v: bool) -> (bool, bool) {
         let a: bool = rng.gen();

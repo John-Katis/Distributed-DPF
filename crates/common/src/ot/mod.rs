@@ -6,7 +6,9 @@
 //!
 //! The base OTs, IKNP/KOS and Ferret come from libraries through
 //! [`dpf_ot_sys`]: emp-ot 0.3.0 (Naor–Pinkas, IKNP, KOS check, Ferret) and
-//! libOTe (Masny–Rindal). KK13 is ours ([`kkot`], after SCI's `kkot.h`).
+//! libOTe (Masny–Rindal), and SCI ([`sci`]: KK13, CrypTFlow2's bit triples,
+//! SiRNN's multiplexer). [`kkot`] is our port of SCI's `kkot.h`, kept for
+//! experiments; the protocols use SCI's.
 //! This module adds what the libraries do not: both directions per party
 //! ([`CotPair`]), chosen choices by derandomisation, preprocessing pools, and
 //! the lsb(Δ) handling of [`ferret`].
@@ -17,6 +19,7 @@ pub mod ferret;
 pub mod iknp;
 pub mod kkot;
 pub mod np;
+pub mod sci;
 
 pub use ferret::{FerretConfig, LpnParams};
 pub use cot::{BaseOt, CotPair, CotReceiver, CotSender, RandomCots, COT_KEY_BITS};

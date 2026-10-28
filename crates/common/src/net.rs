@@ -21,7 +21,7 @@
 use crate::block::{blocks_from_bytes, blocks_to_bytes, pack_bits, unpack_bits, Block};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Communication counters for one party.
@@ -76,11 +76,15 @@ pub fn net_time(rounds: usize, bytes: usize, latency: Duration, bits_per_sec: f6
 type Msg = (usize, Vec<u8>);
 
 /// One party's end of the two-party link.
+///
+/// The receiver and the counters sit behind (uncontended) locks so that a
+/// library running two threads on one channel (SCI's two COT directions,
+/// [`dpf_ot_sys::SharedTransport`]) can send and receive through `&self`.
 pub struct Channel {
     party: usize,
     tx: Sender<Msg>,
-    rx: Receiver<Msg>,
-    stats: CommStats,
+    rx: Mutex<Receiver<Msg>>,
+    stats: Mutex<CommStats>,
     /// Largest stamp received by this party, shared by all of its links.
     clock: Arc<AtomicUsize>,
 }
@@ -93,15 +97,11 @@ impl Channel {
     }
 
     pub fn stats(&self) -> CommStats {
-        self.stats
+        *self.stats.lock().unwrap()
     }
 
     pub fn send(&mut self, msg: Vec<u8>) {
-        let stamp = self.clock.load(Ordering::Relaxed) + 1;
-        self.stats.rounds = self.stats.rounds.max(stamp);
-        self.stats.bytes_sent += msg.len();
-        self.stats.messages_sent += 1;
-        self.tx.send((stamp, msg)).expect("peer hung up");
+        assert!(self.try_send(msg), "peer hung up");
     }
 
     pub fn recv(&mut self) -> Vec<u8> {
@@ -111,24 +111,34 @@ impl Channel {
     /// As [`send`](Self::send), but `false` instead of a panic if the peer
     /// has closed its end.
     pub fn try_send(&mut self, msg: Vec<u8>) -> bool {
-        let stamp = self.clock.load(Ordering::Relaxed) + 1;
-        let len = msg.len();
-        if self.tx.send((stamp, msg)).is_err() {
-            return false;
-        }
-        self.stats.rounds = self.stats.rounds.max(stamp);
-        self.stats.bytes_sent += len;
-        self.stats.messages_sent += 1;
-        true
+        self.send_shared(msg)
     }
 
     /// As [`recv`](Self::recv), but `None` instead of a panic if the peer
     /// has closed its end.
     pub fn try_recv(&mut self) -> Option<Vec<u8>> {
-        let (stamp, msg) = self.rx.recv().ok()?;
+        self.recv_shared()
+    }
+
+    fn send_shared(&self, msg: Vec<u8>) -> bool {
+        let stamp = self.clock.load(Ordering::Relaxed) + 1;
+        let len = msg.len();
+        if self.tx.send((stamp, msg)).is_err() {
+            return false;
+        }
+        let mut st = self.stats.lock().unwrap();
+        st.rounds = st.rounds.max(stamp);
+        st.bytes_sent += len;
+        st.messages_sent += 1;
+        true
+    }
+
+    fn recv_shared(&self) -> Option<Vec<u8>> {
+        let (stamp, msg) = self.rx.lock().unwrap().recv().ok()?;
         self.clock.fetch_max(stamp, Ordering::Relaxed);
-        self.stats.rounds = self.stats.rounds.max(stamp);
-        self.stats.bytes_recv += msg.len();
+        let mut st = self.stats.lock().unwrap();
+        st.rounds = st.rounds.max(stamp);
+        st.bytes_recv += msg.len();
         Some(msg)
     }
 
@@ -189,11 +199,45 @@ impl dpf_ot_sys::Transport for Channel {
     }
 }
 
+/// SCI ([`dpf_ot_sys::Sci`]) uses one channel from two threads. Its bridge
+/// keeps a clock per thread (a thread's message depends only on what that
+/// thread received), so two parallel COT directions share their rounds as in
+/// the network model, whatever the thread timing.
+impl dpf_ot_sys::SharedTransport for Channel {
+    fn clock(&self) -> usize {
+        self.clock.load(Ordering::Relaxed)
+    }
+
+    fn advance_clock(&self, stamp: usize) {
+        self.clock.fetch_max(stamp, Ordering::Relaxed);
+    }
+
+    fn send_at(&self, msg: Vec<u8>, stamp: usize) -> bool {
+        let len = msg.len();
+        if self.tx.send((stamp, msg)).is_err() {
+            return false;
+        }
+        let mut st = self.stats.lock().unwrap();
+        st.rounds = st.rounds.max(stamp);
+        st.bytes_sent += len;
+        st.messages_sent += 1;
+        true
+    }
+
+    fn recv_at(&self) -> Option<(usize, Vec<u8>)> {
+        let (stamp, msg) = self.rx.lock().unwrap().recv().ok()?;
+        let mut st = self.stats.lock().unwrap();
+        st.rounds = st.rounds.max(stamp);
+        st.bytes_recv += msg.len();
+        Some((stamp, msg))
+    }
+}
+
 /// A connected pair of channels, for party 0 and party 1.
 pub fn channel_pair() -> (Channel, Channel) {
     let (tx0, rx1) = channel();
     let (tx1, rx0) = channel();
-    let mk = |party, tx, rx| Channel { party, tx, rx, stats: CommStats::default(), clock: Arc::default() };
+    let mk = |party, tx, rx| Channel { party, tx, rx: Mutex::new(rx), stats: Mutex::default(), clock: Arc::default() };
     (mk(0, tx0, rx0), mk(1, tx1, rx1))
 }
 
