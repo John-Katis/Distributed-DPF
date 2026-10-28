@@ -39,7 +39,7 @@ pub mod malicious_arith;
 pub mod malicious_auth;
 pub mod semi_honest;
 
-use dpf_common::aes_tower::{Mmo, PRODUCTS_PER_CALL, ROUNDS_PER_CALL};
+use dpf_common::aes_tower::{Mmo, PRODUCTS_PER_CALL};
 use dpf_common::block::Block;
 use std::sync::OnceLock;
 
@@ -100,9 +100,4 @@ pub fn sh_calls(n: usize) -> usize {
 /// F4 products in one semi-honest Gen of depth n.
 pub fn sh_products(n: usize) -> usize {
     sh_calls(n) * PRODUCTS_PER_CALL
-}
-
-/// Rounds of the AES calls of one Gen of depth n (levels and leaf).
-pub fn aes_rounds(n: usize) -> usize {
-    (n + 1) * ROUNDS_PER_CALL
 }

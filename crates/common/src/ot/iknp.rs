@@ -7,12 +7,6 @@
 //! rounds: the receiver sends `OT_KEY_BITS × m` bits of columns, then the
 //! sender sends `2m` padded messages.
 //!
-//! `precompute` moves the column message into an input-independent
-//! preprocessing phase: it makes random OTs (random pads, random choices) in
-//! advance, and every later batch derandomises them as Beaver does. The
-//! receiver sends `d = c ⊕ r` (one bit per OT), the sender `x_0 ⊕ p_d` and
-//! `x_1 ⊕ p_{1⊕d}`; still two rounds.
-//!
 //! The column helpers below are those of the KK13 extension ([`super::kkot`]).
 
 use super::np;
@@ -84,8 +78,6 @@ pub(crate) fn bytes_to_cols(u: &[u8], ncols: usize, m: usize) -> Vec<Vec<u128>> 
 
 pub struct IknpSender {
     ot: Iknp,
-    /// Random-OT pads `(p_0, p_1)` from [`precompute`](Self::precompute).
-    pool: Option<Vec<(Block, Block)>>,
 }
 
 impl IknpSender {
@@ -96,33 +88,12 @@ impl IknpSender {
         let k0: [u128; OT_KEY_BITS] = std::array::from_fn(|i| seeds[i].0);
         let mut ot = Iknp::new(false);
         ot.setup_send(ch, &s, &k0).expect("IKNP setup");
-        IknpSender { ot, pool: None }
-    }
-
-    /// Preprocessing: `m` random OTs for the `send` calls that follow, which
-    /// then only derandomise and must not ask for more.
-    pub fn precompute(&mut self, ch: &mut Channel, m: usize) {
-        assert!(self.pool.is_none(), "OTs already precomputed");
-        let (p0, p1) = self.ot.send_rot(ch, m).expect("IKNP random OT");
-        self.pool = Some(p0.into_iter().zip(p1).map(|(a, b)| (Block(a), Block(b))).collect());
+        IknpSender { ot }
     }
 
     /// Sends one batch of chosen-message OTs. The receiver gets `msgs[j].0` or
     /// `msgs[j].1` according to its j-th choice bit.
     pub fn send(&mut self, ch: &mut Channel, msgs: &[(Block, Block)]) {
-        let m = msgs.len();
-        if let Some(pool) = self.pool.as_mut() {
-            assert!(m <= pool.len(), "OT pool exhausted");
-            let d = ch.recv_bits(m);
-            let mut out = Vec::with_capacity(2 * m);
-            for (((x0, x1), (p0, p1)), dj) in msgs.iter().zip(pool.drain(..m)).zip(d) {
-                let (q0, q1) = if dj { (p1, p0) } else { (p0, p1) };
-                out.push(*x0 ^ q0);
-                out.push(*x1 ^ q1);
-            }
-            ch.send_blocks(&out);
-            return;
-        }
         let m0: Vec<u128> = msgs.iter().map(|x| x.0 .0).collect();
         let m1: Vec<u128> = msgs.iter().map(|x| x.1 .0).collect();
         self.ot.send(ch, &m0, &m1).expect("IKNP send");
@@ -131,9 +102,6 @@ impl IknpSender {
 
 pub struct IknpReceiver {
     ot: Iknp,
-    /// Random choices `r_j` and pads `p_{r_j}` from
-    /// [`precompute`](Self::precompute).
-    pool: Option<(Vec<bool>, Vec<Block>)>,
 }
 
 impl IknpReceiver {
@@ -143,33 +111,12 @@ impl IknpReceiver {
         let k1: [u128; OT_KEY_BITS] = std::array::from_fn(|i| pairs[i].1 .0);
         let mut ot = Iknp::new(false);
         ot.setup_recv(ch, &k0, &k1).expect("IKNP setup");
-        IknpReceiver { ot, pool: None }
-    }
-
-    /// Preprocessing: `m` random OTs for the `recv` calls that follow, which
-    /// then only derandomise and must not ask for more.
-    pub fn precompute<R: RngCore + CryptoRng>(&mut self, ch: &mut Channel, m: usize, rng: &mut R) {
-        assert!(self.pool.is_none(), "OTs already precomputed");
-        let r: Vec<bool> = (0..m).map(|_| rng.gen()).collect();
-        let pads = self.ot.recv_rot(ch, &r).expect("IKNP random OT");
-        self.pool = Some((r, pads.into_iter().map(Block).collect()));
+        IknpReceiver { ot }
     }
 
     /// Receives one batch of OTs with the given choice bits.
     pub fn recv(&mut self, ch: &mut Channel, choices: &[bool]) -> Vec<Block> {
-        let m = choices.len();
-        match self.pool.as_mut() {
-            Some((r, p)) => {
-                assert!(m <= r.len(), "OT pool exhausted");
-                let d: Vec<bool> = choices.iter().zip(r.drain(..m)).map(|(c, r)| c ^ r).collect();
-                ch.send_bits(&d);
-                let pads: Vec<Block> = p.drain(..m).collect();
-                // y_c = x_c ⊕ p_{c ⊕ d} = x_c ⊕ p_r.
-                let y = ch.recv_blocks(2 * m);
-                (0..m).map(|j| y[2 * j + choices[j] as usize] ^ pads[j]).collect()
-            }
-            None => self.ot.recv(ch, choices).expect("IKNP recv").into_iter().map(Block).collect(),
-        }
+        self.ot.recv(ch, choices).expect("IKNP recv").into_iter().map(Block).collect()
     }
 }
 
@@ -180,8 +127,9 @@ mod tests {
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
-    /// Two batches, with or without a pool made beforehand.
-    fn run(pre: bool) {
+    /// Two batches of chosen-message OTs.
+    #[test]
+    fn chosen_ots() {
         let mut rng = ChaCha20Rng::seed_from_u64(5);
         let msgs: Vec<(Block, Block)> = (0..200).map(|_| (Block::random(&mut rng), Block::random(&mut rng))).collect();
         let choices: Vec<bool> = (0..200).map(|_| rng.gen()).collect();
@@ -190,31 +138,19 @@ mod tests {
             move |ch| {
                 let mut r = ChaCha20Rng::seed_from_u64(1);
                 let mut s = IknpSender::setup(ch, &mut r);
-                if pre {
-                    s.precompute(ch, 200);
-                }
                 s.send(ch, &m[..120]);
                 s.send(ch, &m[120..]);
             },
             move |ch| {
                 let mut r = ChaCha20Rng::seed_from_u64(2);
                 let mut rc = IknpReceiver::setup(ch, &mut r);
-                if pre {
-                    rc.precompute(ch, 200, &mut r);
-                }
                 let mut out = rc.recv(ch, &c[..120]);
                 out.extend(rc.recv(ch, &c[120..]));
                 out
             },
         );
         for j in 0..200 {
-            assert_eq!(got[j], if choices[j] { msgs[j].1 } else { msgs[j].0 }, "pre={pre} j={j}");
+            assert_eq!(got[j], if choices[j] { msgs[j].1 } else { msgs[j].0 }, "j={j}");
         }
-    }
-
-    #[test]
-    fn chosen_and_precomputed_ots() {
-        run(false);
-        run(true);
     }
 }

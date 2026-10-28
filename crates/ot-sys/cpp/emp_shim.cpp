@@ -206,16 +206,6 @@ int ots_iknp_recv(void *h, const OtsIo *io, void *ctx, block *out, const uint8_t
 	return guard(p->r, io, ctx, [&] { p->ot.recv(out, (const bool *)b, n); });
 }
 
-// Random OT (hashed COT): sender (m0, m1), receiver m_b for its b.
-int ots_iknp_send_rot(void *h, const OtsIo *io, void *ctx, block *m0, block *m1, int64_t n) {
-	Iknp *p = (Iknp *)h;
-	return guard(p->r, io, ctx, [&] { p->ot.send_rot(m0, m1, n); });
-}
-
-int ots_iknp_recv_rot(void *h, const OtsIo *io, void *ctx, block *out, const uint8_t *b, int64_t n) {
-	Iknp *p = (Iknp *)h;
-	return guard(p->r, io, ctx, [&] { p->ot.recv_rot(out, (const bool *)b, n); });
-}
 
 // ---- Ferret ----
 

@@ -27,11 +27,6 @@ pub trait GcParty {
     /// its own share bits. Follows Obliv-C's `ocFromShared_impl`: one OT per bit.
     fn input_shared(&mut self, ch: &mut Channel, share: &[bool]) -> Vec<Wire>;
 
-    /// Preprocessing: random OTs for the evaluator's next `m` shared input
-    /// bits ([`IknpSender::precompute`], [`IknpReceiver::precompute`]), so
-    /// `input_shared` only derandomises them.
-    fn precompute_ots(&mut self, ch: &mut Channel, m: usize, rng: &mut ChaCha20Rng);
-
     /// AND of each pair. All tables travel garbler → evaluator in one message.
     fn and_many(&mut self, ch: &mut Channel, pairs: &[(Wire, Wire)]) -> Vec<Wire>;
 
@@ -91,10 +86,6 @@ impl GcParty for Garbler {
         pairs.iter().zip(share).map(|((k0, k1), &a)| if a { *k1 } else { *k0 }).collect()
     }
 
-    fn precompute_ots(&mut self, ch: &mut Channel, m: usize, _: &mut ChaCha20Rng) {
-        self.ot.precompute(ch, m);
-    }
-
     fn and_many(&mut self, ch: &mut Channel, pairs: &[(Wire, Wire)]) -> Vec<Wire> {
         let a0: Vec<u128> = pairs.iter().map(|p| p.0 .0).collect();
         let b0: Vec<u128> = pairs.iter().map(|p| p.1 .0).collect();
@@ -135,10 +126,6 @@ impl Evaluator {
 impl GcParty for Evaluator {
     fn input_shared(&mut self, ch: &mut Channel, share: &[bool]) -> Vec<Wire> {
         self.ot.recv(ch, share)
-    }
-
-    fn precompute_ots(&mut self, ch: &mut Channel, m: usize, rng: &mut ChaCha20Rng) {
-        self.ot.precompute(ch, m, rng);
     }
 
     fn and_many(&mut self, ch: &mut Channel, pairs: &[(Wire, Wire)]) -> Vec<Wire> {

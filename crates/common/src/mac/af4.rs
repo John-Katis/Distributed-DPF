@@ -24,7 +24,7 @@
 //!    with the same hash-OT keyed on the bits of x (two σ-bit messages per
 //!    direction), and `C_b = trunc(ι(x_b)Φ_b(y)) ⊕ (cross shares) ⊕
 //!    trunc(Φ_b(z))` must agree: `C_0 ⊕ C_1 = trunc(ι(z ⊕ xy)·Δ)`. A wrong z
-//!    passes only by guessing σ bits of `ι(e)·Δ_peer` ([`CHECK_BITS`] = 64);
+//!    passes only by guessing σ = 64 bits of `ι(e)·Δ_peer`;
 //!    a party that tampers with a hash-OT message changes the result by a
 //!    multiple of the peer's x bits, so the abort leaks bits of x (only x).
 //!
@@ -49,8 +49,6 @@ use sha2::{Digest, Sha256};
 use std::ops::BitXor;
 use std::sync::OnceLock;
 
-/// Bits of every leaky-triple check value (statistical security per check).
-pub const CHECK_BITS: usize = 64;
 /// Statistical security of the bucketing.
 pub const RHO: usize = 40;
 

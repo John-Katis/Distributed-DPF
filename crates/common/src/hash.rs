@@ -62,12 +62,6 @@ impl FixedKeyHash {
     }
 }
 
-/// Hash used to pad IKNP OT-extension messages.
-pub fn ot_hash() -> &'static FixedKeyHash {
-    static H: OnceLock<FixedKeyHash> = OnceLock::new();
-    H.get_or_init(|| FixedKeyHash::new(b"dpf-common/ot-h!"))
-}
-
 /// AES-128 in counter mode, keyed by a seed. It keeps its position across calls,
 /// like Obliv-C's `BCipherRandomGen`, so OT-extension columns never repeat.
 pub struct CtrPrg {

@@ -71,8 +71,6 @@ unsafe extern "C" {
     fn ots_iknp_recv_cot(h: *mut c_void, io: *const OtsIo, ctx: *mut c_void, m: *mut u128, b: *const u8, n: i64) -> c_int;
     fn ots_iknp_send(h: *mut c_void, io: *const OtsIo, ctx: *mut c_void, m0: *const u128, m1: *const u128, n: i64) -> c_int;
     fn ots_iknp_recv(h: *mut c_void, io: *const OtsIo, ctx: *mut c_void, out: *mut u128, b: *const u8, n: i64) -> c_int;
-    fn ots_iknp_send_rot(h: *mut c_void, io: *const OtsIo, ctx: *mut c_void, m0: *mut u128, m1: *mut u128, n: i64) -> c_int;
-    fn ots_iknp_recv_rot(h: *mut c_void, io: *const OtsIo, ctx: *mut c_void, out: *mut u128, b: *const u8, n: i64) -> c_int;
 
     fn ots_ferret_new(sender: c_int, malicious: c_int, p: *const i64) -> *mut c_void;
     fn ots_ferret_free(h: *mut c_void);
@@ -348,20 +346,6 @@ impl Iknp {
         Ok(out)
     }
 
-    /// Random OT as sender: `(m0, m1)` pairs.
-    pub fn send_rot<T: Transport>(&mut self, t: &mut T, n: usize) -> Result<(Vec<u128>, Vec<u128>), OtError> {
-        let (mut m0, mut m1) = (vec![0u128; n], vec![0u128; n]);
-        self.call(t, |h, io, ctx| unsafe { ots_iknp_send_rot(h, io, ctx, m0.as_mut_ptr(), m1.as_mut_ptr(), n as i64) })?;
-        Ok((m0, m1))
-    }
-
-    /// Random OT as receiver on choices `b`.
-    pub fn recv_rot<T: Transport>(&mut self, t: &mut T, b: &[bool]) -> Result<Vec<u128>, OtError> {
-        let bb = bytes(b);
-        let mut out = vec![0u128; b.len()];
-        self.call(t, |h, io, ctx| unsafe { ots_iknp_recv_rot(h, io, ctx, out.as_mut_ptr(), bb.as_ptr(), b.len() as i64) })?;
-        Ok(out)
-    }
 }
 
 /// emp's `PrimalLPNParameter`: `[n, t, k, log_bin, n_pre, t_pre, k_pre, log_bin_pre]`.
