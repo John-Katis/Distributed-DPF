@@ -9,6 +9,8 @@
 #   carries on (mpcot_reg.h, consistency_check_f2k); it is patched to call
 #   error(), i.e. to abort, as the protocol requires.
 # * libOTe 5d419c34, built with only the Masny–Rindal base OT (static libs).
+# * SCI from EzPC f24bf3e (sparse checkout of SCI/, compiled by build.rs):
+#   KK13 (SplitKKOT), CrypTFlow2's bit triples and SiRNN's multiplexer.
 #
 # Needs git, cmake ≥ 3.20, g++ ≥ 11, python3 and OpenSSL headers.
 set -e
@@ -24,6 +26,11 @@ clone() { # dir url rev
 clone emp-tool https://github.com/emp-toolkit/emp-tool.git 0.3.0
 clone emp-ot https://github.com/emp-toolkit/emp-ot.git 0.3.0
 clone libOTe https://github.com/osu-crypto/libOTe.git 5d419c34a3847515fac7572e7275a0aa20cf1159
+if [ ! -d "$T/EzPC" ]; then
+	git clone -q --filter=blob:none --sparse https://github.com/mpc-msri/EzPC.git "$T/EzPC"
+	git -C "$T/EzPC" sparse-checkout set SCI/src
+fi
+git -C "$T/EzPC" checkout -q f24bf3e022dde3493cf0ffe3ebd92dd73936b734
 
 U=$T/emp-tool/emp-tool/utils/utils.hpp
 if grep -q '^	exit(1);$' "$U"; then

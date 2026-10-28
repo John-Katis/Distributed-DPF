@@ -1,5 +1,6 @@
 // C ABI over emp-ot 0.3.0 (header-only): Naor–Pinkas base OT, IKNP COT/OT
-// (semi-honest, or malicious with emp's KOS-style check) and Ferret COT.
+// (semi-honest, or malicious with emp's KOS-style check), Ferret COT, and
+// emp-tool's half-gates garbling of an AND gate.
 //
 // Every call takes the I/O callbacks and their context; emp's channel is a
 // RustIO whose bytes go through them. Exceptions (emp's error(), patched by
@@ -285,6 +286,37 @@ void ots_ferret_state(void *hp, int64_t *left, int64_t *limit) {
 	Ferret *h = (Ferret *)hp;
 	*left = h->f->ot_limit - h->f->ot_used;
 	*limit = h->f->ot_limit;
+}
+
+// ---- Half-gates garbling (ZRE15) with emp's MITCCRH, as emp-sh2pc's
+// HalfGateGen / HalfGateEva compute an AND gate. Only the gate arithmetic:
+// the tables travel through the caller's channel. ----
+
+struct Gc {
+	MITCCRH<8> h;
+};
+
+// Both parties start from the same public key s (the garbler's).
+void *ots_gc_new(const block *s) {
+	Gc *g = new Gc;
+	g->h.setS(*s);
+	return g;
+}
+
+void ots_gc_free(void *g) { delete (Gc *)g; }
+
+// Garbler: for 0-labels (a0, b0) of n gates, the output 0-labels and two
+// table rows per gate. delta must have lsb 1 (point-and-permute).
+void ots_gc_garble(void *g, const block *delta, const block *a0, const block *b0, block *out0, block *tables, int64_t n) {
+	Gc *h = (Gc *)g;
+	for (int64_t i = 0; i < n; ++i)
+		out0[i] = halfgates_garble(a0[i], a0[i] ^ *delta, b0[i], b0[i] ^ *delta, *delta, tables + 2 * i, &h->h);
+}
+
+// Evaluator: the active output labels from the active input labels.
+void ots_gc_eval(void *g, const block *a, const block *b, const block *tables, block *out, int64_t n) {
+	Gc *h = (Gc *)g;
+	for (int64_t i = 0; i < n; ++i) out[i] = halfgates_eval(a[i], b[i], tables + 2 * i, &h->h);
 }
 
 } // extern "C"
