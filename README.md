@@ -95,7 +95,7 @@ then the workspace. The first run needs network (libOTe's cmake also clones
 four small dependencies of its own).
 
 ```
-git clone --recursive https://github.com/John-Katis/Distributed-DPF.git
+git clone https://github.com/John-Katis/Distributed-DPF.git   # not --recursive: build.sh fetches only what is needed
 cd Distributed-DPF
 ./build.sh            # or ./build.sh --test to also run the test suite
 ```

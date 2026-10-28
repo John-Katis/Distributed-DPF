@@ -34,7 +34,13 @@ v=$(cmake --version | sed -n 's/^cmake version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p'
 printf '#include <openssl/ssl.h>\n#include <omp.h>\nint main(){}\n' |
 	g++ -x c++ -fopenmp - -o /dev/null -lssl -lcrypto 2>/dev/null || die "OpenSSL headers (libssl-dev) or OpenMP (libgomp) missing"
 
-git submodule update --init --recursive
+# Not --recursive across the board: EzPC's own submodules (SEAL, eigen,
+# cutlass, datasets; several hundred MB) are not needed, and of EzPC only
+# SCI/src is compiled.
+git submodule update --init third_party/emp-tool third_party/emp-ot
+git submodule update --init --recursive third_party/libOTe
+git submodule update --init --depth 1 third_party/EzPC
+git -C third_party/EzPC sparse-checkout set SCI/src
 
 patch() { # submodule patch-file
 	if ! git -C "third_party/$1" apply --reverse --check "$ROOT/crates/ot-sys/patches/$2" 2>/dev/null; then
