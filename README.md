@@ -100,6 +100,21 @@ cd Distributed-DPF
 ./build.sh            # or ./build.sh --test to also run the test suite
 ```
 
+- **Patches to emp** (`crates/ot-sys/patches/`, applied by `build.sh`):
+  emp-tool's `error()` throws instead of calling `exit(1)`, so a failed check
+  becomes an `Abort` the Rust side can report; emp-ot's malicious Ferret calls
+  `error()` when the SPCOT consistency check fails, where upstream only prints
+  "SPCOT consistency check fails" and carries on. libOTe and SCI are unpatched
+  (SCI's socket I/O is replaced by headers in `crates/ot-sys/cpp/sci_override/`).
+- **Expected compiler errors:** while building libOTe, its own test files
+  (`libOTe_Tests`, e.g. `'macoro' does not name a type`) fail to compile with
+  g++ 11. Only the library is needed; `build.sh` builds that target separately
+  and checks that the static libraries exist.
+- **Tested on** Ubuntu 22.04 (g++ 11.4, cmake 3.22, OpenSSL 3.0.2, Rust 1.87
+  from `rust-toolchain.toml`), from a fresh clone with an empty cargo cache.
+- `experimental_code/ot-libs` has its own `fetch.sh` and `deps/` (other
+  library versions, e.g. libOTe with KKRT); `build.sh` does not cover it.
+
 ```
 cargo test --workspace --release                 # everything
 cargo test -p floram-cprg --release              # one protocol
