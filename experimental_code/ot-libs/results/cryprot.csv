@@ -1,0 +1,9 @@
+CryProt,base-co,-,128,all,4203,-,-,0.009145,ok
+CryProt,rot,sh,8388608,setup,4205,-,-,0.009713,ok
+CryProt,rot,sh,8388608,extend,134217744,-,-,0.165418,ok
+CryProt,cot-chosen-delta,sh,8388608,extend,134217744,-,-,0.272715,ok
+CryProt,rot,mal,8388608,setup,4205,-,-,0.008673,ok
+CryProt,rot,mal,8388608,extend,134221897,-,-,0.286229,ok
+CryProt,cot-chosen-delta,mal,8388608,extend,134221897,-,-,0.391846,ok
+CryProt,silent,sh,20000000,all,226953,-,-,6.642293,ok
+CryProt,silent,mal,20000000,all,235290,-,-,6.860962,ok

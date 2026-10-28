@@ -1,0 +1,16 @@
+emp-ot,base-np,-,128,all,21829,3,4,0.016670,ok
+emp-ot,base-co,-,128,all,12997,3,3,0.007593,ok
+emp-ot,cot,sh,8388608,setup,12997,3,3,0.007829,ok
+emp-ot,cot,sh,8388608,extend,134217728,1,1,0.183739,ok
+emp-ot,cot,mal,8388608,setup,12997,3,3,0.007214,ok
+emp-ot,cot,mal,8388608,extend,134221888,1,2,0.238899,ok
+emp-ot,ot,sh,8388608,setup,12997,3,3,0.008284,ok
+emp-ot,ot,sh,8388608,extend,402653200,2,3,0.484600,ok
+emp-ot,ot,mal,8388608,setup,12997,3,3,0.008234,ok
+emp-ot,ot,mal,8388608,extend,402657360,2,4,0.534797,ok
+emp-ot,ferret,sh,20000000,setup,951543,5,924,0.022684,ok
+emp-ot,ferret,sh,20000000,first N,1105952,1,2562,0.650059,ok
+emp-ot,ferret,sh,20000000,next N,1105952,1,2562,0.640450,ok
+emp-ot,ferret,mal,20000000,setup,960023,7,928,0.023011,ok
+emp-ot,ferret,mal,20000000,first N,1106272,5,2566,0.747613,ok
+emp-ot,ferret,mal,20000000,next N,1106272,5,2566,0.702524,ok

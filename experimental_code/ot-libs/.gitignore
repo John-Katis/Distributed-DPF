@@ -1,0 +1,4 @@
+/deps/
+/build/
+/rust/target/
+/rust-cryprot/target/

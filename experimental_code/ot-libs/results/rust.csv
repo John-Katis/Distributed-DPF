@@ -1,0 +1,37 @@
+ours,base-np,-,128,all,4290,2,2,0.052953,ok
+ours,base-mr,-,128,all,16896,2,2,0.096580,ok
+ours,cot,sh,8388608,setup,4290,2,2,0.040164,ok
+ours,cot,sh,8388608,extend,134217728,1,1,2.721914,ok
+ours,cot,mal,8388608,setup,33792,3,4,0.185473,ok
+ours,cot,mal,8388608,extend,134223296,4,8,2.920079,ok
+ours,ot,sh,8388608,setup,4290,2,2,0.038597,ok
+ours,ot,sh,8388608,extend,402653184,2,2,3.084938,ok
+ours,ferret,sh,20000000,setup,945181,6,9,0.096742,ok
+ours,ferret,sh,20000000,first N,1110112,4,6,1.161921,ok
+ours,ferret,sh,20000000,next N,1110112,4,6,1.109374,ok
+ours,ferret,mal,20000000,setup,978074,12,18,0.218706,ok
+ours,ferret,mal,20000000,first N,1110242,9,12,1.727437,ok
+ours,ferret,mal,20000000,next N,1110242,9,12,1.608092,ok
+ours,1ofN-kk13-N8-l2,sh,1048576,setup,8514,2,2,0.066413,ok
+ours,1ofN-kk13-N8-l2,sh,1048576,extend,35651584,2,2,2.365068,ok
+ours,1ofN-kk13-N8-l8,sh,1048576,setup,8514,2,2,0.076585,ok
+ours,1ofN-kk13-N8-l8,sh,1048576,extend,41943040,2,2,2.489392,ok
+mpz,base-co,-,128,all,8240,3,3,0.018299,ok
+mpz,cot,mal,8388608,setup,8240,3,3,0.020265,ok
+mpz,cot,mal,8388608,extend,134254648,3,2051,0.801406,ok
+mpz,ferret-b13,mal,20000000,setup,477408,8,13,0.185396,ok
+mpz,ferret-b13,mal,20000000,first N,2331200,16,16,2.515896,ok
+mpz,ferret-b13,mal,20000000,next N,1110388,8,8,1.997232,ok
+mpz,ferret-default,mal,20000000,setup,477408,8,13,0.180191,ok
+mpz,ferret-default,mal,20000000,first N,2088218,12,12,2.134242,ok
+mpz,ferret-default,mal,20000000,next N,1606308,8,8,4.425827,ok
+swanky,base-np,-,128,all,16384,3,3,0.013755,ok
+swanky,base-co,-,128,all,8224,3,3,0.006774,ok
+swanky,rot,sh,8388608,setup,8224,3,3,0.010149,ok
+swanky,rot,sh,8388608,extend,134217728,1,1,0.635211,ok
+swanky,rot,mal,8388608,setup,8224,3,3,0.008478,ok
+swanky,rot,mal,8388608,extend,134220512,5,5,1.309220,ok
+swanky,cot-chosen-delta,sh,8388608,setup,8224,3,3,0.009051,ok
+swanky,cot-chosen-delta,sh,8388608,extend,268435456,2,2,0.844021,ok
+swanky,cot-chosen-delta,mal,8388608,setup,8224,3,3,0.010424,ok
+swanky,cot-chosen-delta,mal,8388608,extend,268438240,6,6,1.561376,ok
