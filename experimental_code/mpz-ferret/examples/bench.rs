@@ -119,7 +119,8 @@ impl Side {
 fn party(ch: &mut Channel, mode: Mode, n: usize) -> (Block, [Phase; 2], [Out; 2]) {
     let me = ch.party();
     let mut rng = ChaCha20Rng::seed_from_u64(10 + me as u64);
-    let delta = Block::random(&mut rng);
+    // lsb 1, so our Ferret receiver knows lsb(Δ) without an exchange.
+    let delta = Block::random(&mut rng).with_lsb(true);
     let mut cot = CotPair::setup(ch, &mut rng, delta, mode.malicious()).unwrap();
     ch.sync();
 
@@ -132,7 +133,7 @@ fn party(ch: &mut Channel, mode: Mode, n: usize) -> (Block, [Phase; 2], [Out; 2]
             Side::OursS(FerretSender::bootstrap(ch, FerretConfig::B13, delta, &k, mode.malicious(), &mut rng).unwrap())
         }
         (Mode::OursMal | Mode::OursSh, RandomCots::Receiver(b, m)) => {
-            Side::OursR(FerretReceiver::bootstrap(ch, FerretConfig::B13, &b, &m, mode.malicious(), &mut rng).unwrap())
+            Side::OursR(FerretReceiver::bootstrap(ch, FerretConfig::B13, &b, &m, true, mode.malicious(), &mut rng).unwrap())
         }
         (_, base) => {
             let p = if mode == Mode::MpzB13 { Params::Ours(b13()) } else { Params::Default };

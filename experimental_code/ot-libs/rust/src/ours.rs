@@ -71,7 +71,7 @@ pub fn cot(mal: bool, n: usize) {
                 let mut s = CotSender::setup(ch, &mut rng, delta, BaseOt::NaorPinkas).unwrap();
                 m.stop_ch(ch);
                 m.start_ch(ch, 1);
-                let k = s.recv_extend(ch, n);
+                let k = s.recv_extend(ch, n).unwrap();
                 m.stop_ch(ch);
                 k
             };
@@ -93,7 +93,7 @@ pub fn cot(mal: bool, n: usize) {
                 let mut r = CotReceiver::setup(ch, &mut rng, BaseOt::NaorPinkas).unwrap();
                 m.stop_ch(ch);
                 m.start_ch(ch, 1);
-                let mm = r.send_extend(ch, &c2);
+                let mm = r.send_extend(ch, &c2).unwrap();
                 m.stop_ch(ch);
                 mm
             };
@@ -146,7 +146,8 @@ pub fn ferret(mal: bool, n: usize) {
     let ((m0, delta, k), (m1, rm)) = run_two_party(
         move |ch| {
             let mut rng = ChaCha20Rng::seed_from_u64(9);
-            let delta = Block::random(&mut rng);
+            // lsb 1, so the Ferret receiver knows lsb(Δ) without an exchange.
+            let delta = Block::random(&mut rng).with_lsb(true);
             let mut m = Meas::default();
             m.start_ch(ch, first_setup);
             let mut cot = CotPair::setup(ch, &mut rng, delta, mal).unwrap();
@@ -168,7 +169,7 @@ pub fn ferret(mal: bool, n: usize) {
             m.start_ch(ch, first_setup);
             let mut cot = { let d = Block::random(&mut rng); CotPair::setup(ch, &mut rng, d, mal) }.unwrap();
             let RandomCots::Receiver(b, mm) = cot.random_cots(ch, 0, cfg.base_cots(mal), &mut rng).unwrap() else { unreachable!() };
-            let mut r = FerretReceiver::bootstrap(ch, cfg, &b, &mm, mal, &mut rng).unwrap();
+            let mut r = FerretReceiver::bootstrap(ch, cfg, &b, &mm, true, mal, &mut rng).unwrap();
             m.stop_ch(ch);
             let mut out = vec![];
             for _ in 0..2 {

@@ -74,3 +74,7 @@ All outputs were checked.
 **Fault injection.** Malicious tests can tamper with the serialized messages, as `tampered_extend_aborts` does. That replaces `FerretSender::fault_next`.
 
 **Toolchain.** Putting mpz in `crates/common` means moving the whole workspace to Rust 1.95 and keeping RNG adapters at the boundary (rand 0.8 vs 0.10).
+
+## Note (2026-10-28, later)
+
+The `ours` rows above were measured on our own OT implementation, before `dpf_common::ot` was moved onto emp-ot and libOTe (commit after `fca36ae`). Rerunning now measures the library-backed code. The harnesses set lsb(Δ) = 1 for the Ferret sender, so the receiver needs no lsb exchange.

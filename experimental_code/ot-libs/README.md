@@ -157,3 +157,7 @@ The steady state is two main iterations.
 3. **Ferret rounds.** emp-ot shows that the receiver's per-level message isn't needed: the punctured index can be the receiver's random base-COT choices. That would remove 2 rounds per iteration in semi-honest mode, and 4 of 9 rounds per 20M in malicious mode.
 4. **Ferret speed.** emp-ot is 1.7–2.3× faster. mpz is slower than ours.
 5. **Library-only stack.** Only emp-ot covers both Ferret modes and IKNP/KOS. It has no Masny–Rindal base OT (it uses Chou–Orlandi) and no KK13, and it's C++.
+
+## Note (2026-10-28, later)
+
+The `ours` rows above were measured on our own OT implementation, before `dpf_common::ot` was moved onto emp-ot and libOTe (commit after `fca36ae`). Rerunning now measures the library-backed code. The harnesses set lsb(Δ) = 1 for the Ferret sender, so the receiver needs no lsb exchange.
