@@ -3,7 +3,7 @@
 # FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal} and the leakage-free mal-auth) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen) or results-eval/ (eval, full, all).
 #
-#   [OUT_LIST=a,b,..] [SKIP_OURS=1] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
+#   [OUT_LIST=a,b,..] [SKIP_OURS=1] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--max-in-bits-path n] [--append] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
 #
 # SKIP_OURS=1 runs only the other papers' protocols and leaves the ht-aes
 # CSVs as they are.
@@ -11,7 +11,11 @@
 # mode is gen|eval|full|all (default gen). The sweep covers in-bits 20..=36
 # for gen and 8..=32 otherwise (--min-in-bits, --max-in-bits) and out-bits
 # OUT_LIST (default 64,128), so each output width has all protocols side by
-# side. --reps-from n R (gen default: 33 2) runs each point from in-bits n on
+# side. In gen mode FssNN and ours, whose Gen follows only the path to alpha,
+# go on to in-bits 42 (--max-in-bits-path); the paper estimates the other
+# protocols above 36 instead of running them. --append adds the rows to the
+# existing CSVs instead of starting them afresh, e.g. --append --min-in-bits 37
+# runs only FssNN and ours on 37..=42. --reps-from n R (gen default: 33 2) runs each point from in-bits n on
 # as R separate 1-rep processes, one CSV row each, so the rows can be
 # averaged (the bench reports the median, which for 2 reps is the slower
 # one); below n a point runs once with --reps (default 5). Every (in-bits, out-bits)
@@ -38,13 +42,15 @@ cd "$(dirname "$0")/.."
 
 MODE=gen
 OUT_LIST=${OUT_LIST:-64,128}
-MIN_IN= MAX_IN= REPS_FROM= SPLIT=
+MIN_IN= MAX_IN= MAX_PATH= REPS_FROM= SPLIT= APPEND=0
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     gen|eval|full|all) MODE="$1"; shift ;;
     --min-in-bits) MIN_IN="$2"; shift 2 ;;
     --max-in-bits) MAX_IN="$2"; shift 2 ;;
+    --max-in-bits-path) MAX_PATH="$2"; shift 2 ;;
+    --append) APPEND=1; shift ;;
     --reps-from) REPS_FROM="$2" SPLIT="$3"; shift 3 ;;
     --reps|--points|--batch-log) ARGS+=("$1" "$2"); shift 2 ;;
     *) echo "unknown argument $1" >&2; exit 1 ;;
@@ -52,9 +58,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $MODE == gen ]]; then
-  : "${MIN_IN:=20}" "${MAX_IN:=36}" "${REPS_FROM:=33}" "${SPLIT:=2}"
+  : "${MIN_IN:=20}" "${MAX_IN:=36}" "${MAX_PATH:=42}" "${REPS_FROM:=33}" "${SPLIT:=2}"
 else
-  : "${MIN_IN:=8}" "${MAX_IN:=32}" "${REPS_FROM:=64}" "${SPLIT:=1}"
+  : "${MIN_IN:=8}" "${MAX_IN:=32}" "${MAX_PATH:=$MAX_IN}" "${REPS_FROM:=64}" "${SPLIT:=1}"
 fi
 
 if [[ $MODE == gen ]]; then
@@ -77,13 +83,15 @@ trap 'exit 130' INT
 
 # run NAME BIN ARGS..: sweeps one protocol into $OUT/NAME.csv, one process
 # per point (SPLIT 1-rep processes from REPS_FROM on); the header comes from
-# the first process only.
+# the first process only, and with --append from none. FssNN and ours sweep
+# up to MAX_PATH, the others up to MAX_IN.
 run() {
-  local name=$1 csv="$OUT/$1.csv" n m i k reps first=1 code
+  local name=$1 csv="$OUT/$1.csv" n m i k reps first=1 code max=$MAX_IN
   shift
+  case $name in fssnn-*|ht-aes-*) max=$MAX_PATH ;; esac
   echo "$name"
-  : > "$csv"
-  for ((n = MIN_IN; n <= MAX_IN; n++)); do
+  if ((APPEND)); then first=0; else : > "$csv"; fi
+  for ((n = MIN_IN; n <= max; n++)); do
     for m in ${OUT_LIST//,/ }; do
       k=1 reps=()
       ((n >= REPS_FROM)) && k=$SPLIT reps=(--reps 1)
