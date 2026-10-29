@@ -3,14 +3,18 @@
 # FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal} and the leakage-free mal-auth) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen) or results-eval/ (eval, full, all).
 #
-#   [OUT_LIST=a,b,..] [SKIP_OURS=1] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--reps R] [--points P] [--batch-log b] [mode]
+#   [OUT_LIST=a,b,..] [SKIP_OURS=1] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
 #
 # SKIP_OURS=1 runs only the other papers' protocols and leaves the ht-aes
 # CSVs as they are.
 #
 # mode is gen|eval|full|all (default gen). The sweep covers in-bits 20..=36
-# (--min-in-bits, --max-in-bits) and out-bits OUT_LIST (default 64,128), so
-# each output width has all protocols side by side. Every (in-bits, out-bits)
+# for gen and 8..=32 otherwise (--min-in-bits, --max-in-bits) and out-bits
+# OUT_LIST (default 64,128), so each output width has all protocols side by
+# side. --reps-from n R (gen default: 33 2) runs each point from in-bits n on
+# as R separate 1-rep processes, one CSV row each, so the rows can be
+# averaged (the bench reports the median, which for 2 reps is the slower
+# one); below n a point runs once with --reps (default 5). Every (in-bits, out-bits)
 # point is its own process, so a point that crashes (out of memory, panic)
 # loses only itself: it is logged as a `# failed:` line in the CSV and the
 # sweep moves on to the next protocol, since the larger points would not fit
@@ -34,17 +38,24 @@ cd "$(dirname "$0")/.."
 
 MODE=gen
 OUT_LIST=${OUT_LIST:-64,128}
-MIN_IN=20 MAX_IN=36
+MIN_IN= MAX_IN= REPS_FROM= SPLIT=
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     gen|eval|full|all) MODE="$1"; shift ;;
     --min-in-bits) MIN_IN="$2"; shift 2 ;;
     --max-in-bits) MAX_IN="$2"; shift 2 ;;
+    --reps-from) REPS_FROM="$2" SPLIT="$3"; shift 3 ;;
     --reps|--points|--batch-log) ARGS+=("$1" "$2"); shift 2 ;;
     *) echo "unknown argument $1" >&2; exit 1 ;;
   esac
 done
+
+if [[ $MODE == gen ]]; then
+  : "${MIN_IN:=20}" "${MAX_IN:=36}" "${REPS_FROM:=33}" "${SPLIT:=2}"
+else
+  : "${MIN_IN:=8}" "${MAX_IN:=32}" "${REPS_FROM:=64}" "${SPLIT:=1}"
+fi
 
 if [[ $MODE == gen ]]; then
   OUT=results-gen
@@ -65,24 +76,29 @@ FAILED=()
 trap 'exit 130' INT
 
 # run NAME BIN ARGS..: sweeps one protocol into $OUT/NAME.csv, one process
-# per point; the header comes from the first point only.
+# per point (SPLIT 1-rep processes from REPS_FROM on); the header comes from
+# the first process only.
 run() {
-  local name=$1 csv="$OUT/$1.csv" n m first=1 code
+  local name=$1 csv="$OUT/$1.csv" n m i k reps first=1 code
   shift
   echo "$name"
   : > "$csv"
   for ((n = MIN_IN; n <= MAX_IN; n++)); do
     for m in ${OUT_LIST//,/ }; do
-      "$@" --in-bits "$n" --out-bits "$m" \
-        | if ((first)); then cat; else grep -v -e '^# gen: ' -e '^# eval: ' -e '^# full: ' -e '^# net: '; fi \
-        | tee -a "$csv"
-      code=${PIPESTATUS[0]}
-      first=0
-      if ((code != 0)); then
-        echo "# failed: in_bits=$n out_bits=$m exit=$code" | tee -a "$csv" >&2
-        FAILED+=("$name at in_bits=$n out_bits=$m (exit $code)")
-        return
-      fi
+      k=1 reps=()
+      ((n >= REPS_FROM)) && k=$SPLIT reps=(--reps 1)
+      for ((i = 0; i < k; i++)); do
+        "$@" --in-bits "$n" --out-bits "$m" "${reps[@]}" \
+          | if ((first)); then cat; else grep -v -e '^# gen: ' -e '^# eval: ' -e '^# full: ' -e '^# net: '; fi \
+          | tee -a "$csv"
+        code=${PIPESTATUS[0]}
+        first=0
+        if ((code != 0)); then
+          echo "# failed: in_bits=$n out_bits=$m exit=$code" | tee -a "$csv" >&2
+          FAILED+=("$name at in_bits=$n out_bits=$m (exit $code)")
+          return
+        fi
+      done
     done
   done
 }
