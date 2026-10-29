@@ -1,13 +1,14 @@
 //! Our distributed half-tree DPF (the paper's `htDPF.Gen`, §"Fully
 //! Distributed DPF"), with `F_PRF` instantiated by fixed-key AES–MMO in 2PC
-//! over the F4 tower ([`dpf_common::aes_tower`]).
+//! on the OT tower ([`dpf_common::aes_tower::OtTower`]): every AND of the
+//! S-boxes from Ferret COTs.
 //!
 //! Unlike the Floram line, neither party ever expands a tree in Gen: both keep
 //! only XOR shares of the on-path state `st_{ℓ,0}` (and `st_{ℓ,1} = st_{ℓ,0} ⊕
 //! Δ`), so Gen is `O(n)` in local work and communication. Per level ℓ:
 //!
 //! * A: `⟨L_b⟩ = F(⟨st_{ℓ−1,b}⟩)` for `b ∈ {0, 1}`, two AES–MMO calls in 2PC
-//!   (1,920 F4 products and 40 rounds each, run in parallel);
+//!   (5,760 ANDs, 2,880 COTs and 40 rounds each, run in parallel);
 //! * B: `CW_ℓ = L_0 ⊕ L_1 ⊕ Δ ⊕ α_ℓ·Δ` is opened (`⟨α_ℓ·Δ⟩` from one COT per
 //!   direction);
 //! * C: `st_{ℓ,0} = L_0 ⊕ α_ℓ·st_{ℓ−1,0} ⊕ t_{ℓ−1,0}·CW_ℓ`, one bit-times-block
@@ -19,9 +20,8 @@
 //! half-tree walk with `L = F(st)`, `R = st ⊕ L`, `st' = child ⊕ t·CW`. The
 //! payload is read at the leaf through a second hash `F^pay(s) = H'(s ∥ 0)`.
 //!
-//! * [`semi_honest`]: payload in `G = F_p` ([`field`]), F4 triples from
-//!   FOLEAGE ([`dpf_common::foleage`]), the paper's leaf ([`leaf`]: B2A by
-//!   daBits, the sign by a daBit and one Beaver triple).
+//! * [`semi_honest`]: payload in `G = F_p` ([`field`]), the paper's leaf
+//!   ([`leaf`]: B2A by daBits, the sign by a daBit and one Beaver triple).
 //! * [`malicious`]: the semi-honest Gen on the same preprocessing, plus the
 //!   paper's payload-MAC word `W^MAC_CW` under a persistent key δ and
 //!   Π_Verify on the outputs; payload in `{0,1}^ℓ ⊂ GF(2^128)`.
@@ -39,7 +39,7 @@ pub mod malicious_arith;
 pub mod malicious_auth;
 pub mod semi_honest;
 
-use dpf_common::aes_tower::{Mmo, PRODUCTS_PER_CALL};
+use dpf_common::aes_tower::{Mmo, ANDS_PER_CALL};
 use dpf_common::block::Block;
 use std::sync::OnceLock;
 
@@ -97,7 +97,7 @@ pub fn sh_calls(n: usize) -> usize {
     2 * n + 2
 }
 
-/// F4 products in one semi-honest Gen of depth n.
-pub fn sh_products(n: usize) -> usize {
-    sh_calls(n) * PRODUCTS_PER_CALL
+/// ANDs in one semi-honest Gen of depth n.
+pub fn sh_ands(n: usize) -> usize {
+    sh_calls(n) * ANDS_PER_CALL
 }

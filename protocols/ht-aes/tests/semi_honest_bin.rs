@@ -2,7 +2,6 @@
 //! function and the dealer.
 
 use dpf_common::block::Block;
-use dpf_common::foleage::Params;
 use dpf_common::net::run_two_party;
 use ht_aes::malicious::low;
 use ht_aes::semi_honest::bin::{deal, gen, gen_reference, BinKey};
@@ -37,10 +36,9 @@ fn gen_matches_point_function_and_dealer() {
         let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
         let b0 = low(Block::random(&mut rng), bits);
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-        let p = Params::new(10);
         let (o0, o1) = run_two_party(
-            move |c| gen(c, n, bits, a0, b0, seeds[0], None, p),
-            move |c| gen(c, n, bits, alpha ^ a0, beta ^ b0, seeds[1], None, p),
+            move |c| gen(c, n, bits, a0, b0, seeds[0], None),
+            move |c| gen(c, n, bits, alpha ^ a0, beta ^ b0, seeds[1], None),
         );
         let depth = o0.key.depth();
         assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), 41 * depth + 42, "case {i}");

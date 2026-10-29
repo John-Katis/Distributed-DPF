@@ -1,7 +1,7 @@
 //! Malicious generation with abort on the semi-honest preprocessing.
 //!
 //! Gen is the semi-honest one ([`crate::semi_honest`]), with the same
-//! correlations (FOLEAGE F4 triples, Ferret COTs, string triples), extended as
+//! correlations (the OT tower's Ferret COTs, string triples), extended as
 //! in the paper's "Authenticated generation":
 //!
 //! 1. A persistent payload-MAC key `δ = δ_0 ⊕ δ_1 ∈ GF(2^128)`, sampled once
@@ -24,9 +24,8 @@
 use super::key::{low, MalKey};
 use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup, Walk};
 use crate::{leaf_seed, mac_hash, pay_hash};
-use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128, PRODUCTS_PER_CALL};
+use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128};
 use dpf_common::block::{depth_for, Block};
-use dpf_common::foleage::Params;
 use dpf_common::gf128;
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::ot::FerretConfig;
@@ -34,14 +33,9 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
 
-/// F4 products of one malicious Gen: two MMO calls per level, four at the leaf.
-pub fn mal_products(n: usize) -> usize {
-    (2 * n + 4) * PRODUCTS_PER_CALL
-}
-
-/// The FOLEAGE instance a malicious Gen of depth n needs.
-pub fn mal_foleage_for(n: usize) -> Params {
-    Params::for_oles(2 * mal_products(n))
+/// AES–MMO calls of one malicious Gen: two per level, four at the leaf.
+pub fn mal_calls(n: usize) -> usize {
+    2 * n + 4
 }
 
 /// Deliberate deviation for the abort tests: XOR `err` into this party's
@@ -61,19 +55,18 @@ pub struct MalSession {
 }
 
 impl MalSession {
-    /// The semi-honest setup (base OTs, Ferret, FOLEAGE seed generation) and δ_b.
-    pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> Self {
-        let mut s = setup(ch, seed, ferret, foleage);
+    /// The semi-honest setup (base OTs, Ferret) and δ_b.
+    pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Self {
+        let mut s = setup(ch, seed, ferret);
         let delta_mac = Block::random(&mut s.rng);
         MalSession { s, delta_mac }
     }
 
-    /// FOLEAGE expansion into [`mal_products`] triples, `n + ℓ` string
+    /// The OT tower's COTs for [`mal_calls`] AES–MMO calls, `n + ℓ` string
     /// triples (branch selection, δ·β) and n COTs per direction.
     pub fn precompute(&mut self, ch: &mut Channel, n: usize, bits: usize) -> Pre {
-        assert!(2 * (self.s.fused + mal_products(n)) <= self.s.fseed.params.oles(), "FOLEAGE instance too small for depth {n}");
         let s = &mut self.s;
-        precompute_counts(ch, &mut s.cot, &s.fseed, &mut s.fused, mal_products(n), n + bits, n, &mut s.rng)
+        precompute_counts(ch, &mut s.cot, mal_calls(n), n + bits, n, &mut s.rng)
     }
 
     /// One generation: XOR shares of α and of β ∈ {0,1}^ℓ.
@@ -124,8 +117,7 @@ impl MalSession {
         assert_eq!(theirs.len(), 32, "malformed payload words");
         let w_cw = w_share ^ Block::from_bytes(&theirs[..16]);
         let wm_cw = wm_share ^ Block::from_bytes(&theirs[16..]);
-        let products = be.products;
-        (MalKey { party: b, n_size, bits, root, cws, w_cw: low(w_cw, bits), wm_cw }, products)
+        (MalKey { party: b, n_size, bits, root, cws, w_cw: low(w_cw, bits), wm_cw }, be.ands)
     }
 }
 
@@ -134,27 +126,24 @@ pub struct MalRun {
     pub key: MalKey,
     /// This party's share of the payload-MAC key δ.
     pub delta_share: Block,
-    /// Base OTs, Ferret bootstrap and the FOLEAGE seed generation.
+    /// Base OTs and the Ferret bootstrap.
     pub setup_stats: CommStats,
     pub setup_time: Duration,
     pub pre_stats: CommStats,
     pub pre_time: Duration,
     pub gen_stats: CommStats,
     pub gen_time: Duration,
-    pub products: usize,
-    /// COTs consumed after setup (α-bits, string triples).
+    /// ANDs of the AES calls.
+    pub ands: usize,
+    /// COTs consumed after setup (the OT tower's, α-bits, string triples).
     pub cots: usize,
-    pub foleage: Params,
-    pub seedgen_stats: CommStats,
-    pub seedgen_time: Duration,
 }
 
-/// Setup, preprocessing and generation for one party. `foleage`: at least
-/// [`mal_foleage_for`]`(n)`.
+/// Setup, preprocessing and generation for one party.
 #[allow(clippy::too_many_arguments)]
-pub fn run_mal(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params, fault: Option<Fault>) -> MalRun {
+pub fn run_mal(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>, fault: Option<Fault>) -> MalRun {
     assert!((1..=128).contains(&bits));
-    let mut s = MalSession::setup(ch, seed, ferret, foleage);
+    let mut s = MalSession::setup(ch, seed, ferret);
     let (setup_stats, setup_time) = (s.s.stats, s.s.time);
     let cots_before = s.s.cot.produced;
     let n = depth_for(n_size);
@@ -166,7 +155,7 @@ pub fn run_mal(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, bet
     ch.sync();
     let before = ch.stats();
     let t = Instant::now();
-    let (key, products) = s.gen(ch, n_size, bits, alpha_share, beta_share, pre, fault);
+    let (key, ands) = s.gen(ch, n_size, bits, alpha_share, beta_share, pre, fault);
     MalRun {
         key,
         delta_share: s.delta_mac,
@@ -176,11 +165,8 @@ pub fn run_mal(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, bet
         pre_time,
         gen_stats: ch.stats().since(&before),
         gen_time: t.elapsed(),
-        products,
+        ands,
         cots: s.s.cot.produced - cots_before,
-        foleage,
-        seedgen_stats: s.s.seedgen_stats,
-        seedgen_time: s.s.seedgen_time,
     }
 }
 

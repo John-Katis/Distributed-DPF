@@ -5,7 +5,7 @@ use dpf_common::block::Block;
 use dpf_common::coin::Abort;
 use dpf_common::net::run_two_party;
 use ht_aes::field::{Field, Gold, M127};
-use ht_aes::malicious::{mal_foleage_for, mal_products, Fault};
+use ht_aes::malicious::{mal_calls, Fault};
 use ht_aes::malicious_arith::{deal, gen_reference, run_mal_arith, verify, ArithMalKey, ArithMalRun};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -15,10 +15,9 @@ fn run<F: Field>(n: u64, alpha: u64, beta: F, seed: u64, faults: [Option<Fault>;
     let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
     let b0 = F::random(&mut rng);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-    let p = mal_foleage_for(dpf_common::block::depth_for(n));
     let (r0, r1) = run_two_party(
-        move |c| run_mal_arith(c, n, a0, b0, seeds[0], None, p, faults[0]),
-        move |c| run_mal_arith(c, n, alpha ^ a0, beta.sub(b0), seeds[1], None, p, faults[1]),
+        move |c| run_mal_arith(c, n, a0, b0, seeds[0], None, faults[0]),
+        move |c| run_mal_arith(c, n, alpha ^ a0, beta.sub(b0), seeds[1], None, faults[1]),
     );
     [r0, r1]
 }
@@ -47,7 +46,7 @@ fn gen_matches_dealer_and_verifies<F: Field>(seed: u64) {
         let [r0, r1] = run(n, alpha, beta, seed + i as u64, [None, None]);
         let depth = r0.key.depth();
         assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 44);
-        assert_eq!(r0.products, mal_products(depth));
+        assert_eq!(r0.ands, mal_calls(depth) * dpf_common::aes_tower::ANDS_PER_CALL);
         let delta = r0.delta_share.add(r1.delta_share);
         let dealt = deal([r0.key.root, r1.key.root], n, alpha, beta, delta);
         assert_eq!(dealt, [r0.key.clone(), r1.key.clone()]);

@@ -34,7 +34,7 @@
 //! bucket leaked. [`bucket_size`] follows WRK17 (`B ≥ 1 + ρ/log₂ N`, ρ = 40).
 
 use super::binary::{AuthBit, MacParty};
-use crate::aes_tower::{F4Sh, ShareBit, TowerBackend};
+use crate::aes_tower::{sbox_f4, F4Products, F4Sh, ShareBit, TowerBackend};
 use crate::block::{pack_bits, unpack_bits, Block};
 use crate::coin::{coin_block, commit_and_open, Abort};
 use crate::f4;
@@ -393,6 +393,12 @@ impl TowerBackend for AuthF4 {
         ABit::constant(c, self.party, self.delta)
     }
 
+    fn sbox(&mut self, ch: &mut Channel, bytes: &[[ABit; 8]]) -> Vec<[ABit; 8]> {
+        sbox_f4(self, ch, bytes)
+    }
+}
+
+impl F4Products for AuthF4 {
     /// Panics on a malformed message; deviations in the values are caught by
     /// the checker.
     fn mul_f4(&mut self, ch: &mut Channel, x: &[F4Sh<ABit>], y: &[F4Sh<ABit>]) -> Vec<F4Sh<ABit>> {

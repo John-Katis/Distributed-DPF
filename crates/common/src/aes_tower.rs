@@ -19,10 +19,20 @@
 //!
 //! That is 12 F4 products at depth 4 per S-box, 160 S-boxes per AES-128 call:
 //! [`PRODUCTS_PER_CALL`] = 1,920 products in [`ROUNDS_PER_CALL`] = 40 rounds.
-//! The F4 products are the only interaction; [`TowerBackend`] supplies them (one
-//! call, one round, per layer), so the same circuit runs semi-honest on XOR
-//! shares with Beaver triples ([`BeaverF4`]) and maliciously on authenticated
-//! bits.
+//! The S-boxes are the only interaction; [`TowerBackend`] computes them, four
+//! rounds per batch. Two backends:
+//!
+//! * [`OtTower`], the paper's OT tower (Figure "S-box on Boolean shares"),
+//!   semi-honest on XOR shares: each F4 product is three ANDs over F2
+//!   (Karatsuba), 36 per S-box, and every AND is computed from Ferret COTs
+//!   under party 0's key Γ. Every AND input is an F2-linear form of party 1's
+//!   share of one of four values, `φ(a)`, `d`, `e` and `w`; party 1 corrects
+//!   one random COT per bit of those (18 bits and COTs per S-box) and the COT
+//!   of any linear form is the XOR of the COTs it selects. A cross term costs
+//!   one bit from party 0: 90 bits per S-box, [`COTS_PER_CALL`] = 2,880 COTs
+//!   per call.
+//! * [`F4Products`] backends, which multiply F4 elements directly
+//!   ([`sbox_f4`]): the authenticated bits of [`crate::mac::af4`].
 //!
 //! The constants are those of the paper's appendix: `θ = 0xbc`, `Y = 0x5c`,
 //! `η = θY = 0xb0`, `ζ = 0xf2` in `F_2[X]/(X⁸ + X⁴ + X³ + X + 1)`, and the F4
@@ -36,8 +46,9 @@
 
 use crate::block::Block;
 use crate::f4;
-use crate::hash::sigma;
+use crate::hash::{sigma, FixedKeyHash};
 use crate::net::Channel;
+use crate::ot::RandomCots;
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockEncrypt, KeyInit};
 use aes::Aes128;
@@ -46,6 +57,12 @@ use std::sync::OnceLock;
 
 /// F4 products per AES-128 call (160 S-boxes × 12).
 pub const PRODUCTS_PER_CALL: usize = 160 * 12;
+/// COTs per S-box of [`OtTower`]: one per bit of `φ(a)`, `d`, `e` and `w`.
+pub const COTS_PER_SBOX: usize = 18;
+/// COTs per AES-128 call of [`OtTower`].
+pub const COTS_PER_CALL: usize = 160 * COTS_PER_SBOX;
+/// ANDs per AES-128 call of [`OtTower`] (three per F4 product).
+pub const ANDS_PER_CALL: usize = 3 * PRODUCTS_PER_CALL;
 /// Rounds per AES-128 call (10 AES rounds × multiplicative depth 4).
 pub const ROUNDS_PER_CALL: usize = 40;
 
@@ -192,13 +209,19 @@ impl F4Sh<bool> {
     }
 }
 
-/// The interactive part of the circuit: products of shared F4 elements.
+/// The interactive part of the circuit: the S-boxes.
 pub trait TowerBackend {
     type Bit: ShareBit;
 
     /// This party's share of the public bit `c`.
     fn constant(&self, c: bool) -> Self::Bit;
 
+    /// S-boxes of a batch of shared bytes, in four rounds.
+    fn sbox(&mut self, ch: &mut Channel, bytes: &[[Self::Bit; 8]]) -> Vec<[Self::Bit; 8]>;
+}
+
+/// A backend that multiplies shared F4 elements; [`sbox_f4`] is its S-box.
+pub trait F4Products: TowerBackend {
     /// Shares of `x_i·y_i` for all i, in one round.
     fn mul_f4(&mut self, ch: &mut Channel, x: &[F4Sh<Self::Bit>], y: &[F4Sh<Self::Bit>]) -> Vec<F4Sh<Self::Bit>>;
 }
@@ -244,7 +267,7 @@ fn lin8<B: ShareBit>(m: &Mat8, x: &[B; 8]) -> [B; 8] {
 /// Karatsuba products `x_i·y_i` in `F_{2^4}`, all in one round (3 F4 products
 /// each): `(m_2 + m_0, θ m_1 + m_0)` with `m_1 = x_1y_1`, `m_0 = x_0y_0`,
 /// `m_2 = (x_1 + x_0)(y_1 + y_0)`.
-fn mul16<K: TowerBackend>(be: &mut K, ch: &mut Channel, x: &[F16<K::Bit>], y: &[F16<K::Bit>]) -> Vec<F16<K::Bit>> {
+fn mul16<K: F4Products>(be: &mut K, ch: &mut Channel, x: &[F16<K::Bit>], y: &[F16<K::Bit>]) -> Vec<F16<K::Bit>> {
     let n = x.len();
     let mut a = Vec::with_capacity(3 * n);
     let mut b = Vec::with_capacity(3 * n);
@@ -256,8 +279,8 @@ fn mul16<K: TowerBackend>(be: &mut K, ch: &mut Channel, x: &[F16<K::Bit>], y: &[
     m.chunks(3).map(|m| F16 { x1: m[2].add(m[1]), x0: m[0].scale(f4::OMEGA).add(m[1]) }).collect()
 }
 
-/// S-boxes of a batch of shared bytes, in four rounds.
-pub fn sbox_shared<K: TowerBackend>(be: &mut K, ch: &mut Channel, bytes: &[[K::Bit; 8]]) -> Vec<[K::Bit; 8]> {
+/// S-boxes of a batch of shared bytes from F4 products, in four rounds.
+pub fn sbox_f4<K: F4Products>(be: &mut K, ch: &mut Channel, bytes: &[[K::Bit; 8]]) -> Vec<[K::Bit; 8]> {
     let tw = tower();
     let (ah, al): (Vec<_>, Vec<_>) = bytes.iter().map(|b| split(&lin8(&tw.phi, b))).unzip();
     // Depth 1: p = a_h·a_l, then the norm d.
@@ -430,7 +453,7 @@ pub fn mmo_shared<K: TowerBackend>(be: &mut K, ch: &mut Channel, jobs: &[(&Mmo, 
     for r in 1..=10 {
         // SubBytes on all 16·jobs bytes at once.
         let bytes: Vec<[K::Bit; 8]> = v.iter().flat_map(|s| (0..16).map(move |j| std::array::from_fn(|i| s[8 * j + i]))).collect();
-        let sb = sbox_shared(be, ch, &bytes);
+        let sb = be.sbox(ch, &bytes);
         for (job, s) in v.iter_mut().enumerate() {
             // ShiftRows: state byte r + 4c takes byte r + 4((c + r) mod 4).
             let mut st: [[K::Bit; 8]; 16] = std::array::from_fn(|j| sb[16 * job + (j % 4 + 4 * ((j / 4 + j % 4) % 4))]);
@@ -452,84 +475,241 @@ pub fn mmo_shared<K: TowerBackend>(be: &mut K, ch: &mut Channel, jobs: &[(&Mmo, 
     v.iter().zip(&us).map(|(x, u)| xor(x, u)).collect()
 }
 
-/// Semi-honest F4 products from Beaver triples `(a, b, c = ab)`, XOR-shared,
-/// consumed front to back. Each product opens `x ⊕ a` and `y ⊕ b`: four bits
-/// per party, packed two products per byte.
-pub struct BeaverF4 {
+/// A share bit of the OT tower together with the F2-linear form of party 1's
+/// share that it is: bit j of `l` is set if it depends on bit j of the
+/// S-box's corrected values (`φ(a)` in bits 0–7, `d` in 8–11, `e` in 12–13,
+/// `w` in 14–17). Constants are party 0's alone, so `l` tracks party 1's bit
+/// exactly; AND outputs, which are no linear form, have `l = 0` and are never
+/// an AND input before they are corrected.
+#[derive(Clone, Copy, Default)]
+struct Sym {
+    s: bool,
+    l: u32,
+}
+
+impl BitXor for Sym {
+    type Output = Sym;
+
+    #[inline]
+    fn bitxor(self, o: Sym) -> Sym {
+        Sym { s: self.s ^ o.s, l: self.l ^ o.l }
+    }
+}
+
+impl ShareBit for Sym {}
+
+impl Sym {
+    /// A bit corrected as COT `j` of its S-box.
+    #[inline]
+    fn fresh(self, j: usize) -> Sym {
+        Sym { s: self.s, l: 1 << j }
+    }
+}
+
+/// The hash `H(τ, x)` that turns a COT into a random OT, one bit per tweak τ.
+fn tower_hash() -> &'static FixedKeyHash {
+    static H: OnceLock<FixedKeyHash> = OnceLock::new();
+    H.get_or_init(|| FixedKeyHash::new(b"dpf-common/otTwr"))
+}
+
+/// The paper's OT tower: semi-honest S-boxes on XOR shares, every AND from
+/// random COTs under party 0's key Γ (party 0 the sender, party 1 the
+/// receiver), [`COTS_PER_SBOX`] per S-box, consumed front to back.
+///
+/// An AND `u·v` is `u_0v_0 ⊕ u_1v_1 ⊕ Cross(v_1; u_0) ⊕ Cross(u_1; v_0)`. In
+/// `Cross(b; s)` party 1 holds b, a linear form ℓ of its corrected bits, and
+/// party 0 holds s; the COT of ℓ is the XOR of the COTs ℓ selects, `q` at
+/// party 0 and `(c, q ⊕ c·Γ)` at party 1, and hashing it under a fresh tweak τ
+/// gives `m_0 = H(τ, q)`, `m_1 = H(τ, q ⊕ Γ)` and `m_c`. Party 1 has sent the
+/// corrections `ε = v_1 ⊕ c` of its bits, so `b ⊕ c = ℓ(ε)`; party 0 sends `ζ
+/// = m_0 ⊕ m_1 ⊕ s` and outputs `m_{ℓ(ε)}`, party 1 outputs `m_c ⊕ b·ζ`. ζ
+/// does not depend on ε, so in each of the four layers party 1's corrections
+/// and party 0's ζ travel in the same round.
+pub struct OtTower {
     party: usize,
-    triples: Vec<(u8, u8, u8)>,
+    /// Γ at party 0, zero at party 1.
+    gamma: Block,
+    /// Party 0: the COT keys `q_j`. Party 1: `q_j ⊕ c_j·Γ`.
+    blocks: Vec<Block>,
+    /// Party 1: the choices `c_j`; empty at party 0.
+    choices: Vec<bool>,
     next: usize,
-    /// Products computed so far.
-    pub products: usize,
+    tweak: u64,
+    /// ANDs computed so far.
+    pub ands: usize,
 }
 
-impl BeaverF4 {
-    pub fn new(party: usize, triples: Vec<(u8, u8, u8)>) -> Self {
-        BeaverF4 { party, triples, next: 0, products: 0 }
+impl OtTower {
+    /// From random COTs with party 0 as the sender (`CotPair::random_cots(ch,
+    /// 0, m)`); `gamma` is party 0's COT key (ignored at party 1).
+    pub fn new(party: usize, cots: RandomCots, gamma: Block) -> Self {
+        let (blocks, choices, gamma) = match cots {
+            RandomCots::Sender(k) => {
+                assert_eq!(party, 0, "party 0 is the sender");
+                (k, vec![], gamma)
+            }
+            RandomCots::Receiver(c, m) => {
+                assert_eq!(party, 1, "party 1 is the receiver");
+                (m, c, Block::ZERO)
+            }
+        };
+        OtTower { party, gamma, blocks, choices, next: 0, tweak: 0, ands: 0 }
     }
 
-    /// Triples left.
+    /// COTs left.
     pub fn remaining(&self) -> usize {
-        self.triples.len() - self.next
+        self.blocks.len() - self.next
     }
 
-    /// Shares of `x_i·y_i` for plain F4 shares (bytes), one round.
-    pub fn mul_bytes(&mut self, ch: &mut Channel, x: &[u8], y: &[u8]) -> Vec<u8> {
-        let n = x.len();
-        assert!(self.remaining() >= n, "F4 triple pool exhausted");
-        let t = &self.triples[self.next..self.next + n];
-        self.next += n;
-        self.products += n;
-        let de: Vec<u8> = (0..n).map(|i| (x[i] ^ t[i].0) | (y[i] ^ t[i].1) << 2).collect();
-        ch.send(de.chunks(2).map(|c| c[0] | c.get(1).map_or(0, |v| v << 4)).collect());
-        let theirs = ch.recv();
-        assert_eq!(theirs.len(), n.div_ceil(2), "malformed Beaver opening");
-        (0..n)
-            .map(|i| {
-                let both = de[i] ^ (theirs[i / 2] >> (4 * (i % 2)) & 15);
-                let (d, e) = (both & 3, both >> 2);
-                let (a, b, c) = t[i];
-                let mut z = c ^ f4::mul(d, b) ^ f4::mul(e, a);
-                if self.party == 0 {
-                    z ^= f4::mul(d, e);
+    /// The COT block of the linear form `l` of the S-box whose COTs start at `base`.
+    #[inline]
+    fn form(&self, base: usize, l: u32) -> Block {
+        let mut x = Block::ZERO;
+        let mut l = l;
+        while l != 0 {
+            x ^= self.blocks[base + l.trailing_zeros() as usize];
+            l &= l - 1;
+        }
+        x
+    }
+
+    /// One layer of every S-box of a batch: party 1 corrects the `bits` of
+    /// each S-box (its `bits.len() / n` bits, as COTs `off..` of that S-box),
+    /// and both parties compute the F4 products `prods` (S-box index, x, y),
+    /// in one round. `eps` keeps party 0's corrections per S-box.
+    fn layer(&mut self, ch: &mut Channel, base: usize, eps: &mut [u32], off: usize, bits: &[bool], prods: &[(usize, F4Sh<Sym>, F4Sh<Sym>)]) -> Vec<F4Sh<Sym>> {
+        let n = eps.len();
+        let k = bits.len() / n;
+        // Three ANDs per product (Karatsuba), two cross terms per AND: (S-box,
+        // ℓ = party 1's form, party 1's bit, party 0's bit).
+        let mut ands = Vec::with_capacity(3 * prods.len());
+        for &(i, x, y) in prods {
+            ands.push((i, x.h, y.h));
+            ands.push((i, x.l, y.l));
+            ands.push((i, x.h ^ x.l, y.h ^ y.l));
+        }
+        self.ands += ands.len();
+        let crosses: Vec<(usize, u32, bool, bool)> = ands.iter().flat_map(|&(i, u, v)| [(i, v.l, v.s, u.s), (i, u.l, u.s, v.s)]).collect();
+        let tw = self.tweak;
+        self.tweak += crosses.len() as u64;
+        let h = tower_hash();
+        let at = |i: usize| base + COTS_PER_SBOX * i;
+        let out: Vec<bool> = if self.party == 0 {
+            let m: Vec<(bool, bool)> = crosses
+                .iter()
+                .enumerate()
+                .map(|(t, &(i, l, _, _))| {
+                    let q = self.form(at(i), l);
+                    (h.h(q, tw + t as u64).lsb(), h.h(q ^ self.gamma, tw + t as u64).lsb())
+                })
+                .collect();
+            let zeta: Vec<bool> = crosses.iter().zip(&m).map(|(&(_, _, _, s), &(m0, m1))| m0 ^ m1 ^ s).collect();
+            ch.send_bits(&zeta);
+            let e = ch.recv_bits(bits.len());
+            for (i, ei) in eps.iter_mut().enumerate() {
+                for j in 0..k {
+                    *ei |= (e[k * i + j] as u32) << (off + j);
                 }
-                z
-            })
-            .collect()
+            }
+            crosses.iter().zip(&m).map(|(&(i, l, _, _), &(m0, m1))| if (eps[i] & l).count_ones() & 1 == 1 { m1 } else { m0 }).collect()
+        } else {
+            let e: Vec<bool> = bits.iter().enumerate().map(|(t, &v)| v ^ self.choices[at(t / k) + off + t % k]).collect();
+            ch.send_bits(&e);
+            let zeta = ch.recv_bits(crosses.len());
+            crosses
+                .iter()
+                .enumerate()
+                .map(|(t, &(i, l, b, _))| h.h(self.form(at(i), l), tw + t as u64).lsb() ^ (b && zeta[t]))
+                .collect()
+        };
+        let and: Vec<bool> = ands.iter().zip(out.chunks(2)).map(|(&(_, u, v), c)| (u.s && v.s) ^ c[0] ^ c[1]).collect();
+        let sym = |s: bool| Sym { s, l: 0 };
+        // (x_h y_h, x_l y_l, (x_h + x_l)(y_h + y_l)) = (n_1, n_0, n_2) → (n_2 + n_0)ω + (n_1 + n_0).
+        and.chunks(3).map(|z| F4Sh { h: sym(z[2] ^ z[1]), l: sym(z[0] ^ z[1]) }).collect()
     }
 }
 
-impl TowerBackend for BeaverF4 {
+/// The products of Karatsuba in `F_{2^4}` for each `(S-box, x, y)`: three F4
+/// products each, combined by [`karatsuba16`].
+fn mul16_prods(xy: &[(usize, F16<Sym>, F16<Sym>)]) -> Vec<(usize, F4Sh<Sym>, F4Sh<Sym>)> {
+    xy.iter().flat_map(|&(i, u, v)| [(i, u.x1, v.x1), (i, u.x0, v.x0), (i, u.x1.add(u.x0), v.x1.add(v.x0))]).collect()
+}
+
+fn karatsuba16(m: &[F4Sh<Sym>]) -> Vec<F16<Sym>> {
+    m.chunks(3).map(|m| F16 { x1: m[2].add(m[1]), x0: m[0].scale(f4::OMEGA).add(m[1]) }).collect()
+}
+
+impl TowerBackend for OtTower {
     type Bit = bool;
 
     fn constant(&self, c: bool) -> bool {
         c && self.party == 0
     }
 
-    fn mul_f4(&mut self, ch: &mut Channel, x: &[F4Sh<bool>], y: &[F4Sh<bool>]) -> Vec<F4Sh<bool>> {
-        let xs: Vec<u8> = x.iter().map(|v| v.to_u8()).collect();
-        let ys: Vec<u8> = y.iter().map(|v| v.to_u8()).collect();
-        self.mul_bytes(ch, &xs, &ys).into_iter().map(F4Sh::from_u8).collect()
+    fn sbox(&mut self, ch: &mut Channel, bytes: &[[bool; 8]]) -> Vec<[bool; 8]> {
+        let n = bytes.len();
+        assert!(self.remaining() >= COTS_PER_SBOX * n, "COT pool exhausted");
+        let base = self.next;
+        self.next += COTS_PER_SBOX * n;
+        let tw = tower();
+        let mut eps = vec![0u32; n];
+        // Layer 1: φ(a) corrected (COTs 0–7), p = a_h·a_l, then the norm d.
+        let t: Vec<[Sym; 8]> = bytes
+            .iter()
+            .map(|b| {
+                let t = lin8(&tw.phi, b);
+                std::array::from_fn(|j| Sym { s: t[j], l: 1 << j })
+            })
+            .collect();
+        let (ah, al): (Vec<_>, Vec<_>) = t.iter().map(split).unzip();
+        let bits: Vec<bool> = t.iter().flat_map(|t| t.map(|v| v.s)).collect();
+        let xy: Vec<_> = (0..n).map(|i| (i, ah[i], al[i])).collect();
+        let p = karatsuba16(&self.layer(ch, base, &mut eps, 0, &bits, &mul16_prods(&xy)));
+        // Layer 2: d corrected (COTs 8–11), the product x_1·x_0 of its F4 norm.
+        let d: Vec<F16<Sym>> = (0..n)
+            .map(|i| {
+                let d = ah[i].sq().mul_eta().add(p[i]).add(al[i].sq());
+                F16 { x1: F4Sh { h: d.x1.h.fresh(8), l: d.x1.l.fresh(9) }, x0: F4Sh { h: d.x0.h.fresh(10), l: d.x0.l.fresh(11) } }
+            })
+            .collect();
+        let bits: Vec<bool> = d.iter().flat_map(|d| [d.x1.h.s, d.x1.l.s, d.x0.h.s, d.x0.l.s]).collect();
+        let prods: Vec<_> = (0..n).map(|i| (i, d[i].x1, d[i].x0)).collect();
+        let m = self.layer(ch, base, &mut eps, 8, &bits, &prods);
+        // Layer 3: e = N(d)^{-1} = N(d)² corrected (COTs 12–13), w = (x_1 e, (x_1 + x_0) e).
+        let e: Vec<F4Sh<Sym>> = (0..n)
+            .map(|i| {
+                let (x1, x0) = (d[i].x1, d[i].x0);
+                let e = x1.sq().scale(f4::OMEGA).add(m[i]).add(x0.sq()).sq();
+                F4Sh { h: e.h.fresh(12), l: e.l.fresh(13) }
+            })
+            .collect();
+        let bits: Vec<bool> = e.iter().flat_map(|e| [e.h.s, e.l.s]).collect();
+        let prods: Vec<_> = (0..n).flat_map(|i| [(i, d[i].x1, e[i]), (i, d[i].x1.add(d[i].x0), e[i])]).collect();
+        let we = self.layer(ch, base, &mut eps, 12, &bits, &prods);
+        // Layer 4: w corrected (COTs 14–17), b_h = a_h·w and b' = a_l·w.
+        let w: Vec<F16<Sym>> = we
+            .chunks(2)
+            .map(|c| F16 { x1: F4Sh { h: c[0].h.fresh(14), l: c[0].l.fresh(15) }, x0: F4Sh { h: c[1].h.fresh(16), l: c[1].l.fresh(17) } })
+            .collect();
+        let bits: Vec<bool> = w.iter().flat_map(|w| [w.x1.h.s, w.x1.l.s, w.x0.h.s, w.x0.l.s]).collect();
+        let xy: Vec<_> = (0..n).flat_map(|i| [(i, ah[i], w[i]), (i, al[i], w[i])]).collect();
+        let bb = karatsuba16(&self.layer(ch, base, &mut eps, 14, &bits, &mul16_prods(&xy)));
+        let c63 = std::array::from_fn::<_, 8, _>(|i| self.constant(0x63 >> i & 1 == 1));
+        (0..n)
+            .map(|i| {
+                let (bh, b2) = (bb[2 * i], bb[2 * i + 1]);
+                let o = lin8(&tw.out, &join(bh, bh.add(b2)));
+                std::array::from_fn(|k| o[k].s ^ c63[k])
+            })
+            .collect()
     }
-}
-
-#[cfg(test)]
-/// Trusted-dealer F4 triples for tests: `n` triples for each party.
-pub fn dealer_triples<R: rand::RngCore>(rng: &mut R, n: usize) -> [Vec<(u8, u8, u8)>; 2] {
-    let mut t = [Vec::with_capacity(n), Vec::with_capacity(n)];
-    for _ in 0..n {
-        let r = rng.next_u32();
-        let (a, b, a0, b0, c0) = (r as u8 & 3, (r >> 2) as u8 & 3, (r >> 4) as u8 & 3, (r >> 6) as u8 & 3, (r >> 8) as u8 & 3);
-        t[0].push((a0, b0, c0));
-        t[1].push((a ^ a0, b ^ b0, f4::mul(a, b) ^ c0));
-    }
-    t
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::net::run_two_party;
+    use crate::ot::CotPair;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
@@ -572,32 +752,38 @@ mod tests {
     }
 
     #[test]
-    fn shared_mmo_matches_cleartext() {
+    fn ot_tower_mmo_matches_cleartext() {
         let mut rng = ChaCha20Rng::seed_from_u64(7);
         let keys = [Mmo::new(*b"aes-tower/test-1"), Mmo::new(*b"aes-tower/test-2")];
         let xs: Vec<Block> = (0..3).map(|_| Block::random(&mut rng)).collect();
         let s0: Vec<Block> = (0..3).map(|_| Block::random(&mut rng)).collect();
-        let triples = dealer_triples(&mut rng, 3 * PRODUCTS_PER_CALL);
-        let party = |b: usize, shares: Vec<Block>, t: Vec<(u8, u8, u8)>| {
+        let s1: Vec<Block> = xs.iter().zip(&s0).map(|(x, s)| *x ^ *s).collect();
+        let party = |b: usize, shares: Vec<Block>| {
             let keys = keys.clone();
             move |ch: &mut Channel| {
-                let mut be = BeaverF4::new(b, t);
+                let mut r = ChaCha20Rng::seed_from_u64(10 + b as u64);
+                let delta = Block::random(&mut r).with_lsb(b == 1);
+                let mut cot = CotPair::setup(ch, &mut r, delta, false).unwrap();
+                let pool = cot.random_cots(ch, 0, 3 * COTS_PER_CALL, &mut r).unwrap();
+                let mut be = OtTower::new(b, pool, cot.delta());
                 let jobs: Vec<(&Mmo, Shared128<bool>)> = shares.iter().enumerate().map(|(i, &x)| (&keys[i % 2], bits_of(x))).collect();
                 let before = ch.stats();
                 let out = mmo_shared(&mut be, ch, &jobs);
                 let s = ch.stats().since(&before);
-                (out.iter().map(block_of).collect::<Vec<_>>(), s, be.products)
+                (out.iter().map(block_of).collect::<Vec<_>>(), s, be.ands, be.remaining())
             }
         };
-        let s1: Vec<Block> = xs.iter().zip(&s0).map(|(x, s)| *x ^ *s).collect();
-        let [t0, t1] = triples;
-        let ((y0, st, prods), (y1, _, _)) = run_two_party(party(0, s0, t0), party(1, s1, t1));
+        let ((y0, st0, ands, left), (y1, st1, _, _)) = run_two_party(party(0, s0), party(1, s1));
         for i in 0..3 {
             assert_eq!(y0[i] ^ y1[i], keys[i % 2].h(xs[i]), "job {i}");
         }
-        assert_eq!(prods, 3 * PRODUCTS_PER_CALL);
-        assert_eq!(st.rounds, ROUNDS_PER_CALL);
-        // Four bits per product and party.
-        assert_eq!(st.bytes_sent, 3 * PRODUCTS_PER_CALL / 2);
+        assert_eq!((ands, left), (3 * ANDS_PER_CALL, 0));
+        assert_eq!(st0.rounds, ROUNDS_PER_CALL);
+        // Per layer, party 0 sends one bit per cross term (two per AND) and
+        // party 1 one per corrected bit, each packed into bytes per layer.
+        // 3 jobs × 16 S-boxes per AES round.
+        let per_round = |bits_per_sbox: usize| (48 * bits_per_sbox).div_ceil(8);
+        assert_eq!(st0.bytes_sent, 10 * [9, 3, 6, 18].iter().map(|&a| per_round(2 * a)).sum::<usize>());
+        assert_eq!(st1.bytes_sent, 10 * [8, 4, 2, 4].iter().map(|&k| per_round(k)).sum::<usize>());
     }
 }

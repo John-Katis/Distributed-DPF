@@ -6,15 +6,15 @@
 //! `W_b = F^pay(s_{n,b})` for both b (40 rounds) and the opening of
 //! `W_CW = W_0 ⊕ W_1 ⊕ β`. Evaluation outputs `F^pay(s) ⊕ t·W_CW`.
 //!
-//! Rounds: `1 + 41n + 40 + 1 = 41n + 42`. Preprocessing: [`crate::sh_products`]
-//! F4 triples, n string triples, n COTs per direction (the α-bits).
+//! Rounds: `1 + 41n + 40 + 1 = 41n + 42`. Preprocessing: the OT tower's COTs
+//! for [`crate::sh_calls`] AES–MMO calls, n string triples, n COTs per
+//! direction (the α-bits).
 
 use super::gen::{drive, walk, GenOutput, Pre, Walk};
 use crate::malicious::low;
 use crate::{child, children, leaf_seed, pay_hash, state_hash};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128};
 use dpf_common::block::{depth_for, Block};
-use dpf_common::foleage::Params;
 use dpf_common::net::Channel;
 use dpf_common::ot::FerretConfig;
 use dpf_common::stream::walk as stream_walk;
@@ -95,12 +95,12 @@ impl BinKey {
 }
 
 /// Setup, preprocessing and generation for one party: XOR shares of α and of
-/// `β ∈ F_2^ℓ`. `foleage`: at least [`super::foleage_for`]`(n)`.
+/// `β ∈ F_2^ℓ`.
 #[allow(clippy::too_many_arguments)]
-pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> GenOutput<BinKey> {
+pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>) -> GenOutput<BinKey> {
     assert!((1..=128).contains(&bits));
     let n = depth_for(n_size);
-    drive(ch, seed, ferret, foleage, n, n, |_, _, _| (), |cot, pre, (), rng, ch| {
+    drive(ch, seed, ferret, n, n, |_, _, _| (), |cot, pre, (), rng, ch| {
         let b = ch.party();
         let Pre { mut be, string_triples } = pre;
         let delta = cot.delta();
@@ -113,7 +113,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_sh
         let theirs = ch.recv();
         assert_eq!(theirs.len(), 16, "malformed payload share");
         let w_cw = w_share ^ Block::from_bytes(&theirs);
-        (BinKey { party: b, n_size, bits, root, cws, w_cw }, be.products)
+        (BinKey { party: b, n_size, bits, root, cws, w_cw }, be.ands)
     })
 }
 

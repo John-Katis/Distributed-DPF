@@ -4,7 +4,7 @@
 use dpf_common::block::Block;
 use dpf_common::coin::Abort;
 use dpf_common::net::run_two_party;
-use ht_aes::malicious::{deal, low, mal_products, run_mal, verify, Fault, MalKey, MalRun, MalSession};
+use ht_aes::malicious::{deal, low, mal_calls, run_mal, verify, Fault, MalKey, MalRun, MalSession};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -13,10 +13,9 @@ fn run(n: u64, bits: usize, alpha: u64, beta: Block, seed: u64, faults: [Option<
     let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
     let b0 = low(Block::random(&mut rng), bits);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-    let p = ht_aes::malicious::mal_foleage_for(dpf_common::block::depth_for(n));
     let (r0, r1) = run_two_party(
-        move |c| run_mal(c, n, bits, a0, b0, seeds[0], None, p, faults[0]),
-        move |c| run_mal(c, n, bits, alpha ^ a0, beta ^ b0, seeds[1], None, p, faults[1]),
+        move |c| run_mal(c, n, bits, a0, b0, seeds[0], None, faults[0]),
+        move |c| run_mal(c, n, bits, alpha ^ a0, beta ^ b0, seeds[1], None, faults[1]),
     );
     [r0, r1]
 }
@@ -46,7 +45,7 @@ fn mal_gen_matches_dealer_and_verifies() {
         let [r0, r1] = run(n, bits, alpha, beta, i as u64, [None, None]);
         let depth = r0.key.depth();
         assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 42);
-        assert_eq!(r0.products, mal_products(depth));
+        assert_eq!(r0.ands, mal_calls(depth) * dpf_common::aes_tower::ANDS_PER_CALL);
         let delta = r0.delta_share ^ r1.delta_share;
         let dealt = deal([r0.key.root, r1.key.root], n, bits, alpha, beta, delta);
         assert_eq!(dealt, [r0.key.clone(), r1.key.clone()]);
@@ -103,7 +102,7 @@ fn full_eval_matches_point_eval() {
     }
 }
 
-/// Two Gens on one session: fresh roots and disjoint F4 triples per Gen. With
+/// Two Gens on one session: fresh roots and fresh COTs per Gen. With
 /// the session's COT key as the root, the two keys' words at the first level
 /// where the α differ would XOR to Δ and reveal both α.
 #[test]
@@ -111,7 +110,6 @@ fn two_gens_in_one_session() {
     let mut rng = ChaCha20Rng::seed_from_u64(7);
     let (n, bits) = (1u64 << 10, 64usize);
     let depth = dpf_common::block::depth_for(n);
-    let p = dpf_common::foleage::Params::for_oles(4 * mal_products(depth));
     let alphas = [0x0f3u64, 0x2f3]; // differ at level 2
     let betas = [low(Block::random(&mut rng), bits), low(Block::random(&mut rng), bits)];
     let a0: [u64; 2] = [rng.gen_range(0..n), rng.gen_range(0..n)];
@@ -119,7 +117,7 @@ fn two_gens_in_one_session() {
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let party = |b: usize| {
         move |c: &mut dpf_common::net::Channel| {
-            let mut s = MalSession::setup(c, seeds[b], None, p);
+            let mut s = MalSession::setup(c, seeds[b], None);
             let keys: Vec<MalKey> = (0..2)
                 .map(|g| {
                     let pre = s.precompute(c, depth, bits);

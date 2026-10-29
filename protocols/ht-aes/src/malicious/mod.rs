@@ -7,5 +7,5 @@
 pub mod gen;
 pub mod key;
 
-pub use gen::{deal, gen_reference, mal_foleage_for, mal_products, run_mal, Fault, MalRun, MalSession};
+pub use gen::{deal, gen_reference, mal_calls, run_mal, Fault, MalRun, MalSession};
 pub use key::{low, verify, MalKey};

@@ -16,7 +16,7 @@
 //!    both words are opened together.
 //!
 //! The products in the AES calls, the branch selection and the leaf are the
-//! semi-honest ones (plain FOLEAGE triples, daBits and triples from COTs);
+//! semi-honest ones (the OT tower, daBits and triples from COTs);
 //! every deviation shows up only in the published key material, which
 //! Π_Verify ([`super::verify`]) checks at evaluation time, up to the
 //! selective-failure leak of the paper's Proposition "Selective-failure
@@ -27,12 +27,11 @@
 use super::key::ArithMalKey;
 use crate::field::Field;
 use crate::leaf::{arith_leaf, fp_pre, fp_pre_cots, leaf_dabits, FpPre, Sub};
-use crate::malicious::{mal_products, Fault};
+use crate::malicious::{mal_calls, Fault};
 use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup, Walk};
 use crate::{child, leaf_seed, mac_hash, pay_hash, state_hash};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128};
 use dpf_common::block::{depth_for, Block};
-use dpf_common::foleage::Params;
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::ot::FerretConfig;
 use rand::SeedableRng;
@@ -53,21 +52,20 @@ pub struct ArithMalSession<F: Field> {
 }
 
 impl<F: Field> ArithMalSession<F> {
-    /// The semi-honest setup (base OTs, Ferret, FOLEAGE seed generation) and δ_b.
-    pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> Self {
-        let mut s = setup(ch, seed, ferret, foleage);
+    /// The semi-honest setup (base OTs, Ferret) and δ_b.
+    pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Self {
+        let mut s = setup(ch, seed, ferret);
         let delta_mac = F::random(&mut s.rng);
         ArithMalSession { s, delta_mac }
     }
 
-    /// FOLEAGE expansion into [`mal_products`] triples, n string triples
+    /// The OT tower's COTs for [`mal_calls`] AES–MMO calls, n string triples
     /// (branch selection), n COTs per direction, and the leaf's daBits and
     /// Beaver triples over F_p ([`leaf_counts`]).
     pub fn precompute(&mut self, ch: &mut Channel, n: usize) -> (Pre, FpPre<F>) {
-        assert!(2 * (self.s.fused + mal_products(n)) <= self.s.fseed.params.oles(), "FOLEAGE instance too small for depth {n}");
         let s = &mut self.s;
         let (dabits, triples) = leaf_counts::<F>();
-        let pre = precompute_counts(ch, &mut s.cot, &s.fseed, &mut s.fused, mal_products(n), n, n + fp_pre_cots::<F>(dabits, triples), &mut s.rng);
+        let pre = precompute_counts(ch, &mut s.cot, mal_calls(n), n, n + fp_pre_cots::<F>(dabits, triples), &mut s.rng);
         let fpre = fp_pre(ch, &mut s.cot, dabits, triples, &mut s.rng);
         (pre, fpre)
     }
@@ -99,8 +97,7 @@ impl<F: Field> ArithMalSession<F> {
         let subs = [Sub::Share(beta_share), Sub::Product(self.delta_mac, beta_share)];
         let words = arith_leaf(ch, &masks, &subs, st.lsb(), &mut fpre, &[err(n), err(n + 1)]);
         let (w_cw, wm_cw) = (words[0], words[1]);
-        let products = be.products;
-        (ArithMalKey { party: b, n_size, root, cws, w_cw, wm_cw }, products)
+        (ArithMalKey { party: b, n_size, root, cws, w_cw, wm_cw }, be.ands)
     }
 }
 
@@ -109,26 +106,24 @@ pub struct ArithMalRun<F: Field> {
     pub key: ArithMalKey<F>,
     /// This party's share of the payload-MAC key δ.
     pub delta_share: F,
-    /// Base OTs, Ferret bootstrap and the FOLEAGE seed generation.
+    /// Base OTs and the Ferret bootstrap.
     pub setup_stats: CommStats,
     pub setup_time: Duration,
     pub pre_stats: CommStats,
     pub pre_time: Duration,
     pub gen_stats: CommStats,
     pub gen_time: Duration,
-    pub products: usize,
-    /// COTs consumed after setup (α-bits, string triples, leaf OLEs).
+    /// ANDs of the AES calls.
+    pub ands: usize,
+    /// COTs consumed after setup (the OT tower's, α-bits, string triples,
+    /// leaf OLEs).
     pub cots: usize,
-    pub foleage: Params,
-    pub seedgen_stats: CommStats,
-    pub seedgen_time: Duration,
 }
 
-/// Setup, preprocessing and generation for one party. `foleage`: at least
-/// [`crate::malicious::mal_foleage_for`]`(n)`.
+/// Setup, preprocessing and generation for one party.
 #[allow(clippy::too_many_arguments)]
-pub fn run_mal_arith<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params, fault: Option<Fault>) -> ArithMalRun<F> {
-    let mut s = ArithMalSession::<F>::setup(ch, seed, ferret, foleage);
+pub fn run_mal_arith<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, seed: [u8; 32], ferret: Option<FerretConfig>, fault: Option<Fault>) -> ArithMalRun<F> {
+    let mut s = ArithMalSession::<F>::setup(ch, seed, ferret);
     let (setup_stats, setup_time) = (s.s.stats, s.s.time);
     let cots_before = s.s.cot.produced;
     let n = depth_for(n_size);
@@ -140,7 +135,7 @@ pub fn run_mal_arith<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, 
     ch.sync();
     let before = ch.stats();
     let t = Instant::now();
-    let (key, products) = s.gen(ch, n_size, alpha_share, beta_share, pre, fault);
+    let (key, ands) = s.gen(ch, n_size, alpha_share, beta_share, pre, fault);
     ArithMalRun {
         key,
         delta_share: s.delta_mac,
@@ -150,11 +145,8 @@ pub fn run_mal_arith<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, 
         pre_time,
         gen_stats: ch.stats().since(&before),
         gen_time: t.elapsed(),
-        products,
+        ands,
         cots: s.s.cot.produced - cots_before,
-        foleage,
-        seedgen_stats: s.s.seedgen_stats,
-        seedgen_time: s.s.seedgen_time,
     }
 }
 

@@ -5,8 +5,8 @@
 //! ```
 //!
 //! * `sh`: semi-honest, payload in F_p (Goldilocks for `--out-bits` ≤ 64,
-//!   `2^127 − 1` above), the paper's leaf (daBits, one Beaver triple), F4
-//!   triples from FOLEAGE.
+//!   `2^127 − 1` above), the paper's leaf (daBits, one Beaver triple), AES–MMO
+//!   on the OT tower (every AND from Ferret COTs).
 //! * `sh-bin`: semi-honest, payload in F_2^ℓ (no B2A at the leaf).
 //! * `mal`: malicious on the same preprocessing, payload in
 //!   `{0,1}^ℓ ⊂ GF(2^128)` with a payload MAC and Π_Verify.
@@ -15,12 +15,10 @@
 //! * `mal-auth`: as `mal` with every share authenticated ((A1)–(A5)), F4
 //!   triples from leaky authenticated triples on malicious Ferret.
 //!
-//! Setup is the base OTs, the Ferret bootstrap (`FerretConfig::B13`) and, for
-//! `sh` and `mal`, the dealer-free FOLEAGE seed generation for the smallest
-//! instance (≥ 3^12 OLEs) that covers one Gen; its traffic is printed as a `#`
-//! line. Preprocessing is the FOLEAGE expansion into F4 triples, the string
-//! triples and the Ferret COTs (for `mal-auth`: the authenticated triples).
-//! `and_gates` counts F4 products. `eval` and `full` use dealer keys; `full`
+//! Setup is the base OTs and the Ferret bootstrap (`FerretConfig::B13`).
+//! Preprocessing is the OT tower's random Ferret COTs, the string triples and
+//! the Ferret COTs (for `mal-auth`: the authenticated triples). `and_gates`
+//! counts ANDs (for `mal-auth`: F4 products). `eval` and `full` use dealer keys; `full`
 //! evaluates the whole domain (output and, for `mal` and `mal-auth`, MAC) one
 //! level at a time, or with `--stream` in a batched walk that folds the
 //! outputs into a checksum. Gen only follows the path to α, so `--stream`
@@ -32,7 +30,7 @@ use dpf_common::net::run_two_party;
 use dpf_common::ot::FerretConfig;
 use dpf_common::stream::TreeMode;
 use ht_aes::field::{Field, Gold, M127};
-use ht_aes::semi_honest::{foleage_for, gen, gen_reference};
+use ht_aes::semi_honest::{gen, gen_reference};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::hint::black_box;
@@ -41,7 +39,6 @@ use std::time::Instant;
 fn gen_sh<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
-    let fp = foleage_for(depth_for(o.size));
     for _ in 0..o.reps {
         drop(last.take());
         let alpha = rng.gen_range(0..o.size);
@@ -54,7 +51,7 @@ fn gen_sh<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
         let timed = |party: usize, a: u64, b: F| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = gen(c, n, a, b, seeds[party], Some(FerretConfig::B13), fp);
+                let out = gen(c, n, a, b, seeds[party], Some(FerretConfig::B13));
                 (out, t.elapsed())
             }
         };
@@ -68,14 +65,6 @@ fn gen_sh<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     }
     let (o0, o1) = last.unwrap();
     let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.pre_stats, o1.pre_stats], [o0.gen_stats, o1.gen_stats]);
-    println!(
-        "# foleage: N={} oles={} seedgen_bytes={} seedgen_rounds={} seedgen_ms={:.1}",
-        o0.foleage.log3,
-        o0.foleage.oles(),
-        o0.seedgen_stats.total_bytes(),
-        o0.seedgen_stats.rounds.max(o1.seedgen_stats.rounds),
-        o0.seedgen_time.max(o1.seedgen_time).as_secs_f64() * 1e3
-    );
     print_gen(
         o,
         &GenRow {
@@ -93,7 +82,7 @@ fn gen_sh<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
             gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
-            and_gates: o0.products,
+            and_gates: o0.ands,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),
         },
@@ -125,11 +114,10 @@ fn eval_sh<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
 }
 
 fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
-    use ht_aes::malicious::{low, mal_foleage_for, run_mal};
+    use ht_aes::malicious::{low, run_mal};
     let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
     let bits = o.out_bits;
-    let fp = mal_foleage_for(depth_for(o.size));
     for _ in 0..o.reps {
         drop(last.take());
         let alpha = rng.gen_range(0..o.size);
@@ -141,7 +129,7 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
         let timed = |party: usize, a: u64, b: dpf_common::block::Block| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = run_mal(c, n, bits, a, b, seeds[party], Some(FerretConfig::B13), fp, None);
+                let out = run_mal(c, n, bits, a, b, seeds[party], Some(FerretConfig::B13), None);
                 (out, t.elapsed())
             }
         };
@@ -155,14 +143,6 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
     }
     let (o0, o1) = last.unwrap();
     let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.pre_stats, o1.pre_stats], [o0.gen_stats, o1.gen_stats]);
-    println!(
-        "# foleage: N={} oles={} seedgen_bytes={} seedgen_rounds={} seedgen_ms={:.1}",
-        o0.foleage.log3,
-        o0.foleage.oles(),
-        o0.seedgen_stats.total_bytes(),
-        o0.seedgen_stats.rounds.max(o1.seedgen_stats.rounds),
-        o0.seedgen_time.max(o1.seedgen_time).as_secs_f64() * 1e3
-    );
     print_gen(
         o,
         &GenRow {
@@ -180,7 +160,7 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
             gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
-            and_gates: o0.products,
+            and_gates: o0.ands,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),
         },
@@ -272,7 +252,6 @@ fn gen_sh_bin(o: &Opts, rng: &mut ChaCha20Rng) {
     let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
     let bits = o.out_bits;
-    let fp = foleage_for(depth_for(o.size));
     for _ in 0..o.reps {
         drop(last.take());
         let alpha = rng.gen_range(0..o.size);
@@ -284,7 +263,7 @@ fn gen_sh_bin(o: &Opts, rng: &mut ChaCha20Rng) {
         let timed = |party: usize, a: u64, b: dpf_common::block::Block| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = gen(c, n, bits, a, b, seeds[party], Some(FerretConfig::B13), fp);
+                let out = gen(c, n, bits, a, b, seeds[party], Some(FerretConfig::B13));
                 (out, t.elapsed())
             }
         };
@@ -298,14 +277,6 @@ fn gen_sh_bin(o: &Opts, rng: &mut ChaCha20Rng) {
     }
     let (o0, o1) = last.unwrap();
     let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.pre_stats, o1.pre_stats], [o0.gen_stats, o1.gen_stats]);
-    println!(
-        "# foleage: N={} oles={} seedgen_bytes={} seedgen_rounds={} seedgen_ms={:.1}",
-        o0.foleage.log3,
-        o0.foleage.oles(),
-        o0.seedgen_stats.total_bytes(),
-        o0.seedgen_stats.rounds.max(o1.seedgen_stats.rounds),
-        o0.seedgen_time.max(o1.seedgen_time).as_secs_f64() * 1e3
-    );
     print_gen(
         o,
         &GenRow {
@@ -323,7 +294,7 @@ fn gen_sh_bin(o: &Opts, rng: &mut ChaCha20Rng) {
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
             gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
-            and_gates: o0.products,
+            and_gates: o0.ands,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),
         },
@@ -357,11 +328,9 @@ fn eval_sh_bin(o: &Opts, rng: &mut ChaCha20Rng) {
 }
 
 fn gen_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
-    use ht_aes::malicious::mal_foleage_for;
     use ht_aes::malicious_arith::run_mal_arith;
     let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
-    let fp = mal_foleage_for(depth_for(o.size));
     for _ in 0..o.reps {
         drop(last.take());
         let alpha = rng.gen_range(0..o.size);
@@ -372,7 +341,7 @@ fn gen_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
         let timed = |party: usize, a: u64, b: F| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = run_mal_arith(c, n, a, b, seeds[party], Some(FerretConfig::B13), fp, None);
+                let out = run_mal_arith(c, n, a, b, seeds[party], Some(FerretConfig::B13), None);
                 (out, t.elapsed())
             }
         };
@@ -386,14 +355,6 @@ fn gen_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     }
     let (o0, o1) = last.unwrap();
     let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.pre_stats, o1.pre_stats], [o0.gen_stats, o1.gen_stats]);
-    println!(
-        "# foleage: N={} oles={} seedgen_bytes={} seedgen_rounds={} seedgen_ms={:.1}",
-        o0.foleage.log3,
-        o0.foleage.oles(),
-        o0.seedgen_stats.total_bytes(),
-        o0.seedgen_stats.rounds.max(o1.seedgen_stats.rounds),
-        o0.seedgen_time.max(o1.seedgen_time).as_secs_f64() * 1e3
-    );
     print_gen(
         o,
         &GenRow {
@@ -411,7 +372,7 @@ fn gen_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
             gen_bytes: o0.gen_stats.total_bytes(),
             depth: o0.key.depth(),
             gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
-            and_gates: o0.products,
+            and_gates: o0.ands,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),
         },

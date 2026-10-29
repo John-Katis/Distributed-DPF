@@ -2,10 +2,9 @@
 //! and the dealer.
 
 use dpf_common::block::Block;
-use dpf_common::foleage::Params;
 use dpf_common::net::run_two_party;
 use ht_aes::field::{Field, Gold, M127};
-use ht_aes::semi_honest::{deal, foleage_for, gen, ShKey};
+use ht_aes::semi_honest::{deal, gen, ShKey};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -28,17 +27,17 @@ fn check<F: Field>(keys: &[ShKey<F>; 2], n: u64, alpha: u64, beta: F) {
     }
 }
 
-fn run<F: Field>(n: u64, alpha: u64, beta: F, seed: u64, p: Params) -> [ShKey<F>; 2] {
+fn run<F: Field>(n: u64, alpha: u64, beta: F, seed: u64) -> [ShKey<F>; 2] {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
     let b0 = F::random(&mut rng);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let (o0, o1) = run_two_party(
-        move |c| gen(c, n, a0, b0, seeds[0], None, p),
-        move |c| gen(c, n, alpha ^ a0, beta.sub(b0), seeds[1], None, p),
+        move |c| gen(c, n, a0, b0, seeds[0], None),
+        move |c| gen(c, n, alpha ^ a0, beta.sub(b0), seeds[1], None),
     );
     let depth = o0.key.depth();
-    assert_eq!(o0.products, ht_aes::sh_products(depth));
+    assert_eq!(o0.ands, ht_aes::sh_ands(depth));
     assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), 41 * depth + 44);
     [o0.key, o1.key]
 }
@@ -50,7 +49,7 @@ fn gen_matches_point_function_and_dealer<F: Field>(seed: u64) {
         for alpha in [0, n - 1, rng.gen_range(0..n)] {
             s += 1;
             let beta = F::random(&mut rng);
-            let keys = run::<F>(n, alpha, beta, s, Params::new(10));
+            let keys = run::<F>(n, alpha, beta, s);
             check(&keys, n, alpha, beta);
             assert_eq!(deal([keys[0].root, keys[1].root], n, alpha, beta), keys);
         }
@@ -84,7 +83,7 @@ fn gen_at_domain_2_pow_63() {
     let n = 1u64 << 63;
     let alpha = rng.gen_range(0..n);
     let beta = Gold::random(&mut rng);
-    let keys = run::<Gold>(n, alpha, beta, 7, foleage_for(63));
+    let keys = run::<Gold>(n, alpha, beta, 7);
     assert_eq!(keys[0].depth(), 63);
     for x in [alpha, alpha ^ 1, alpha ^ (1 << 62), 0, n - 1, rng.gen_range(0..n)] {
         let y = keys[0].eval_point(x).add(keys[1].eval_point(x));

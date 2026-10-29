@@ -1,16 +1,15 @@
 //! Semi-honest dealer-free generation (Figure "DPF.Gen" of the paper) with
-//! `F_PRF` = AES–MMO in 2PC and F4 triples from FOLEAGE.
+//! `F_PRF` = AES–MMO in 2PC on the OT tower ([`OtTower`]).
 //!
 //! **Setup** (once per session): each party picks `Δ_b` with `lsb(Δ_b) = b`
 //! and runs the base OTs of a COT instance keyed by `Δ_b` in each direction,
-//! then bootstraps Ferret on it. The FOLEAGE seeds for `3^N` F4-OLEs are then
-//! generated without a dealer ([`dpf_common::foleage::seedgen`]); N is the
-//! smallest (≥ 12) that covers the Gen's [`crate::sh_products`] triples.
+//! then bootstraps Ferret on it.
 //!
-//! **Preprocessing** (before α and β are known): FOLEAGE expansion and the F4
-//! triples, n bit-times-block triples for the branch selection from Ferret
-//! random OTs ([`rot_string_triples`]), Ferret COTs for the n α-bits, and the
-//! leaf's 2κ + 1 daBits and one Beaver triple over F_p ([`crate::leaf`]).
+//! **Preprocessing** (before α and β are known): the OT tower's random Ferret
+//! COTs ([`COTS_PER_CALL`] per AES–MMO call, party 0 the sender), n
+//! bit-times-block triples for the branch selection from Ferret random OTs
+//! ([`rot_string_triples`]), Ferret COTs for the n α-bits, and the leaf's
+//! 2κ + 1 daBits and one Beaver triple over F_p ([`crate::leaf`]).
 //!
 //! **Generation**, with `α` XOR-shared (bit `n − 1 − i` is level i + 1) and
 //! `β` additively shared in `G = F_p` ([`crate::field`]):
@@ -36,11 +35,10 @@
 use super::key::ShKey;
 use crate::field::Field;
 use crate::leaf::{arith_leaf, fp_pre, fp_pre_cots, leaf_dabits, FpPre, Sub};
-use crate::{leaf_seed, pay_hash, sh_products, state_hash};
-use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, BeaverF4, Mmo, Shared128};
+use crate::{leaf_seed, pay_hash, sh_calls, state_hash};
+use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, OtTower, Shared128, COTS_PER_CALL};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::bool2pc::rot_string_triples;
-use dpf_common::foleage::{self, seedgen::seed_gen, Params};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::ot::{CotPair, FerretConfig};
 use rand::SeedableRng;
@@ -50,41 +48,32 @@ use std::time::{Duration, Instant};
 /// Everything one party gets out of [`gen`] (and [`super::bin::gen`]).
 pub struct GenOutput<K> {
     pub key: K,
-    /// Base OTs, Ferret bootstrap and the FOLEAGE seed generation.
+    /// Base OTs and the Ferret bootstrap.
     pub setup_stats: CommStats,
     pub pre_stats: CommStats,
     pub gen_stats: CommStats,
     pub setup_time: Duration,
     pub pre_time: Duration,
     pub gen_time: Duration,
-    /// F4 products (Beaver triples) used by the AES calls.
-    pub products: usize,
-    /// COTs consumed after setup (α-bits, MUXes, branch-selection triples).
+    /// ANDs of the AES calls.
+    pub ands: usize,
+    /// COTs consumed after setup (the OT tower's, α-bits, branch-selection
+    /// triples, the leaf's).
     pub cots: usize,
-    /// The FOLEAGE instance: `3^N` OLEs.
-    pub foleage: Params,
-    /// FOLEAGE seed generation alone (part of setup).
-    pub seedgen_stats: CommStats,
-    pub seedgen_time: Duration,
 }
 
 /// The correlations one generation consumes.
 pub struct Pre {
-    pub be: BeaverF4,
+    pub be: OtTower,
     /// `(a, B, a·B)` for the n branch selections.
     pub string_triples: Vec<(bool, Block, Block)>,
 }
 
-/// `products` F4 triples from the FOLEAGE seed, starting at triple `*used`
-/// (advanced past them, so no two Gens of a session share a triple),
-/// `strings` bit-times-block triples from Ferret random OTs and `cots` COTs per
-/// direction.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn precompute_counts(ch: &mut Channel, cot: &mut CotPair, seed: &foleage::Seed, used: &mut usize, products: usize, strings: usize, cots: usize, rng: &mut ChaCha20Rng) -> Pre {
-    let ole = seed.expand();
-    let be = BeaverF4::new(ch.party(), foleage::triples_at(&ole, ch.party(), *used, products));
-    *used += products;
-    drop(ole);
+/// The OT tower's COTs for `calls` AES–MMO calls, `strings` bit-times-block
+/// triples from Ferret random OTs and `cots` COTs per direction.
+pub(crate) fn precompute_counts(ch: &mut Channel, cot: &mut CotPair, calls: usize, strings: usize, cots: usize, rng: &mut ChaCha20Rng) -> Pre {
+    let pool = cot.random_cots(ch, 0, calls * COTS_PER_CALL, rng).expect("semi-honest COT");
+    let be = OtTower::new(ch.party(), pool, cot.delta());
     let string_triples = rot_string_triples(ch, cot, strings, rng);
     cot.precompute(ch, cots, cots, rng).expect("semi-honest COT");
     Pre { be, string_triples }
@@ -94,17 +83,12 @@ pub(crate) fn precompute_counts(ch: &mut Channel, cot: &mut CotPair, seed: &fole
 pub(crate) struct Setup {
     pub cot: CotPair,
     pub rng: ChaCha20Rng,
-    pub fseed: foleage::Seed,
-    /// F4 triples of `fseed` already handed out.
-    pub fused: usize,
     pub stats: CommStats,
     pub time: Duration,
-    pub seedgen_stats: CommStats,
-    pub seedgen_time: Duration,
 }
 
-/// Base OTs keyed by `Δ_b` (`lsb(Δ_b) = b`), Ferret, FOLEAGE seed generation.
-pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> Setup {
+/// Base OTs keyed by `Δ_b` (`lsb(Δ_b) = b`) and Ferret.
+pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Setup {
     let t_setup = Instant::now();
     let mut rng = ChaCha20Rng::from_seed(seed);
     let party = ch.party();
@@ -113,13 +97,8 @@ pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfi
     if let Some(cfg) = ferret {
         cot.enable_ferret(ch, cfg, &mut rng).expect("semi-honest Ferret");
     }
-    let before_seed = ch.stats();
-    let t_seed = Instant::now();
-    let fseed = seed_gen(ch, &mut cot, foleage, &mut rng);
-    let seedgen_stats = ch.stats().since(&before_seed);
-    let seedgen_time = t_seed.elapsed();
     ch.sync();
-    Setup { cot, rng, fseed, fused: 0, stats: ch.stats(), time: t_setup.elapsed(), seedgen_stats, seedgen_time }
+    Setup { cot, rng, stats: ch.stats(), time: t_setup.elapsed() }
 }
 
 /// Steps 1–3: `⟨α_ℓ·Δ⟩`, then the n levels. `extra` rides with the level-0
@@ -138,7 +117,7 @@ pub(crate) struct Walk {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn walk(
-    be: &mut BeaverF4,
+    be: &mut OtTower,
     string_triples: &[(bool, Block, Block)],
     cot: &mut CotPair,
     rng: &mut ChaCha20Rng,
@@ -228,8 +207,7 @@ fn gen_with<F: Field>(cot: &mut CotPair, pre: Pre, fpre: &mut FpPre<F>, rng: &mu
     let jobs: [(&Mmo, Shared128<bool>); 2] = [(fp, bits_of(leaf_seed(st))), (fp, bits_of(leaf_seed(st ^ delta)))];
     let w = mmo_shared(&mut be, ch, &jobs);
     let w_cw = arith_leaf(ch, &[[block_of(&w[0]), block_of(&w[1])]], &[Sub::Share(beta_share)], st.lsb(), fpre, &[F::ZERO])[0];
-    let products = be.products;
-    (ShKey { party: b, n_size, root, cws, w_cw }, products)
+    (ShKey { party: b, n_size, root, cws, w_cw }, be.ands)
 }
 
 /// Runs this party's side of setup, preprocessing and generation.
@@ -238,16 +216,13 @@ fn gen_with<F: Field>(cot: &mut CotPair, pre: Pre, fpre: &mut FpPre<F>, rng: &mu
 ///   `β ∈ F_p`.
 /// * `ferret`: the silent-OT parameters (`Some(FerretConfig::B13)` for
 ///   benchmarks); `None` keeps IKNP, for tests.
-/// * `foleage`: the PCG instance, at least [`foleage_for`]`(n)`.
-#[allow(clippy::too_many_arguments)]
-pub fn gen<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, seed: [u8; 32], ferret: Option<FerretConfig>, foleage: Params) -> GenOutput<ShKey<F>> {
+pub fn gen<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, seed: [u8; 32], ferret: Option<FerretConfig>) -> GenOutput<ShKey<F>> {
     let n = depth_for(n_size);
     let (dabits, triples) = (leaf_dabits::<F>(1), 1);
     drive(
         ch,
         seed,
         ferret,
-        foleage,
         n,
         n + fp_pre_cots::<F>(dabits, triples),
         |cot, rng, ch| fp_pre::<F, _>(ch, cot, dabits, triples, rng),
@@ -255,27 +230,23 @@ pub fn gen<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share
     )
 }
 
-/// Setup, then preprocessing ([`sh_products`]`(n)` F4 triples, n string
-/// triples, `cots` COTs per direction, then `extra`), then `body`, the
-/// generation proper, each phase timed and counted on its own.
-#[allow(clippy::too_many_arguments)]
+/// Setup, then preprocessing (the OT tower's COTs for [`sh_calls`]`(n)`
+/// AES–MMO calls, n string triples, `cots` COTs per direction, then `extra`),
+/// then `body`, the generation proper, each phase timed and counted on its own.
 pub(crate) fn drive<K, P>(
     ch: &mut Channel,
     seed: [u8; 32],
     ferret: Option<FerretConfig>,
-    foleage: Params,
     n: usize,
     cots: usize,
     extra: impl FnOnce(&mut CotPair, &mut ChaCha20Rng, &mut Channel) -> P,
     body: impl FnOnce(&mut CotPair, Pre, P, &mut ChaCha20Rng, &mut Channel) -> (K, usize),
 ) -> GenOutput<K> {
-    let Setup { mut cot, mut rng, fseed, mut fused, stats: setup_stats, time: setup_time, seedgen_stats, seedgen_time } = setup(ch, seed, ferret, foleage);
+    let Setup { mut cot, mut rng, stats: setup_stats, time: setup_time } = setup(ch, seed, ferret);
     let cots_before = cot.produced;
 
     let t_pre = Instant::now();
-    assert!(2 * sh_products(n) <= foleage.oles(), "FOLEAGE instance too small for depth {n}");
-    let pre = precompute_counts(ch, &mut cot, &fseed, &mut fused, sh_products(n), n, cots, &mut rng);
-    drop(fseed);
+    let pre = precompute_counts(ch, &mut cot, sh_calls(n), n, cots, &mut rng);
     let more = extra(&mut cot, &mut rng, ch);
     let pre_stats = ch.stats().since(&setup_stats);
     let pre_time = t_pre.elapsed();
@@ -284,7 +255,7 @@ pub(crate) fn drive<K, P>(
     ch.sync();
     let gen_start = ch.stats();
     let t_gen = Instant::now();
-    let (key, products) = body(&mut cot, pre, more, &mut rng, ch);
+    let (key, ands) = body(&mut cot, pre, more, &mut rng, ch);
     GenOutput {
         key,
         gen_stats: ch.stats().since(&gen_start),
@@ -293,17 +264,9 @@ pub(crate) fn drive<K, P>(
         setup_time,
         pre_time,
         gen_time: t_gen.elapsed(),
-        products,
+        ands,
         cots: cot.produced - cots_before,
-        foleage,
-        seedgen_stats,
-        seedgen_time,
     }
-}
-
-/// The FOLEAGE instance a Gen of depth n needs (two OLEs per F4 triple).
-pub fn foleage_for(n: usize) -> Params {
-    Params::for_oles(2 * sh_products(n))
 }
 
 /// Trusted-dealer generation for given roots (`lsb(root_b) = b`): the cleartext
