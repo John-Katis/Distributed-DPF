@@ -3,14 +3,18 @@
 # FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal} and the leakage-free mal-auth) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen) or results-eval/ (eval, full, all).
 #
-#   [OUT_LIST=a,b,..] [SKIP_OURS=1] scripts/bench_all.sh [--max-in-bits n] [--reps R] [--points P] [--batch-log b] [mode]
+#   [OUT_LIST=a,b,..] [SKIP_OURS=1] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--reps R] [--points P] [--batch-log b] [mode]
 #
 # SKIP_OURS=1 runs only the other papers' protocols and leaves the ht-aes
 # CSVs as they are.
 #
-# mode is gen|eval|full|all (default gen). The sweep covers in-bits 8..=32
-# (--max-in-bits) and out-bits OUT_LIST (default 64,128), so each output
-# width has all protocols side by side. Floram-arith and Duoram run Z_2^l on
+# mode is gen|eval|full|all (default gen). The sweep covers in-bits 20..=36
+# (--min-in-bits, --max-in-bits) and out-bits OUT_LIST (default 64,128), so
+# each output width has all protocols side by side. Every (in-bits, out-bits)
+# point is its own process, so a point that crashes (out of memory, panic)
+# loses only itself: it is logged as a `# failed:` line in the CSV and the
+# sweep moves on to the next protocol, since the larger points would not fit
+# either. The failures are listed again at the end. Floram-arith and Duoram run Z_2^l on
 # 64-bit words for l <= 64 and on 128-bit words above; at l = 128 every
 # protocol takes one more PRG call per leaf for the output, since a 128-bit
 # leaf has only 127 bits above its t-bit.
@@ -25,20 +29,22 @@
 # eval does hold the whole domain, so in eval/full/all mode they stream it from n = 28
 # (FssNN, ht-aes sh) and 27 (ht-aes mal: output and MAC per leaf); in `all`
 # mode ht-aes stays stored, since its Gen has no streaming tree.
-set -euo pipefail
+set -uo pipefail
 cd "$(dirname "$0")/.."
 
 MODE=gen
 OUT_LIST=${OUT_LIST:-64,128}
+MIN_IN=20 MAX_IN=36
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     gen|eval|full|all) MODE="$1"; shift ;;
-    --max-in-bits|--reps|--points|--batch-log) ARGS+=("$1" "$2"); shift 2 ;;
+    --min-in-bits) MIN_IN="$2"; shift 2 ;;
+    --max-in-bits) MAX_IN="$2"; shift 2 ;;
+    --reps|--points|--batch-log) ARGS+=("$1" "$2"); shift 2 ;;
     *) echo "unknown argument $1" >&2; exit 1 ;;
   esac
 done
-[[ " ${ARGS[*]-} " == *" --max-in-bits "* ]] || ARGS+=(--max-in-bits 32)
 
 if [[ $MODE == gen ]]; then
   OUT=results-gen
@@ -50,24 +56,56 @@ else
   [[ $MODE == all ]] || AS=(--stream-from 28) AM=(--stream-from 27)
 fi
 mkdir -p "$OUT"
-cargo build --release -p floram-cprg -p half-tree -p floram-arith -p fssnn -p duoram -p ht-aes --examples
+cargo build --release -p floram-cprg -p half-tree -p floram-arith -p fssnn -p duoram -p ht-aes --examples || exit 1
 
 BIN=target/release/examples
-S=(--sweep --out-list "$OUT_LIST" "${ARGS[@]}")
-echo "floram"        && "$BIN/bench"              "$MODE" "${S[@]}" --stream-from 29                        | tee "$OUT"/floram.csv
-echo "ht"            && "$BIN/bench-half-tree"    "$MODE" "${S[@]}" --stream-from 29 --variant ht           | tee "$OUT"/ht.csv
-echo "ht-mal-ferret" && "$BIN/bench-half-tree"    "$MODE" "${S[@]}" --stream-from 27 --variant mal-ferret   | tee "$OUT"/ht-mal-ferret.csv
-echo "floram-arith"  && "$BIN/bench-floram-arith" "$MODE" "${S[@]}" --stream-from 29                        | tee "$OUT"/floram-arith.csv
-echo "fssnn-bin"     && "$BIN/bench-fssnn"        "$MODE" "${S[@]}" "${FS[@]}" --variant bin              | tee "$OUT"/fssnn-bin.csv
-echo "fssnn-arith"   && "$BIN/bench-fssnn"        "$MODE" "${S[@]}" "${FS[@]}" --variant arith            | tee "$OUT"/fssnn-arith.csv
-echo "duoram-2p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 2p           | tee "$OUT"/duoram-2p.csv
-echo "duoram-3p"     && "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 3p           | tee "$OUT"/duoram-3p.csv
-[[ ${SKIP_OURS:-0} == 1 ]] && exit 0
-echo "ht-aes-sh-bin"    && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh-bin    | tee "$OUT"/ht-aes-sh-bin.csv
-echo "ht-aes-sh"        && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh        | tee "$OUT"/ht-aes-sh.csv
-echo "ht-aes-mal"       && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal       | tee "$OUT"/ht-aes-mal.csv
-echo "ht-aes-mal-arith" && "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal-arith | tee "$OUT"/ht-aes-mal-arith.csv
-# The leakage-free Gen (A1)-(A5); its keys and evaluation are those of ht-aes-mal.
-if [[ $MODE == gen ]]; then
-  echo "ht-aes-mal-auth" && "$BIN/bench-ht-aes" gen "${S[@]}" --variant mal-auth | tee "$OUT"/ht-aes-mal-auth.csv
+S=("${ARGS[@]}")
+FAILED=()
+# Ctrl-C stops the whole run instead of counting as a crashed point.
+trap 'exit 130' INT
+
+# run NAME BIN ARGS..: sweeps one protocol into $OUT/NAME.csv, one process
+# per point; the header comes from the first point only.
+run() {
+  local name=$1 csv="$OUT/$1.csv" n m first=1 code
+  shift
+  echo "$name"
+  : > "$csv"
+  for ((n = MIN_IN; n <= MAX_IN; n++)); do
+    for m in ${OUT_LIST//,/ }; do
+      "$@" --in-bits "$n" --out-bits "$m" \
+        | if ((first)); then cat; else grep -v -e '^# gen: ' -e '^# eval: ' -e '^# full: ' -e '^# net: '; fi \
+        | tee -a "$csv"
+      code=${PIPESTATUS[0]}
+      first=0
+      if ((code != 0)); then
+        echo "# failed: in_bits=$n out_bits=$m exit=$code" | tee -a "$csv" >&2
+        FAILED+=("$name at in_bits=$n out_bits=$m (exit $code)")
+        return
+      fi
+    done
+  done
+}
+run floram        "$BIN/bench"              "$MODE" "${S[@]}" --stream-from 29
+run ht            "$BIN/bench-half-tree"    "$MODE" "${S[@]}" --stream-from 29 --variant ht
+run ht-mal-ferret "$BIN/bench-half-tree"    "$MODE" "${S[@]}" --stream-from 27 --variant mal-ferret
+run floram-arith  "$BIN/bench-floram-arith" "$MODE" "${S[@]}" --stream-from 29
+run fssnn-bin     "$BIN/bench-fssnn"        "$MODE" "${S[@]}" "${FS[@]}" --variant bin
+run fssnn-arith   "$BIN/bench-fssnn"        "$MODE" "${S[@]}" "${FS[@]}" --variant arith
+run duoram-2p     "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 2p
+run duoram-3p     "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 3p
+if [[ ${SKIP_OURS:-0} != 1 ]]; then
+  run ht-aes-sh-bin    "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh-bin
+  run ht-aes-sh        "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh
+  run ht-aes-mal       "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal
+  run ht-aes-mal-arith "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal-arith
+  # The leakage-free Gen (A1)-(A5); its keys and evaluation are those of ht-aes-mal.
+  if [[ $MODE == gen ]]; then
+    run ht-aes-mal-auth "$BIN/bench-ht-aes" gen "${S[@]}" --variant mal-auth
+  fi
+fi
+
+if ((${#FAILED[@]})); then
+  echo "failed (the sweep moved on to the next protocol):" >&2
+  printf '  %s\n' "${FAILED[@]}" >&2
 fi
