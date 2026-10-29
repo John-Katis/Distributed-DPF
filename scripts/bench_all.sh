@@ -12,10 +12,13 @@
 # for gen and 8..=32 otherwise (--min-in-bits, --max-in-bits) and out-bits
 # OUT_LIST (default 64,128), so each output width has all protocols side by
 # side. In gen mode FssNN and ours, whose Gen follows only the path to alpha,
-# go on to in-bits 42 (--max-in-bits-path); the paper estimates the other
-# protocols above 36 instead of running them. --append adds the rows to the
-# existing CSVs instead of starting them afresh, e.g. --append --min-in-bits 37
-# runs only FssNN and ours on 37..=42. --reps-from n R (gen default: 33 2) runs each point from in-bits n on
+# are measured up to in-bits 42 (--max-in-bits-path); every other protocol is
+# measured up to 36 and its CSV gets estimated rows (variant `+est`) above its
+# last measured width up to 42, by scripts/estimate_gen.py (computation x2 per
+# bit, setup constant, communication, rounds and network time linear in n).
+# So after a gen sweep every CSV has rows for in-bits 20..=42. --append adds
+# the rows to the existing CSVs instead of starting them afresh, e.g. --append
+# --min-in-bits 37 runs only FssNN and ours on 37..=42. --reps-from n R (gen default: 33 2) runs each point from in-bits n on
 # as R separate 1-rep processes, one CSV row each, so the rows can be
 # averaged (the bench reports the median, which for 2 reps is the slower
 # one); below n a point runs once with --reps (default 5). Every (in-bits, out-bits)
@@ -84,7 +87,8 @@ trap 'exit 130' INT
 # run NAME BIN ARGS..: sweeps one protocol into $OUT/NAME.csv, one process
 # per point (SPLIT 1-rep processes from REPS_FROM on); the header comes from
 # the first process only, and with --append from none. FssNN and ours sweep
-# up to MAX_PATH, the others up to MAX_IN.
+# up to MAX_PATH; the others up to MAX_IN and, in gen mode, are estimated
+# from there (or from the last point that did not crash) up to MAX_PATH.
 run() {
   local name=$1 csv="$OUT/$1.csv" n m i k reps first=1 code max=$MAX_IN
   shift
@@ -104,11 +108,14 @@ run() {
         if ((code != 0)); then
           echo "# failed: in_bits=$n out_bits=$m exit=$code" | tee -a "$csv" >&2
           FAILED+=("$name at in_bits=$n out_bits=$m (exit $code)")
-          return
+          break 3
         fi
       done
     done
   done
+  if [[ $MODE == gen ]] && ((max < MAX_PATH)); then
+    python3 -I scripts/estimate_gen.py "$csv" "$MAX_PATH"
+  fi
 }
 run floram        "$BIN/bench"              "$MODE" "${S[@]}" --stream-from 29
 run ht            "$BIN/bench-half-tree"    "$MODE" "${S[@]}" --stream-from 29 --variant ht
