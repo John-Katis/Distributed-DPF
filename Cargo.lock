@@ -116,17 +116,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exp-f4-triples"
-version = "0.1.0"
-dependencies = [
- "aes",
- "dpf-common",
- "ht-aes",
- "rand",
- "rand_chacha",
-]
-
-[[package]]
 name = "exp-kk13-vs-kkrt"
 version = "0.1.0"
 dependencies = [

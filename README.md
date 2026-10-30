@@ -63,9 +63,8 @@ REFERENCES.md        papers and techniques this code implements
 | `bench`   | shared CLI and CSV schema for every `examples/bench*.rs` |
 | `stream`  | batched depth-first tree walk for the streaming tree mode (`TreeMode`) |
 | `gc`      | half-gates garbled circuits over XOR-shared inputs (`GcParty`, `Garbler`, `Evaluator`) |
-| `f4`      | the field F4 (`h·ω + l` as two bits), scalar and packed |
+| `f4`      | the field F4 (`h·ω + l` as two bits) |
 | `aes_tower` | AES–MMO in the clear and in 2PC: S-box in the F4 tower with the 7-AND Boyar–Peralta inversion in F16 (34 ANDs, depth 4; 160 S-boxes / 40 rounds per call), every AND from COTs under one offset (`OtTower`: 19 COTs and 87 bits per S-box), XOR-shared keys with Π_KeyExp on shares (`SharedKey`, 40 S-boxes, no extra rounds) |
-| `foleage` | the FOLEAGE F4-OLE PCG (port of the reference code): ternary random DPF, packed FFT, expansion to OLEs and F4 triples, and the dealer-free seed generation of §5 (chosen 1-of-3 OT from COTs), which the reference code leaves out |
 | `testing` | cleartext point function `point_fn` and `random_beta`, for tests and benchmarks |
 
 ## Adding a protocol
