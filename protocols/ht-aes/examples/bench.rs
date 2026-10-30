@@ -4,14 +4,16 @@
 //! cargo run --release -p ht-aes --example bench-ht-aes -- <gen|eval|full|all> [--variant sh|sh-bin|mal|mal-arith] [options]
 //! ```
 //!
-//! * `sh`: semi-honest, payload in F_p (Goldilocks for `--out-bits` ≤ 64,
-//!   `2^127 − 1` above), the paper's leaf (daBits, one Beaver triple), AES–MMO
-//!   on the OT tower (every AND from Ferret COTs).
+//! * `sh`: semi-honest, payload in a prime field by `--out-bits`: Babybear
+//!   (the paper's) for ≤ 31, Goldilocks for ≤ 64, `2^127 − 1` above; the
+//!   paper's leaf (daBits, one Beaver triple), AES–MMO under shared keys on
+//!   the OT tower (every AND from Ferret COTs).
 //! * `sh-bin`: semi-honest, payload in F_2^ℓ (no B2A at the leaf).
 //! * `mal`: malicious on the same preprocessing, payload in
 //!   `{0,1}^ℓ ⊂ GF(2^128)` with a payload MAC and Π_Verify.
-//! * `mal-arith`: malicious on the same preprocessing, payload and MAC in F_p:
-//!   Goldilocks for `--out-bits` ≤ 64, `2^127 − 1` above.
+//! * `mal-arith`: malicious on the same preprocessing: payload in Babybear
+//!   with MACs in `F_{q^4}` (the paper's) for `--out-bits` ≤ 31, payload and
+//!   MAC in Goldilocks for ≤ 64, in `2^127 − 1` above.
 //!
 //! Setup is the base OTs and the Ferret bootstrap (`FerretConfig::B13`).
 //! Preprocessing is the OT tower's random Ferret COTs, the string triples and
@@ -26,7 +28,7 @@ use dpf_common::block::depth_for;
 use dpf_common::net::run_two_party;
 use dpf_common::ot::FerretConfig;
 use dpf_common::stream::TreeMode;
-use ht_aes::field::{Field, Gold, M127};
+use ht_aes::field::{BabyBear, BabyBear4, Ext, Field, Gold, M127};
 use ht_aes::semi_honest::{gen, gen_reference};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -270,7 +272,7 @@ fn eval_sh_bin(o: &Opts, rng: &mut ChaCha20Rng) {
     }
 }
 
-fn gen_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
+fn gen_mal_arith<F: Field, E: Ext<F>>(o: &Opts, rng: &mut ChaCha20Rng) {
     use ht_aes::malicious_arith::run_mal_arith;
     let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
@@ -284,7 +286,7 @@ fn gen_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
         let timed = |party: usize, a: u64, b: F| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = run_mal_arith(c, n, a, b, seeds[party], Some(FerretConfig::B13), None);
+                let out = run_mal_arith::<F, E>(c, n, a, b, seeds[party], Some(FerretConfig::B13), None);
                 (out, t.elapsed())
             }
         };
@@ -322,10 +324,10 @@ fn gen_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     );
 }
 
-fn eval_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
+fn eval_mal_arith<F: Field, E: Ext<F>>(o: &Opts, rng: &mut ChaCha20Rng) {
     use ht_aes::malicious_arith::gen_reference;
     let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
-    let (keys, _) = gen_reference(o.size, rng.gen_range(0..o.size), F::random(rng), rng.gen());
+    let (keys, _) = gen_reference::<F, E>(o.size, rng.gen_range(0..o.size), F::random(rng), rng.gen());
     let k = &keys[0];
     if o.runs("eval") {
         bench_eval(o, 1, &xs, |x| {
@@ -338,8 +340,8 @@ fn eval_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
                 black_box(k.eval_full());
             }
             TreeMode::Stream { batch } => {
-                let mut acc = F::ZERO;
-                k.eval_full_stream(batch, |_, outs| acc = outs.iter().fold(acc, |a, y| a.add(y.0).add(y.1)));
+                let mut acc = E::ZERO;
+                k.eval_full_stream(batch, |_, outs| acc = outs.iter().fold(acc, |a, y| a.add(E::embed(y.0)).add(y.1)));
                 black_box(acc);
             }
         });
@@ -352,14 +354,14 @@ fn main() {
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
         assert!(!(o.stream && o.runs("gen")), "ht-aes Gen has no streaming tree: it follows only the path to α");
-        let wide = o.out_bits > 64;
+        let (bb, wide) = (o.out_bits <= 31, o.out_bits > 64);
         match o.variant.as_str() {
             "sh" => {
                 if o.runs("gen") {
-                    if wide { gen_sh::<M127>(o, &mut rng) } else { gen_sh::<Gold>(o, &mut rng) }
+                    if bb { gen_sh::<BabyBear>(o, &mut rng) } else if wide { gen_sh::<M127>(o, &mut rng) } else { gen_sh::<Gold>(o, &mut rng) }
                 }
                 if o.runs("eval") || o.runs("full") {
-                    if wide { eval_sh::<M127>(o, &mut rng) } else { eval_sh::<Gold>(o, &mut rng) }
+                    if bb { eval_sh::<BabyBear>(o, &mut rng) } else if wide { eval_sh::<M127>(o, &mut rng) } else { eval_sh::<Gold>(o, &mut rng) }
                 }
             }
             "sh-bin" => {
@@ -372,10 +374,22 @@ fn main() {
             }
             "mal-arith" => {
                 if o.runs("gen") {
-                    if wide { gen_mal_arith::<M127>(o, &mut rng) } else { gen_mal_arith::<Gold>(o, &mut rng) }
+                    if bb {
+                        gen_mal_arith::<BabyBear, BabyBear4>(o, &mut rng)
+                    } else if wide {
+                        gen_mal_arith::<M127, M127>(o, &mut rng)
+                    } else {
+                        gen_mal_arith::<Gold, Gold>(o, &mut rng)
+                    }
                 }
                 if o.runs("eval") || o.runs("full") {
-                    if wide { eval_mal_arith::<M127>(o, &mut rng) } else { eval_mal_arith::<Gold>(o, &mut rng) }
+                    if bb {
+                        eval_mal_arith::<BabyBear, BabyBear4>(o, &mut rng)
+                    } else if wide {
+                        eval_mal_arith::<M127, M127>(o, &mut rng)
+                    } else {
+                        eval_mal_arith::<Gold, Gold>(o, &mut rng)
+                    }
                 }
             }
             "mal" => {

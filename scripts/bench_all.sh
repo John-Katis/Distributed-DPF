@@ -127,9 +127,11 @@ run duoram-2p     "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 -
 run duoram-3p     "$BIN/bench-duoram"       "$MODE" "${S[@]}" --stream-from 30 --variant 3p
 if [[ ${SKIP_OURS:-0} != 1 ]]; then
   run ht-aes-sh-bin    "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh-bin
-  run ht-aes-sh        "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh
+  # The arithmetic variants also run the paper's Babybear payload (out-bits 31,
+  # MACs in F_{q^4}); 64 and 128 use Goldilocks and 2^127 - 1.
+  OUT_LIST=31,$OUT_LIST run ht-aes-sh "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh
   run ht-aes-mal       "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal
-  run ht-aes-mal-arith "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal-arith
+  OUT_LIST=31,$OUT_LIST run ht-aes-mal-arith "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal-arith
 fi
 
 if ((${#FAILED[@]})); then

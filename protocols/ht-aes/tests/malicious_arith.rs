@@ -1,80 +1,95 @@
-//! The malicious Gen with an arithmetic payload in F_p: correctness against
-//! the dealer, Π_Verify, and that deviations in Gen are caught by Π_Verify.
+//! The malicious Gen with an arithmetic payload: correctness against the
+//! dealer, Π_Verify, and that deviations in Gen are caught by Π_Verify. The
+//! paper's fields (Babybear payload, MAC in F_{q^4}) and, for wider payloads,
+//! Goldilocks and 2^127 − 1 in both roles.
 
 use dpf_common::block::Block;
 use dpf_common::coin::Abort;
 use dpf_common::net::run_two_party;
-use ht_aes::field::{Field, Gold, M127};
-use ht_aes::malicious::{mal_ands, Fault};
-use ht_aes::malicious_arith::{deal, gen_reference, run_mal_arith, verify, ArithMalKey, ArithMalRun};
+use ht_aes::field::{BabyBear, BabyBear4, Ext, Field, Gold, M127};
+use ht_aes::malicious::Fault;
+use ht_aes::malicious_arith::{arith_mal_ands, deal, deal_mask, gen_reference, run_mal_arith, verify, ArithMalKey, ArithMalRun, VerifyMask};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
-fn run<F: Field>(n: u64, alpha: u64, beta: F, seed: u64, faults: [Option<Fault>; 2]) -> [ArithMalRun<F>; 2] {
+fn run<F: Field, E: Ext<F>>(n: u64, alpha: u64, beta: F, seed: u64, faults: [Option<Fault>; 2]) -> [ArithMalRun<F, E>; 2] {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
     let b0 = F::random(&mut rng);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let (r0, r1) = run_two_party(
-        move |c| run_mal_arith(c, n, a0, b0, seeds[0], None, faults[0]),
-        move |c| run_mal_arith(c, n, alpha ^ a0, beta.sub(b0), seeds[1], None, faults[1]),
+        move |c| run_mal_arith::<F, E>(c, n, a0, b0, seeds[0], None, faults[0]),
+        move |c| run_mal_arith::<F, E>(c, n, alpha ^ a0, beta.sub(b0), seeds[1], None, faults[1]),
     );
     [r0, r1]
 }
 
-fn eval_and_verify<F: Field>(keys: [ArithMalKey<F>; 2], d: [F; 2], xs: Vec<u64>, tamper: bool) -> [Result<Vec<F>, Abort>; 2] {
-    let party = |p: usize, k: ArithMalKey<F>| {
-        let xs = xs.clone();
+/// Evaluates both keys at xs and runs Π_Verify on the shares; returns each
+/// party's verdict and the reconstructed outputs (the test sees both shares).
+fn eval_and_verify<F: Field, E: Ext<F>>(
+    keys: [ArithMalKey<F, E>; 2],
+    d: [E; 2],
+    masks: [VerifyMask<E>; 2],
+    xs: Vec<u64>,
+    tamper: bool,
+) -> ([Result<(), Abort>; 2], Vec<F>) {
+    let outs: Vec<Vec<(F, E)>> = keys.iter().map(|k| xs.iter().map(|&x| k.eval_point(x)).collect()).collect();
+    let ys = outs[0].iter().zip(&outs[1]).map(|(a, b)| a.0.add(b.0)).collect();
+    let party = |p: usize| {
+        let mut outs = outs[p].clone();
         move |c: &mut dpf_common::net::Channel| {
-            let mut outs: Vec<(F, F)> = xs.iter().map(|&x| k.eval_point(x)).collect();
             if tamper && p == 1 {
                 outs[0].0 = outs[0].0.add(F::ONE);
             }
-            verify(c, &outs, d[p], &mut ChaCha20Rng::seed_from_u64(p as u64))
+            verify(c, &outs, d[p], masks[p], &mut ChaCha20Rng::seed_from_u64(p as u64))
         }
     };
-    let [k0, k1] = keys;
-    let (a, b) = run_two_party(party(0, k0), party(1, k1));
-    [a, b]
+    let (a, b) = run_two_party(party(0), party(1));
+    ([a, b], ys)
 }
 
-fn gen_matches_dealer_and_verifies<F: Field>(seed: u64) {
+fn gen_matches_dealer_and_verifies<F: Field, E: Ext<F>>(seed: u64) {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     for (i, n) in [8u64, 13, 16].into_iter().enumerate() {
         let alpha = rng.gen_range(0..n);
         let beta = F::random(&mut rng);
-        let [r0, r1] = run(n, alpha, beta, seed + i as u64, [None, None]);
+        let [r0, r1] = run::<F, E>(n, alpha, beta, seed + i as u64, [None, None]);
         let depth = r0.key.depth();
         assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 44);
-        assert_eq!(r0.ands, mal_ands(depth));
+        assert_eq!(r0.ands, arith_mal_ands::<F, E>(depth));
         let delta = r0.delta_share.add(r1.delta_share);
         let dealt = deal([r0.key.root, r1.key.root], [r0.key.prf.key(), r0.key.pay.key(), r0.key.mac.key()], n, alpha, beta, delta);
         assert_eq!(dealt, [r0.key.clone(), r1.key.clone()]);
         let xs: Vec<u64> = (0..n).collect();
-        let [y0, y1] = eval_and_verify([r0.key.clone(), r1.key.clone()], [r0.delta_share, r1.delta_share], xs.clone(), false);
-        let (y0, y1) = (y0.unwrap(), y1.unwrap());
-        assert_eq!(y0, y1);
+        let (d, m) = ([r0.delta_share, r1.delta_share], [r0.mask, r1.mask]);
+        let ([a, b], ys) = eval_and_verify([r0.key.clone(), r1.key.clone()], d, m, xs.clone(), false);
+        assert_eq!((a, b), (Ok(()), Ok(())));
         for x in 0..n {
-            assert_eq!(y0[x as usize], if x == alpha { beta } else { F::ZERO });
+            assert_eq!(ys[x as usize], if x == alpha { beta } else { F::ZERO });
         }
         // A falsified output share is caught.
-        let [a, b] = eval_and_verify([r0.key, r1.key], [r0.delta_share, r1.delta_share], xs, true);
+        let ([a, b], _) = eval_and_verify([r0.key, r1.key], d, m, xs, true);
         assert!(a.is_err() && b.is_err());
     }
 }
 
 #[test]
+fn mal_arith_gen_matches_dealer_and_verifies_babybear() {
+    gen_matches_dealer_and_verifies::<BabyBear, BabyBear4>(21);
+}
+
+#[test]
 fn mal_arith_gen_matches_dealer_and_verifies_gold() {
-    gen_matches_dealer_and_verifies::<Gold>(1);
+    gen_matches_dealer_and_verifies::<Gold, Gold>(1);
 }
 
 #[test]
 fn mal_arith_gen_matches_dealer_and_verifies_m127() {
-    gen_matches_dealer_and_verifies::<M127>(11);
+    gen_matches_dealer_and_verifies::<M127, M127>(11);
 }
 
-/// A wrong CW share, payload word or MAC word in Gen: the honest run of Gen
-/// completes, and Π_Verify over the whole domain aborts.
+/// A wrong CW share, payload word, MAC word or share of K in Gen: the run of
+/// Gen completes, and Π_Verify over the whole domain aborts.
 #[test]
 fn faults_in_gen_are_caught_by_verify() {
     let mut rng = ChaCha20Rng::seed_from_u64(2);
@@ -84,21 +99,35 @@ fn faults_in_gen_are_caught_by_verify() {
             let err = Block(1 << rng.gen_range(0..16));
             let mut faults = [None, None];
             faults[cheater] = Some(Fault { level, err });
-            let [r0, r1] = run::<Gold>(n, 5, Gold(77), 10 + level as u64, faults);
-            let [a, b] = eval_and_verify([r0.key, r1.key], [r0.delta_share, r1.delta_share], (0..n).collect(), false);
+            let [r0, r1] = run::<BabyBear, BabyBear4>(n, 5, BabyBear(77), 10 + level as u64, faults);
+            let ([a, b], _) = eval_and_verify([r0.key, r1.key], [r0.delta_share, r1.delta_share], [r0.mask, r1.mask], (0..n).collect(), false);
             assert_eq!(a.err(), Some(Abort("output MAC check failed")), "level {level} cheater {cheater}");
             assert_eq!(b.err(), Some(Abort("output MAC check failed")));
         }
     }
 }
 
+/// Dealer keys with a dealer's Π_Verify masks verify; a mask that does not
+/// match δ is rejected.
 #[test]
-fn full_eval_matches_point_eval() {
+fn dealer_keys_verify() {
+    let mut rng = ChaCha20Rng::seed_from_u64(4);
+    let n = 32u64;
+    let (keys, d) = gen_reference::<BabyBear, BabyBear4>(n, 7, BabyBear::random(&mut rng), rng.gen());
+    let m = deal_mask(d[0].add(d[1]), &mut rng);
+    let ([a, b], _) = eval_and_verify(keys.clone(), d, m, (0..n).collect(), false);
+    assert_eq!((a, b), (Ok(()), Ok(())));
+    let bad = deal_mask(d[0], &mut rng);
+    let ([a, _], _) = eval_and_verify(keys, d, bad, (0..n).collect(), false);
+    assert!(a.is_err());
+}
+
+fn full_eval_matches_point_eval<F: Field, E: Ext<F>>() {
     let mut rng = ChaCha20Rng::seed_from_u64(3);
     for n in [2u64, 13, 64, 1000] {
-        let (keys, _) = gen_reference::<M127>(n, rng.gen_range(0..n), M127::random(&mut rng), rng.gen());
+        let (keys, _) = gen_reference::<F, E>(n, rng.gen_range(0..n), F::random(&mut rng), rng.gen());
         for k in &keys {
-            let points: Vec<(M127, M127)> = (0..n).map(|x| k.eval_point(x)).collect();
+            let points: Vec<(F, E)> = (0..n).map(|x| k.eval_point(x)).collect();
             assert_eq!(k.eval_full(), points);
             for batch in [2, 4, 1 << 10] {
                 let mut streamed = Vec::new();
@@ -110,4 +139,14 @@ fn full_eval_matches_point_eval() {
             }
         }
     }
+}
+
+#[test]
+fn full_eval_matches_point_eval_babybear() {
+    full_eval_matches_point_eval::<BabyBear, BabyBear4>();
+}
+
+#[test]
+fn full_eval_matches_point_eval_m127() {
+    full_eval_matches_point_eval::<M127, M127>();
 }

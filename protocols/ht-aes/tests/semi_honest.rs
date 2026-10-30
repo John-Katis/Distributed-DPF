@@ -3,7 +3,7 @@
 
 use dpf_common::block::Block;
 use dpf_common::net::run_two_party;
-use ht_aes::field::{Field, Gold, M127};
+use ht_aes::field::{BabyBear, Field, Gold, M127};
 use ht_aes::semi_honest::{deal, gen, ShKey};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -51,6 +51,11 @@ fn gen_matches_point_function_and_dealer<F: Field>(seed: u64) {
             assert_eq!(deal([keys[0].root, keys[1].root], [keys[0].prf.key(), keys[0].pay.key()], n, alpha, beta), keys);
         }
     }
+}
+
+#[test]
+fn gen_matches_point_function_and_dealer_babybear() {
+    gen_matches_point_function_and_dealer::<BabyBear>(50);
 }
 
 #[test]

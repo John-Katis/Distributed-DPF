@@ -2,6 +2,7 @@
 //! group) and payload-MAC word `W^MAC_CW ∈ GF(2^128)`; evaluation returns the
 //! output share and its MAC share, and [`verify`] is Π_Verify.
 
+use crate::malicious_arith::VerifyMask;
 use crate::{child, children, leaf_seed};
 use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
@@ -121,25 +122,30 @@ impl MalKey {
     }
 }
 
-/// Π_Verify for a batch of evaluations: opens the outputs, then checks
-/// `Σ χ_i (m_i ⊕ δ·y_i) = 0` with coin-tossed `χ_i` through a commitment
-/// (`δ_share` is this party's share of the payload-MAC key δ). Returns the
-/// outputs, or aborts.
-pub fn verify<R: RngCore + CryptoRng>(ch: &mut Channel, outs: &[(Block, Block)], delta_share: Block, rng: &mut R) -> Result<Vec<Block>, Abort> {
-    let mine: Vec<Block> = outs.iter().map(|o| o.0).collect();
-    ch.send_blocks(&mine);
-    let theirs = ch.recv_blocks(outs.len());
-    let ys: Vec<Block> = mine.iter().zip(&theirs).map(|(a, b)| *a ^ *b).collect();
+/// Π_Verify (Figure "Π_Verify") in GF(2^128) for a batch of evaluation
+/// outputs `(⟨y_i⟩, ⟨m_i⟩)`, which stay shared: with coin-tossed `χ_i` and
+/// this key's mask `(⟨r⟩, ⟨δr⟩)`, open `z = Σ χ_i y_i ⊕ r`, then commit to
+/// and open `σ_b = Σ χ_i m_{i,b} ⊕ (δr)_b ⊕ δ_b·z` and accept iff `σ_0 = σ_1`.
+/// Only z, uniform through r, and σ are opened.
+pub fn verify<R: RngCore + CryptoRng>(
+    ch: &mut Channel,
+    outs: &[(Block, Block)],
+    delta_share: Block,
+    mask: VerifyMask<Block>,
+    rng: &mut R,
+) -> Result<(), Abort> {
     let chi = CtrPrg::new(coin_block(ch, rng)?).next_words(outs.len());
-    let (mut y, mut m) = (Block::ZERO, Block::ZERO);
-    for ((o, yi), &c) in outs.iter().zip(&ys).zip(&chi) {
-        y ^= gf128::mul(Block(c), *yi);
+    let (mut y, mut m) = (mask.r, mask.dr);
+    for (o, &c) in outs.iter().zip(&chi) {
+        y ^= gf128::mul(Block(c), o.0);
         m ^= gf128::mul(Block(c), o.1);
     }
-    let sigma = m ^ gf128::mul(delta_share, y);
-    // σ_0 ⊕ σ_1 = Σ χ_i (m_i ⊕ δ y_i): equal shares iff it is zero.
+    ch.send_blocks(&[y]);
+    let z = y ^ ch.recv_blocks(1)[0];
+    let sigma = m ^ gf128::mul(delta_share, z);
+    // σ_0 ⊕ σ_1 = Σ χ_i (m_i ⊕ δ y_i) ⊕ (δr ⊕ δr): equal shares iff it is zero.
     if commit_and_open_blocks(ch, &[sigma], rng)?[0] != sigma {
         return Err(Abort("output MAC check failed"));
     }
-    Ok(ys)
+    Ok(())
 }

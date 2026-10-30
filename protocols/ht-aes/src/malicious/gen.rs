@@ -10,8 +10,9 @@
 //! 2. The MAC mask `F^mac = H_{K''}(· ∥ 0)` under a third shared key K'' on
 //!    both leaf seeds, in parallel with `F^pay`; K'' is expanded with K and
 //!    K' at level 1 and opened with them.
-//! 3. `⟨δ·β⟩ = Σ_i β_i·⟨X^i δ⟩`: ℓ bit-times-block Beaver products, opened
-//!    with the level-0 message.
+//! 3. `⟨δ·β⟩ = Σ_i β_i·⟨X^i δ⟩`: ℓ bit-times-block Beaver products, and the
+//!    Π_Verify mask `(⟨r⟩, ⟨δr⟩)` for a fresh random r, 128 more, all opened
+//!    with the level-1 message.
 //! 4. `W_CW = W_0 ⊕ W_1 ⊕ β` and `W^MAC_CW = W̃_0 ⊕ W̃_1 ⊕ δβ`, opened
 //!    together with K, K', K'' (in a binary payload group the sign
 //!    `(−1)^{t_{n,0}}` is 1).
@@ -24,6 +25,7 @@
 //! Rounds: `1 + 41n + 40 + 1 = 41n + 42`.
 
 use super::key::{low, MalKey};
+use crate::malicious_arith::VerifyMask;
 use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup, Walk};
 use crate::{deal_walk, key_bytes, leaf_seed, open_keys, sample_keys, MAL_KEYS};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo};
@@ -31,7 +33,7 @@ use dpf_common::block::{depth_for, Block};
 use dpf_common::gf128;
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::ot::FerretConfig;
-use rand::SeedableRng;
+use rand::{CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
 
@@ -70,14 +72,15 @@ impl MalSession {
     }
 
     /// The OT tower's COTs for [`mal_calls`] AES–MMO calls and three key
-    /// expansions, `n + ℓ` string
+    /// expansions, `n + ℓ + 128` string
     /// triples (branch selection, δ·β) and n COTs per direction.
     pub fn precompute(&mut self, ch: &mut Channel, n: usize, bits: usize) -> Pre {
         let s = &mut self.s;
-        precompute_counts(ch, &mut s.cot, mal_calls(n), MAL_KEYS, n + bits, n, &mut s.rng)
+        precompute_counts(ch, &mut s.cot, mal_calls(n), MAL_KEYS, n + bits + 128, n, &mut s.rng)
     }
 
-    /// One generation: XOR shares of α and of β ∈ {0,1}^ℓ.
+    /// One generation: XOR shares of α and of β ∈ {0,1}^ℓ. Returns the key,
+    /// the ANDs and this key's Π_Verify mask.
     #[allow(clippy::too_many_arguments)]
     pub fn gen(
         &mut self,
@@ -88,7 +91,7 @@ impl MalSession {
         beta_share: Block,
         pre: Pre,
         fault: Option<Fault>,
-    ) -> (MalKey, usize) {
+    ) -> (MalKey, usize, VerifyMask<Block>) {
         let b = ch.party();
         let n = depth_for(n_size);
         let err = |lvl: usize| match fault {
@@ -98,27 +101,34 @@ impl MalSession {
         let Pre { mut be, string_triples } = pre;
         let (branch, dm) = string_triples.split_at(n);
 
-        // 3. Beaver openings of β_i·(X^i δ), riding with level 0.
-        let xd: Vec<Block> = (0..bits).map(|i| gf128::mul(Block(1 << i), self.delta_mac)).collect();
-        let mut extra = Vec::with_capacity(17 * bits);
-        for i in 0..bits {
-            let (ta, tb, _) = dm[i];
-            extra.extend_from_slice(&(xd[i] ^ tb).to_bytes());
-            extra.push((beta_share.bit(i) ^ ta) as u8);
+        // 3. Beaver openings of β_i·(X^i δ) and r_i·(X^i δ), riding with level 1.
+        let s = &mut self.s;
+        let r = Block::random(&mut s.rng);
+        let xd: Vec<Block> = (0..128).map(|i| gf128::mul(Block(1 << i), self.delta_mac)).collect();
+        let sel: Vec<(bool, Block)> = (0..bits).map(|i| (beta_share.bit(i), xd[i])).chain((0..128).map(|i| (r.bit(i), xd[i]))).collect();
+        let mut extra = Vec::with_capacity(17 * sel.len());
+        for (&(x, y), &(ta, tb, _)) in sel.iter().zip(dm) {
+            extra.extend_from_slice(&(y ^ tb).to_bytes());
+            extra.push((x ^ ta) as u8);
         }
 
-        let s = &mut self.s;
         let (ks, mut keys) = sample_keys(&mut s.rng, MAL_KEYS);
         let cw_err = fault.filter(|f| f.level < n).map(|f| (f.level, f.err));
         let Walk { root, st, cws, reply } = walk(&mut be, branch, &mut keys, &mut s.cot, &mut s.rng, ch, n, alpha_share, &extra, cw_err);
-        assert_eq!(reply.len(), 17 * bits, "malformed δ·β opening");
-        let mut db = Block::ZERO;
-        for i in 0..bits {
-            let (ta, tb, tc) = dm[i];
-            let f = xd[i] ^ tb ^ Block::from_bytes(&reply[17 * i..17 * i + 16]);
-            let e = beta_share.bit(i) ^ ta ^ (reply[17 * i + 16] & 1 == 1);
-            db ^= f.and_bit(e && b == 0) ^ tb.and_bit(e) ^ f.and_bit(ta) ^ tc;
-        }
+        assert_eq!(reply.len(), 17 * sel.len(), "malformed δ·β opening");
+        // x·y = e·f ⊕ e·B ⊕ f·a ⊕ C for each selection.
+        let prods: Vec<Block> = sel
+            .iter()
+            .zip(dm)
+            .enumerate()
+            .map(|(i, (&(x, y), &(ta, tb, tc)))| {
+                let f = y ^ tb ^ Block::from_bytes(&reply[17 * i..17 * i + 16]);
+                let e = x ^ ta ^ (reply[17 * i + 16] & 1 == 1);
+                f.and_bit(e && b == 0) ^ tb.and_bit(e) ^ f.and_bit(ta) ^ tc
+            })
+            .collect();
+        let db = prods[..bits].iter().fold(Block::ZERO, |a, &x| a ^ x);
+        let dr = prods[bits..].iter().fold(Block::ZERO, |a, &x| a ^ x);
 
         // 2 + 4. Leaf words.
         let delta = s.cot.delta();
@@ -138,7 +148,7 @@ impl MalSession {
         let (prf, pay, mac) = (prf.next().unwrap(), prf.next().unwrap(), prf.next().unwrap());
         let w_cw = w_share ^ Block::from_bytes(&theirs[..16]);
         let wm_cw = wm_share ^ Block::from_bytes(&theirs[16..]);
-        (MalKey { party: b, n_size, bits, prf, pay, mac, root, cws, w_cw: low(w_cw, bits), wm_cw }, be.ands)
+        (MalKey { party: b, n_size, bits, prf, pay, mac, root, cws, w_cw: low(w_cw, bits), wm_cw }, be.ands, VerifyMask { r, dr })
     }
 }
 
@@ -147,6 +157,8 @@ pub struct MalRun {
     pub key: MalKey,
     /// This party's share of the payload-MAC key δ.
     pub delta_share: Block,
+    /// This party's share of the key's Π_Verify mask.
+    pub mask: VerifyMask<Block>,
     /// Base OTs and the Ferret bootstrap.
     pub setup_stats: CommStats,
     pub setup_time: Duration,
@@ -185,10 +197,11 @@ pub fn run_mal(
     ch.sync();
     let before = ch.stats();
     let t = Instant::now();
-    let (key, ands) = s.gen(ch, n_size, bits, alpha_share, beta_share, pre, fault);
+    let (key, ands, mask) = s.gen(ch, n_size, bits, alpha_share, beta_share, pre, fault);
     MalRun {
         key,
         delta_share: s.delta_mac,
+        mask,
         setup_stats,
         setup_time,
         pre_stats,
@@ -224,6 +237,12 @@ pub fn deal(roots: [Block; 2], keys: [[u8; 16]; MAL_KEYS], n_size: u64, bits: us
         wm_cw,
     };
     [mk(0), mk(1)]
+}
+
+/// Shares of a Π_Verify mask `(r, δr)` in GF(2^128) for a known δ (a dealer's).
+pub fn deal_mask<R: RngCore + CryptoRng>(delta_mac: Block, rng: &mut R) -> [VerifyMask<Block>; 2] {
+    let (r, r0, d0) = (Block::random(rng), Block::random(rng), Block::random(rng));
+    [VerifyMask { r: r0, dr: d0 }, VerifyMask { r: r ^ r0, dr: gf128::mul(delta_mac, r) ^ d0 }]
 }
 
 /// Dealer keys from a seed, with the δ shares.

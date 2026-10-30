@@ -116,6 +116,14 @@ pub fn leaf_seed(st: Block) -> Block {
     st.with_lsb(false)
 }
 
+/// The domain tweak of block j of a leaf mask that needs more than one hash
+/// output (the MAC mask in `F_{q^4}`: [`field::mask_blocks`] blocks): `F^mac`
+/// block j is `H_{K''}(s ∥ 0 ⊕ tweak(j))`, block 0 being `H_{K''}(s ∥ 0)`.
+#[inline]
+pub fn mask_tweak(j: usize) -> Block {
+    Block((j as u128) << 120)
+}
+
 /// AES–MMO calls in one semi-honest Gen of depth n: two per level, two at the
 /// leaf.
 pub fn sh_calls(n: usize) -> usize {

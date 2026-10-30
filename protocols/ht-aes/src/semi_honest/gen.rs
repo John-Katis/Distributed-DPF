@@ -12,7 +12,8 @@
 //! 2κ + 1 daBits and one Beaver triple over F_p ([`crate::leaf`]).
 //!
 //! **Generation**, with `α` XOR-shared (bit `n − 1 − i` is level i + 1) and
-//! `β` additively shared in `G = F_p` ([`crate::field`]):
+//! `β` additively shared in the payload field `G = F_p` ([`crate::field`]:
+//! Babybear in the paper, Goldilocks or `2^127 − 1` for wider payloads):
 //!
 //! 0. Fresh XOR-shared AES keys K (state) and K' (payload), `𝓕_rand`; their
 //!    round keys are expanded on shares (Π_KeyExp, 40 S-boxes each) in the
@@ -213,7 +214,7 @@ pub(crate) fn walk(
 fn gen_with<F: Field>(
     cot: &mut CotPair,
     pre: Pre,
-    fpre: &mut FpPre<F>,
+    fpre: &mut FpPre<F, F>,
     rng: &mut ChaCha20Rng,
     ch: &mut Channel,
     n_size: u64,
@@ -230,7 +231,16 @@ fn gen_with<F: Field>(
 
     // 4. Leaf word, with the key reveal.
     let w = mmo_shared(&mut be, ch, &mut keys, &[(1, bits_of(leaf_seed(st))), (1, bits_of(leaf_seed(st ^ delta)))]);
-    let (ws, theirs) = arith_leaf(ch, &[[block_of(&w[0]), block_of(&w[1])]], &[Sub::Share(beta_share)], st.lsb(), fpre, &[F::ZERO], &key_bytes(&ks));
+    let (ws, theirs) = arith_leaf(
+        ch,
+        &[[vec![block_of(&w[0])], vec![block_of(&w[1])]]],
+        &[1],
+        &[Sub::Share(beta_share)],
+        st.lsb(),
+        fpre,
+        &[F::ZERO],
+        &key_bytes(&ks),
+    );
     let mut prf = open_keys(&ks, &theirs).into_iter();
     let (prf, pay) = (prf.next().unwrap(), prf.next().unwrap());
     (ShKey { party: b, n_size, prf, pay, root, cws, w_cw: ws[0] }, be.ands)
@@ -251,14 +261,14 @@ pub fn gen<F: Field>(
     ferret: Option<FerretConfig>,
 ) -> GenOutput<ShKey<F>> {
     let n = depth_for(n_size);
-    let (dabits, triples) = (leaf_dabits::<F>(1), 1);
+    let (dabits, triples) = (leaf_dabits::<F>(&[1]), 1);
     drive(
         ch,
         seed,
         ferret,
         n,
-        n + fp_pre_cots::<F>(dabits, triples),
-        |cot, rng, ch| fp_pre::<F, _>(ch, cot, dabits, triples, rng),
+        n + fp_pre_cots::<F, F>(dabits, triples),
+        |cot, rng, ch| fp_pre::<F, F, _>(ch, cot, dabits, triples, &[], rng),
         |cot, pre, mut fpre, rng, ch| gen_with(cot, pre, &mut fpre, rng, ch, n_size, alpha_share, beta_share),
     )
 }
