@@ -25,9 +25,8 @@ protocols/
                      preprocessing at a random target, online shift; 2P and 3P
   ht-aes/            ours: dealer-free half-tree DPF with shared on-path state,
                      F_PRF = fixed-key AES-MMO in 2PC over the F4 tower;
-                     semi-honest (FOLEAGE triples), malicious on the same
-                     preprocessing (payload MAC, Π_Verify), and malicious with
-                     every share authenticated (A1–A5, bucketed triples)
+                     semi-honest, and malicious with abort on the same
+                     preprocessing (payload MAC, Π_Verify, one-bit leakage)
 scripts/
   bench_all.sh       runs all benchmarks into results-gen/ or results-eval/
 REFERENCES.md        papers and techniques this code implements
@@ -44,7 +43,6 @@ REFERENCES.md        papers and techniques this code implements
 | `ht-aes` (`sh-bin`) | semi-honest | XOR shares | `F_2^ℓ`, ℓ ≤ 128 | as `sh`; the leaf opens `W_0 ⊕ W_1 ⊕ β` (no B2A, no sign) |
 | `ht-aes` (`mal`) | malicious with abort (the paper's §malicious: key material checked by Π_Verify; selective failure as in Prop. "Selective-failure channel") | XOR shares | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | the `sh` Gen on the same FOLEAGE/Ferret preprocessing, plus `F^mac` at the leaf, `δ·β` from ℓ string triples, the payload-MAC word under a persistent δ; Π_Verify on outputs |
 | `ht-aes` (`mal-arith`) | malicious with abort, as `mal` | XOR shares | `F_p` + payload MAC in `F_p` (Goldilocks for ℓ ≤ 64, `2^127 − 1` above) | the `sh` Gen on the same preprocessing; at the leaf `F^pay`, `F^mac` and the `sh` leaf on both words, `δ·β` by one more Beaver product; Π_Verify over `F_p` |
-| `ht-aes` (`mal-auth`) | malicious with abort, no leakage | authenticated bits | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | as `mal` on SPDZ bit MACs ((A1)–(A5)), F4 triples from leaky triples + bucketing on malicious-Ferret aBits; one check of all openings, Π_Verify on outputs |
 | `duoram` (`2p`, `3p`) | semi-honest | additive shares mod 2^n (online shift) | `Z_2^ℓ`, ℓ ≤ 64 | Du–Atallah product per level at a random target; triples from helper P2 (`3p`) or IKNP OT (`2p`); one-round online phase |
 
 ## Shared library: `dpf-common`
@@ -58,7 +56,7 @@ REFERENCES.md        papers and techniques this code implements
 | `ot`      | base OTs over secp256r1 (Naor–Pinkas, semi-honest; Masny–Rindal endemic OT, malicious), semi-honest IKNP extension, 128-bit correlated OT (`CotPair`, sender-chosen Δ; in malicious mode endemic base OTs + KOS15 check), Ferret LPN-based COT extension (`CotPair::enable_ferret`), and KK13 1-of-N OT (`kkot`) |
 | `gf128`   | GF(2^128) multiplication (`pclmulqdq` with a portable fallback) |
 | `coin`    | SHA-256 commitments, coin tossing, `Abort` |
-| `mac`     | authenticated sharing: `binary` (BDOZ bits + SPDZ over GF(2^128)) with a deferred batch MAC check; `af4`: SPDZ bit MACs for F4 circuits, leaky F4 triples (Π_LaAND over F4) with WRK17 bucketing, the hash-and-commit check of all openings, and the authenticated `TowerBackend` |
+| `mac`     | authenticated sharing: `binary` (BDOZ bits + SPDZ over GF(2^128)) with a deferred batch MAC check |
 | `arith`   | Z_2^ℓ helpers and SIRNN's COT-based arithmetic MUX |
 | `bool2pc` | F_AND / F_OR on XOR-shared bits from CrypTFlow2 bit triples, COT-based block MUX |
 | `bench`   | shared CLI and CSV schema for every `examples/bench*.rs` |
@@ -130,7 +128,6 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh --in-bi
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-arith --in-bits 16 --out-bits 64
-cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-auth --in-bits 16 --out-bits 64
 scripts/bench_all.sh                          # Gen, n = 8..32, out-bits 64 and 128, one CSV per protocol in results-gen/
 scripts/bench_all.sh full                     # full-domain eval, same sweep, into results-eval/
 ```
@@ -190,7 +187,6 @@ bit (one round), as Ferret does:
 | ht-aes (`mal`) | as `sh`: FOLEAGE expansion into (2n + 4)·1,920 F4 triples, n + ℓ bit-times-block triples from Ferret random OTs (branch selection, δ·β), n Ferret COTs per direction; FOLEAGE seeds generated in setup |
 | ht-aes (`sh-bin`) | as `sh` with n Ferret COTs per direction (the α-bits only) |
 | ht-aes (`mal-arith`) | as `mal` with n string triples (branch selection), n Ferret COTs per direction, 4κ + 1 daBits and three Beaver triples over F_p (two signs, δ·β) from COT OLEs |
-| ht-aes (`mal-auth`) | (2n + 4)·1,920 + 64·(2n + ℓ) authenticated F4 triples: 4× as many leaky triples from malicious-Ferret aBits, bucketed and checked; COTs for the n + ℓ + 254 input bits |
 
 For Duoram, generation proper is its own preprocessing (the DPF at a random
 target) plus the one-round online phase, which the bench also prints as a

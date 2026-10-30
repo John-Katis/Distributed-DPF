@@ -20,19 +20,15 @@
 //! That is 12 F4 products at depth 4 per S-box, 160 S-boxes per AES-128 call:
 //! [`PRODUCTS_PER_CALL`] = 1,920 products in [`ROUNDS_PER_CALL`] = 40 rounds.
 //! The S-boxes are the only interaction; [`TowerBackend`] computes them, four
-//! rounds per batch. Two backends:
-//!
-//! * [`OtTower`], the paper's OT tower (Figure "S-box on Boolean shares"),
-//!   semi-honest on XOR shares: each F4 product is three ANDs over F2
-//!   (Karatsuba), 36 per S-box, and every AND is computed from Ferret COTs
-//!   under party 0's key Γ. Every AND input is an F2-linear form of party 1's
-//!   share of one of four values, `φ(a)`, `d`, `e` and `w`; party 1 corrects
-//!   one random COT per bit of those (18 bits and COTs per S-box) and the COT
-//!   of any linear form is the XOR of the COTs it selects. A cross term costs
-//!   one bit from party 0: 90 bits per S-box, [`COTS_PER_CALL`] = 2,880 COTs
-//!   per call.
-//! * [`F4Products`] backends, which multiply F4 elements directly
-//!   ([`sbox_f4`]): the authenticated bits of [`crate::mac::af4`].
+//! rounds per batch. Its implementation is [`OtTower`], the paper's OT tower
+//! (Figures "Π_SBox" and "ANDs from COTs"), semi-honest on XOR shares: each
+//! F4 product is three ANDs over F2 (Karatsuba), 36 per S-box, and every AND
+//! is computed from Ferret COTs under party 0's key Γ. Every AND input is an
+//! F2-linear form of party 1's share of one of four values, `φ(a)`, `d`, `e`
+//! and `w`; party 1 corrects one random COT per bit of those (18 bits and
+//! COTs per S-box) and the COT of any linear form is the XOR of the COTs it
+//! selects. A cross term costs one bit from party 0: 90 bits per S-box,
+//! [`COTS_PER_CALL`] = 2,880 COTs per call.
 //!
 //! The constants are those of the paper's appendix: `θ = 0xbc`, `Y = 0x5c`,
 //! `η = θY = 0xb0`, `ζ = 0xf2` in `F_2[X]/(X⁸ + X⁴ + X³ + X + 1)`, and the F4
@@ -220,12 +216,6 @@ pub trait TowerBackend {
     fn sbox(&mut self, ch: &mut Channel, bytes: &[[Self::Bit; 8]]) -> Vec<[Self::Bit; 8]>;
 }
 
-/// A backend that multiplies shared F4 elements; [`sbox_f4`] is its S-box.
-pub trait F4Products: TowerBackend {
-    /// Shares of `x_i·y_i` for all i, in one round.
-    fn mul_f4(&mut self, ch: &mut Channel, x: &[F4Sh<Self::Bit>], y: &[F4Sh<Self::Bit>]) -> Vec<F4Sh<Self::Bit>>;
-}
-
 /// An element of `F_{2^4}` as `x_1·Y + x_0`.
 #[derive(Clone, Copy, Default)]
 struct F16<B> {
@@ -262,59 +252,6 @@ fn join<B: ShareBit>(hi: F16<B>, lo: F16<B>) -> [B; 8] {
 
 fn lin8<B: ShareBit>(m: &Mat8, x: &[B; 8]) -> [B; 8] {
     std::array::from_fn(|i| (0..8).filter(|&j| m[i] >> j & 1 == 1).fold(B::default(), |acc, j| acc ^ x[j]))
-}
-
-/// Karatsuba products `x_i·y_i` in `F_{2^4}`, all in one round (3 F4 products
-/// each): `(m_2 + m_0, θ m_1 + m_0)` with `m_1 = x_1y_1`, `m_0 = x_0y_0`,
-/// `m_2 = (x_1 + x_0)(y_1 + y_0)`.
-fn mul16<K: F4Products>(be: &mut K, ch: &mut Channel, x: &[F16<K::Bit>], y: &[F16<K::Bit>]) -> Vec<F16<K::Bit>> {
-    let n = x.len();
-    let mut a = Vec::with_capacity(3 * n);
-    let mut b = Vec::with_capacity(3 * n);
-    for (u, v) in x.iter().zip(y) {
-        a.extend([u.x1, u.x0, u.x1.add(u.x0)]);
-        b.extend([v.x1, v.x0, v.x1.add(v.x0)]);
-    }
-    let m = be.mul_f4(ch, &a, &b);
-    m.chunks(3).map(|m| F16 { x1: m[2].add(m[1]), x0: m[0].scale(f4::OMEGA).add(m[1]) }).collect()
-}
-
-/// S-boxes of a batch of shared bytes from F4 products, in four rounds.
-pub fn sbox_f4<K: F4Products>(be: &mut K, ch: &mut Channel, bytes: &[[K::Bit; 8]]) -> Vec<[K::Bit; 8]> {
-    let tw = tower();
-    let (ah, al): (Vec<_>, Vec<_>) = bytes.iter().map(|b| split(&lin8(&tw.phi, b))).unzip();
-    // Depth 1: p = a_h·a_l, then the norm d.
-    let p = mul16(be, ch, &ah, &al);
-    let d: Vec<F16<K::Bit>> = (0..bytes.len()).map(|i| ah[i].sq().mul_eta().add(p[i]).add(al[i].sq())).collect();
-    // Depth 2: Inv16, the product x_1·x_0 of the F4 norm θx_1² + x_1x_0 + x_0².
-    let x1: Vec<_> = d.iter().map(|v| v.x1).collect();
-    let x0: Vec<_> = d.iter().map(|v| v.x0).collect();
-    let m = be.mul_f4(ch, &x1, &x0);
-    let e: Vec<F4Sh<K::Bit>> = (0..d.len()).map(|i| x1[i].sq().scale(f4::OMEGA).add(m[i]).add(x0[i].sq()).sq()).collect();
-    // Depth 3: w = (x_1 e, (x_1 + x_0) e).
-    let mut a = Vec::with_capacity(2 * d.len());
-    let mut b = Vec::with_capacity(2 * d.len());
-    for i in 0..d.len() {
-        a.extend([x1[i], x1[i].add(x0[i])]);
-        b.extend([e[i], e[i]]);
-    }
-    let we = be.mul_f4(ch, &a, &b);
-    let w: Vec<F16<K::Bit>> = we.chunks(2).map(|c| F16 { x1: c[0], x0: c[1] }).collect();
-    // Depth 4: b_h = a_h·w and b' = a_l·w in one round.
-    let mut xs = ah.clone();
-    xs.extend_from_slice(&al);
-    let mut ws = w.clone();
-    ws.extend_from_slice(&w);
-    let bb = mul16(be, ch, &xs, &ws);
-    let n = bytes.len();
-    let c63 = std::array::from_fn::<_, 8, _>(|i| be.constant(0x63 >> i & 1 == 1));
-    (0..n)
-        .map(|i| {
-            let (bh, b2) = (bb[i], bb[n + i]);
-            let o = lin8(&tw.out, &join(bh, bh.add(b2)));
-            std::array::from_fn(|k| o[k] ^ c63[k])
-        })
-        .collect()
 }
 
 #[cfg(test)]

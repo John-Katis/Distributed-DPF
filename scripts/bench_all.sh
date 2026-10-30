@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the DPF benchmarks (Floram, HT, HT-mal with Ferret, Floram-arith,
-# FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal} and the leakage-free mal-auth) over the same sweep and writes one CSV per
+# FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal}) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen) or results-eval/ (eval, full, all).
 #
 #   [OUT_LIST=a,b,..] [SKIP_OURS=1] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--max-in-bits-path n] [--append] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
@@ -130,10 +130,6 @@ if [[ ${SKIP_OURS:-0} != 1 ]]; then
   run ht-aes-sh        "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AS[@]}" --variant sh
   run ht-aes-mal       "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal
   run ht-aes-mal-arith "$BIN/bench-ht-aes" "$MODE" "${S[@]}" "${AM[@]}" --variant mal-arith
-  # The leakage-free Gen (A1)-(A5); its keys and evaluation are those of ht-aes-mal.
-  if [[ $MODE == gen ]]; then
-    run ht-aes-mal-auth "$BIN/bench-ht-aes" gen "${S[@]}" --variant mal-auth
-  fi
 fi
 
 if ((${#FAILED[@]})); then

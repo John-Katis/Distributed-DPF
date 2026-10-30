@@ -1,7 +1,7 @@
 //! Benchmarks for our distributed half-tree DPF with AES–MMO in 2PC.
 //!
 //! ```text
-//! cargo run --release -p ht-aes --example bench-ht-aes -- <gen|eval|full|all> [--variant sh|sh-bin|mal|mal-arith|mal-auth] [options]
+//! cargo run --release -p ht-aes --example bench-ht-aes -- <gen|eval|full|all> [--variant sh|sh-bin|mal|mal-arith] [options]
 //! ```
 //!
 //! * `sh`: semi-honest, payload in F_p (Goldilocks for `--out-bits` ≤ 64,
@@ -12,14 +12,11 @@
 //!   `{0,1}^ℓ ⊂ GF(2^128)` with a payload MAC and Π_Verify.
 //! * `mal-arith`: malicious on the same preprocessing, payload and MAC in F_p:
 //!   Goldilocks for `--out-bits` ≤ 64, `2^127 − 1` above.
-//! * `mal-auth`: as `mal` with every share authenticated ((A1)–(A5)), F4
-//!   triples from leaky authenticated triples on malicious Ferret.
 //!
 //! Setup is the base OTs and the Ferret bootstrap (`FerretConfig::B13`).
 //! Preprocessing is the OT tower's random Ferret COTs, the string triples and
-//! the Ferret COTs (for `mal-auth`: the authenticated triples). `and_gates`
-//! counts ANDs (for `mal-auth`: F4 products). `eval` and `full` use dealer keys; `full`
-//! evaluates the whole domain (output and, for `mal` and `mal-auth`, MAC) one
+//! the Ferret COTs. `and_gates` counts ANDs. `eval` and `full` use dealer
+//! keys; `full` evaluates the whole domain (output and, for `mal`, MAC) one
 //! level at a time, or with `--stream` in a batched walk that folds the
 //! outputs into a checksum. Gen only follows the path to α, so `--stream`
 //! applies to `eval` and `full` only.
@@ -161,60 +158,6 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
             depth: o0.key.depth(),
             gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
             and_gates: o0.ands,
-            cots: o0.cots,
-            key_bytes: o0.key.size_bytes(),
-        },
-    );
-}
-
-fn gen_mal_auth(o: &Opts, rng: &mut ChaCha20Rng) {
-    use ht_aes::malicious_auth::{low, run_mal};
-    let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
-    let mut last = None;
-    let bits = o.out_bits;
-    for _ in 0..o.reps {
-        drop(last.take());
-        let alpha = rng.gen_range(0..o.size);
-        let a0: u64 = rng.gen::<u64>() & dpf_common::arith::mask(depth_for(o.size));
-        let b0 = low(dpf_common::block::Block::random(rng), bits);
-        let b1 = low(dpf_common::block::Block::random(rng), bits) ^ b0;
-        let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-        let n = o.size;
-        let timed = |party: usize, a: u64, b: dpf_common::block::Block| {
-            move |c: &mut dpf_common::net::Channel| {
-                let t = Instant::now();
-                let out = run_mal(c, n, bits, a, b, seeds[party], Some(FerretConfig::B13), None).expect("honest run aborted");
-                (out, t.elapsed())
-            }
-        };
-        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, a0, b0), timed(1, alpha ^ a0, b1));
-        setup.push(r0.setup_time.max(r1.setup_time));
-        pre.push(r0.pre_time.max(r1.pre_time));
-        g0.push(r0.gen_time);
-        g1.push(r1.gen_time);
-        total.push(t0.max(t1));
-        last = Some((r0, r1));
-    }
-    let (o0, o1) = last.unwrap();
-    let (sent, rounds) = whole_gen([o0.setup_stats, o1.setup_stats], [o0.pre_stats, o1.pre_stats], [o0.gen_stats, o1.gen_stats]);
-    print_gen(
-        o,
-        &GenRow {
-            bm: 1,
-            sent,
-            rounds,
-            total: median(total),
-            setup: median(setup),
-            pre: median(pre),
-            gen_p0: median(g0),
-            gen_p1: median(g1),
-            setup_bytes: o0.setup_stats.total_bytes(),
-            pre_bytes: o0.pre_stats.total_bytes(),
-            pre_rounds: o0.pre_stats.rounds.max(o1.pre_stats.rounds),
-            gen_bytes: o0.gen_stats.total_bytes(),
-            depth: o0.key.depth(),
-            gen_rounds: o0.gen_stats.rounds.max(o1.gen_stats.rounds),
-            and_gates: o0.products,
             cots: o0.cots,
             key_bytes: o0.key.size_bytes(),
         },
@@ -404,7 +347,7 @@ fn eval_mal_arith<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
 }
 
 fn main() {
-    let opts = Opts::parse(&["sh", "sh-bin", "mal", "mal-arith", "mal-auth"], 64, &[64, 128]);
+    let opts = Opts::parse(&["sh", "sh-bin", "mal", "mal-arith"], 64, &[64, 128]);
     assert!(opts.out_list.iter().chain([&opts.out_bits]).all(|b| (1..=128).contains(b)), "out-bits must be 1..=128");
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
@@ -435,9 +378,9 @@ fn main() {
                     if wide { eval_mal_arith::<M127>(o, &mut rng) } else { eval_mal_arith::<Gold>(o, &mut rng) }
                 }
             }
-            "mal" | "mal-auth" => {
+            "mal" => {
                 if o.runs("gen") {
-                    if o.variant == "mal" { gen_mal(o, &mut rng) } else { gen_mal_auth(o, &mut rng) }
+                    gen_mal(o, &mut rng);
                 }
                 if o.runs("eval") || o.runs("full") {
                     eval_mal(o, &mut rng);

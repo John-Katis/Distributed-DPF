@@ -28,15 +28,11 @@
 //! * [`malicious_arith`]: the same for an arithmetic payload in F_p, on the
 //!   leaf of [`leaf`] (`δ·β` by one more Beaver product).
 //! * [`semi_honest::bin`]: the semi-honest Gen with a binary payload, no B2A.
-//! * [`malicious_auth`]: additionally every share authenticated (bit MACs in
-//!   GF(2^128), the layer (A1)–(A5) against selective failure), F4 triples
-//!   from leaky authenticated triples with bucketing on malicious Ferret.
 
 pub mod field;
 pub mod leaf;
 pub mod malicious;
 pub mod malicious_arith;
-pub mod malicious_auth;
 pub mod semi_honest;
 
 use dpf_common::aes_tower::{Mmo, ANDS_PER_CALL};
