@@ -5,30 +5,32 @@
 //! With a public AES key every operation but the S-box inversion is
 //! F2-affine, so it is applied to each party's share locally (a public
 //! constant XORed in by party 0). The inversion in `F_{2^8}` reduces to three
-//! products and one inversion in `F_{2^4}`, and each of those to three products
-//! in `F_{2^2} = F4` (Karatsuba; the innermost inversion `d^{-1} = d²` is free):
+//! products and one inversion in `F_{2^4}` (Lemma "Inversion in a quadratic
+//! extension"); a product in `F_{2^4}` is three in `F_{2^2} = F4` and nine
+//! ANDs (Karatsuba at both levels), and the inversion in `F_{2^4}` is the
+//! 7-AND circuit of Boyar and Peralta in our basis ([`inv16_bits`]):
 //!
 //! ```text
 //! S-box:  (a_h, a_l) = φ(a)          local
-//!         p = a_h·a_l                  Mul16: 3 products   (depth 1)
+//!         p = a_h·a_l                  Mul16: 9 ANDs   (depth 1)
 //!         d = η a_h² + p + a_l²        local
-//!         w = d^{-1}                   Inv16: 1 + 2 products (depth 2, 3)
-//!         b_h = a_h·w, b' = a_l·w      Mul16 ×2: 6 products (depth 4)
+//!         w = d^{-1}                   Inv16: 3 + 4 ANDs (depth 2, 3)
+//!         b_h = a_h·w, b' = a_l·w      Mul16 ×2: 18 ANDs (depth 4)
 //!         S(a) = M·φ^{-1}(b_h, b_h + b') ⊕ 0x63
 //! ```
 //!
-//! That is 12 F4 products at depth 4 per S-box, 160 S-boxes per AES-128 call:
-//! [`PRODUCTS_PER_CALL`] = 1,920 products in [`ROUNDS_PER_CALL`] = 40 rounds.
-//! The S-boxes are the only interaction; [`TowerBackend`] computes them, four
-//! rounds per batch. Its implementation is [`OtTower`], the paper's OT tower
-//! (Figures "Π_SBox" and "ANDs from COTs"), semi-honest on XOR shares: each
-//! F4 product is three ANDs over F2 (Karatsuba), 36 per S-box, and every AND
-//! is computed from Ferret COTs under party 0's key Γ. Every AND input is an
-//! F2-linear form of party 1's share of one of four values, `φ(a)`, `d`, `e`
-//! and `w`; party 1 corrects one random COT per bit of those (18 bits and
+//! That is [`ANDS_PER_SBOX`] = 34 ANDs at depth 4 per S-box, 160 S-boxes per
+//! AES-128 call: [`ANDS_PER_CALL`] = 5,440 ANDs in [`ROUNDS_PER_CALL`] = 40
+//! rounds. The S-boxes are the only interaction; [`TowerBackend`] computes
+//! them, four rounds per batch. Its implementation is [`OtTower`], the paper's
+//! OT tower (Figures "Π_SBox" and "ANDs from COTs"), semi-honest on XOR
+//! shares: every AND is computed from Ferret COTs under party 0's key Γ.
+//! Every AND input is an F2-linear form of party 1's share of one of four
+//! values, `φ(a)`, `d`, `g = (g_1, g_2, g_3)` (the first AND layer of Inv16)
+//! and `w`; party 1 corrects one random COT per bit of those (19 bits and
 //! COTs per S-box) and the COT of any linear form is the XOR of the COTs it
-//! selects. A cross term costs one bit from party 0: 90 bits per S-box,
-//! [`COTS_PER_CALL`] = 2,880 COTs per call.
+//! selects. A cross term costs one bit from party 0: 87 bits per S-box,
+//! [`COTS_PER_CALL`] = 3,040 COTs per call.
 //!
 //! The constants are those of the paper's appendix: `θ = 0xbc`, `Y = 0x5c`,
 //! `η = θY = 0xb0`, `ζ = 0xf2` in `F_2[X]/(X⁸ + X⁴ + X³ + X + 1)`, and the F4
@@ -55,14 +57,14 @@ use aes::Aes128;
 use std::ops::BitXor;
 use std::sync::OnceLock;
 
-/// F4 products per AES-128 call (160 S-boxes × 12).
-pub const PRODUCTS_PER_CALL: usize = 160 * 12;
-/// COTs per S-box of [`OtTower`]: one per bit of `φ(a)`, `d`, `e` and `w`.
-pub const COTS_PER_SBOX: usize = 18;
+/// ANDs per S-box: three Mul16 (9 each) and Inv16 (7).
+pub const ANDS_PER_SBOX: usize = 34;
+/// COTs per S-box of [`OtTower`]: one per bit of `φ(a)`, `d`, `g` and `w`.
+pub const COTS_PER_SBOX: usize = 19;
 /// COTs per AES-128 call of [`OtTower`].
 pub const COTS_PER_CALL: usize = 160 * COTS_PER_SBOX;
-/// ANDs per AES-128 call of [`OtTower`] (three per F4 product).
-pub const ANDS_PER_CALL: usize = 3 * PRODUCTS_PER_CALL;
+/// ANDs per AES-128 call.
+pub const ANDS_PER_CALL: usize = 160 * ANDS_PER_SBOX;
 /// Rounds per AES-128 call (10 AES rounds × multiplicative depth 4).
 pub const ROUNDS_PER_CALL: usize = 40;
 /// S-boxes of Π_KeyExp: one `SubWord` per round key.
@@ -70,7 +72,7 @@ pub const KEYEXP_SBOXES: usize = 40;
 /// COTs of [`OtTower`] for one Π_KeyExp.
 pub const COTS_PER_KEY: usize = KEYEXP_SBOXES * COTS_PER_SBOX;
 /// ANDs of one Π_KeyExp.
-pub const ANDS_PER_KEY: usize = KEYEXP_SBOXES * 36;
+pub const ANDS_PER_KEY: usize = KEYEXP_SBOXES * ANDS_PER_SBOX;
 
 /// θ, a root of `X² + X + 1` in `F_{2^8}` (the F4 generator ω).
 pub const THETA: u8 = 0xbc;
@@ -264,6 +266,50 @@ fn lin8<B: ShareBit>(m: &Mat8, x: &[B; 8]) -> [B; 8] {
     std::array::from_fn(|i| (0..8).filter(|&j| m[i] >> j & 1 == 1).fold(B::default(), |acc, j| acc ^ x[j]))
 }
 
+/// The bits `(d_11, d_10, d_01, d_00)` of `d = d_1 Y + d_0 ∈ F_{2^4}`, `d_i =
+/// d_{i1}θ + d_{i0}`.
+fn bits16<B: ShareBit>(d: &F16<B>) -> [B; 4] {
+    [d.x1.h, d.x1.l, d.x0.h, d.x0.l]
+}
+
+/// The first AND layer of Inv16 on the bits of d: `g_1 = d_11(d_01 + d_00)`,
+/// `g_2 = d_10(d_01 + d_00)`, `g_3 = d_11 d_01`, as `(u, v)` operand pairs.
+fn inv16_and1<B: ShareBit>(d: &F16<B>) -> [(B, B); 3] {
+    let [d11, d10, d01, d00] = bits16(d);
+    [(d11, d01 ^ d00), (d10, d01 ^ d00), (d11, d01)]
+}
+
+/// The second AND layer of Inv16, from d and g: with `u = d_10 + g_1`, `g_4 =
+/// u·d_00`, `g_5 = (d_01 + g_1)(d_11 + d_10)`, `g_6 = d_00 g_2`, `g_7 = (d_11 +
+/// d_10) g_3`.
+fn inv16_and2<B: ShareBit>(d: &F16<B>, g: [B; 3]) -> [(B, B); 4] {
+    let [d11, d10, d01, d00] = bits16(d);
+    let u = d10 ^ g[0];
+    [(u, d00), (d01 ^ g[0], d11 ^ d10), (d00, g[1]), (d11 ^ d10, g[2])]
+}
+
+/// `w = d^{-1}` from d and `g_1, …, g_7` (all local): the 7-AND inversion in
+/// `F_{2^4}` of Boyar and Peralta, rewritten in our basis.
+fn inv16_out<B: ShareBit>(d: &F16<B>, g: [B; 7]) -> F16<B> {
+    let [d11, d10, d01, d00] = bits16(d);
+    let u = d10 ^ g[0];
+    let w11 = u ^ d11 ^ g[6];
+    let w10 = d10 ^ g[4];
+    let w01 = u ^ d11 ^ d01 ^ g[3] ^ g[6];
+    let w00 = u ^ d01 ^ d00 ^ g[3] ^ g[4] ^ g[5];
+    F16 { x1: F4Sh { h: w11, l: w10 }, x0: F4Sh { h: w01, l: w00 } }
+}
+
+/// `d^{-1}` in `F_{2^4}` in the clear by the 7-AND circuit (`0 ↦ 0`).
+pub fn inv16_bits(d: u8) -> u8 {
+    let b = |i: u32| d >> i & 1 == 1;
+    let d = F16 { x1: F4Sh { h: b(3), l: b(2) }, x0: F4Sh { h: b(1), l: b(0) } };
+    let g1: [bool; 3] = inv16_and1(&d).map(|(u, v)| u & v);
+    let g2: [bool; 4] = inv16_and2(&d, g1).map(|(u, v)| u & v);
+    let w = inv16_out(&d, [g1[0], g1[1], g1[2], g2[0], g2[1], g2[2], g2[3]]);
+    (w.x1.h as u8) << 3 | (w.x1.l as u8) << 2 | (w.x0.h as u8) << 1 | w.x0.l as u8
+}
+
 #[cfg(test)]
 /// The tower S-box in the clear: the same steps on plain F4 elements.
 pub fn sbox_tower(a: u8) -> u8 {
@@ -276,9 +322,9 @@ pub fn sbox_tower(a: u8) -> u8 {
         F16 { x1: m2.add(m0), x0: m1.scale(f4::OMEGA).add(m0) }
     };
     let d = ah.sq().mul_eta().add(m16(ah, al)).add(al.sq());
-    let mul = |u: F4Sh<bool>, v: F4Sh<bool>| F4Sh::from_u8(f4::mul(u.to_u8(), v.to_u8()));
-    let e = d.x1.sq().scale(f4::OMEGA).add(mul(d.x1, d.x0)).add(d.x0.sq()).sq();
-    let w = F16 { x1: mul(d.x1, e), x0: mul(d.x1.add(d.x0), e) };
+    let g1: [bool; 3] = inv16_and1(&d).map(|(u, v)| u & v);
+    let g2: [bool; 4] = inv16_and2(&d, g1).map(|(u, v)| u & v);
+    let w = inv16_out(&d, [g1[0], g1[1], g1[2], g2[0], g2[1], g2[2], g2[3]]);
     let (bh, b2) = (m16(ah, w), m16(al, w));
     let o = join(bh, bh.add(b2));
     let byte = o.iter().enumerate().fold(0u8, |acc, (i, &b)| acc | (b as u8) << i);
@@ -599,28 +645,14 @@ impl OtTower {
 
     /// One layer of every S-box of a batch: party 1 corrects the `bits` of
     /// each S-box (its `bits.len() / n` bits, as COTs `off..` of that S-box),
-    /// and both parties compute the F4 products `prods` (S-box index, x, y),
-    /// in one round. `eps` keeps party 0's corrections per S-box.
-    fn layer(
-        &mut self,
-        ch: &mut Channel,
-        base: usize,
-        eps: &mut [u32],
-        off: usize,
-        bits: &[bool],
-        prods: &[(usize, F4Sh<Sym>, F4Sh<Sym>)],
-    ) -> Vec<F4Sh<Sym>> {
+    /// and both parties compute the ANDs `ands` (S-box index, u, v), in one
+    /// round. `eps` keeps party 0's corrections per S-box. Every operand must
+    /// be a linear form of corrected bits.
+    fn and_layer(&mut self, ch: &mut Channel, base: usize, eps: &mut [u32], off: usize, bits: &[bool], ands: &[(usize, Sym, Sym)]) -> Vec<Sym> {
         let n = eps.len();
         let k = bits.len() / n;
-        // Three ANDs per product (Karatsuba), two cross terms per AND: (S-box,
-        // ℓ = party 1's form, party 1's bit, party 0's bit).
-        let mut ands = Vec::with_capacity(3 * prods.len());
-        for &(i, x, y) in prods {
-            ands.push((i, x.h, y.h));
-            ands.push((i, x.l, y.l));
-            ands.push((i, x.h ^ x.l, y.h ^ y.l));
-        }
         self.ands += ands.len();
+        // Two cross terms per AND: (S-box, ℓ = party 1's form, party 1's bit, party 0's bit).
         let crosses: Vec<(usize, u32, bool, bool)> = ands.iter().flat_map(|&(i, u, v)| [(i, v.l, v.s, u.s), (i, u.l, u.s, v.s)]).collect();
         let tw = self.tweak;
         self.tweak += crosses.len() as u64;
@@ -650,10 +682,25 @@ impl OtTower {
             let zeta = ch.recv_bits(crosses.len());
             crosses.iter().enumerate().map(|(t, &(i, l, b, _))| h.h(self.form(at(i), l), tw + t as u64).lsb() ^ (b && zeta[t])).collect()
         };
-        let and: Vec<bool> = ands.iter().zip(out.chunks(2)).map(|(&(_, u, v), c)| (u.s && v.s) ^ c[0] ^ c[1]).collect();
-        let sym = |s: bool| Sym { s, l: 0 };
+        // AND outputs are no linear form (l = 0) until they are corrected.
+        ands.iter().zip(out.chunks(2)).map(|(&(_, u, v), c)| Sym { s: (u.s && v.s) ^ c[0] ^ c[1], l: 0 }).collect()
+    }
+
+    /// [`and_layer`](Self::and_layer) for F4 products `prods` (S-box index,
+    /// x, y): three ANDs each (Karatsuba, Π_Mul4).
+    fn layer(
+        &mut self,
+        ch: &mut Channel,
+        base: usize,
+        eps: &mut [u32],
+        off: usize,
+        bits: &[bool],
+        prods: &[(usize, F4Sh<Sym>, F4Sh<Sym>)],
+    ) -> Vec<F4Sh<Sym>> {
+        let ands: Vec<(usize, Sym, Sym)> = prods.iter().flat_map(|&(i, x, y)| [(i, x.h, y.h), (i, x.l, y.l), (i, x.h ^ x.l, y.h ^ y.l)]).collect();
+        let and = self.and_layer(ch, base, eps, off, bits, &ands);
         // (x_h y_h, x_l y_l, (x_h + x_l)(y_h + y_l)) = (n_1, n_0, n_2) → (n_2 + n_0)ω + (n_1 + n_0).
-        and.chunks(3).map(|z| F4Sh { h: sym(z[2] ^ z[1]), l: sym(z[0] ^ z[1]) }).collect()
+        and.chunks(3).map(|z| F4Sh { h: z[2] ^ z[1], l: z[0] ^ z[1] }).collect()
     }
 }
 
@@ -693,35 +740,32 @@ impl TowerBackend for OtTower {
         let bits: Vec<bool> = t.iter().flat_map(|t| t.map(|v| v.s)).collect();
         let xy: Vec<_> = (0..n).map(|i| (i, ah[i], al[i])).collect();
         let p = karatsuba16(&self.layer(ch, base, &mut eps, 0, &bits, &mul16_prods(&xy)));
-        // Layer 2: d corrected (COTs 8–11), the product x_1·x_0 of its F4 norm.
+        // Layer 2: d corrected (COTs 8–11), g_1, g_2, g_3 of Inv16.
         let d: Vec<F16<Sym>> = (0..n)
             .map(|i| {
                 let d = ah[i].sq().mul_eta().add(p[i]).add(al[i].sq());
                 F16 { x1: F4Sh { h: d.x1.h.fresh(8), l: d.x1.l.fresh(9) }, x0: F4Sh { h: d.x0.h.fresh(10), l: d.x0.l.fresh(11) } }
             })
             .collect();
-        let bits: Vec<bool> = d.iter().flat_map(|d| [d.x1.h.s, d.x1.l.s, d.x0.h.s, d.x0.l.s]).collect();
-        let prods: Vec<_> = (0..n).map(|i| (i, d[i].x1, d[i].x0)).collect();
-        let m = self.layer(ch, base, &mut eps, 8, &bits, &prods);
-        // Layer 3: e = N(d)^{-1} = N(d)² corrected (COTs 12–13), w = (x_1 e, (x_1 + x_0) e).
-        let e: Vec<F4Sh<Sym>> = (0..n)
+        let bits: Vec<bool> = d.iter().flat_map(|d| bits16(d).map(|v| v.s)).collect();
+        let ands: Vec<_> = (0..n).flat_map(|i| inv16_and1(&d[i]).map(|(u, v)| (i, u, v))).collect();
+        let g1 = self.and_layer(ch, base, &mut eps, 8, &bits, &ands);
+        // Layer 3: g corrected (COTs 12–14), g_4, …, g_7; then w = d^{-1} locally.
+        let g: Vec<[Sym; 3]> = g1.chunks(3).map(|c| [c[0].fresh(12), c[1].fresh(13), c[2].fresh(14)]).collect();
+        let bits: Vec<bool> = g.iter().flat_map(|g| g.map(|v| v.s)).collect();
+        let ands: Vec<_> = (0..n).flat_map(|i| inv16_and2(&d[i], g[i]).map(|(u, v)| (i, u, v))).collect();
+        let g2 = self.and_layer(ch, base, &mut eps, 12, &bits, &ands);
+        // Layer 4: w corrected (COTs 15–18), b_h = a_h·w and b' = a_l·w.
+        let w: Vec<F16<Sym>> = (0..n)
             .map(|i| {
-                let (x1, x0) = (d[i].x1, d[i].x0);
-                let e = x1.sq().scale(f4::OMEGA).add(m[i]).add(x0.sq()).sq();
-                F4Sh { h: e.h.fresh(12), l: e.l.fresh(13) }
+                let gg = [g[i][0], g[i][1], g[i][2], g2[4 * i], g2[4 * i + 1], g2[4 * i + 2], g2[4 * i + 3]];
+                let w = inv16_out(&d[i], gg);
+                F16 { x1: F4Sh { h: w.x1.h.fresh(15), l: w.x1.l.fresh(16) }, x0: F4Sh { h: w.x0.h.fresh(17), l: w.x0.l.fresh(18) } }
             })
             .collect();
-        let bits: Vec<bool> = e.iter().flat_map(|e| [e.h.s, e.l.s]).collect();
-        let prods: Vec<_> = (0..n).flat_map(|i| [(i, d[i].x1, e[i]), (i, d[i].x1.add(d[i].x0), e[i])]).collect();
-        let we = self.layer(ch, base, &mut eps, 12, &bits, &prods);
-        // Layer 4: w corrected (COTs 14–17), b_h = a_h·w and b' = a_l·w.
-        let w: Vec<F16<Sym>> = we
-            .chunks(2)
-            .map(|c| F16 { x1: F4Sh { h: c[0].h.fresh(14), l: c[0].l.fresh(15) }, x0: F4Sh { h: c[1].h.fresh(16), l: c[1].l.fresh(17) } })
-            .collect();
-        let bits: Vec<bool> = w.iter().flat_map(|w| [w.x1.h.s, w.x1.l.s, w.x0.h.s, w.x0.l.s]).collect();
+        let bits: Vec<bool> = w.iter().flat_map(|w| bits16(w).map(|v| v.s)).collect();
         let xy: Vec<_> = (0..n).flat_map(|i| [(i, ah[i], w[i]), (i, al[i], w[i])]).collect();
-        let bb = karatsuba16(&self.layer(ch, base, &mut eps, 14, &bits, &mul16_prods(&xy)));
+        let bb = karatsuba16(&self.layer(ch, base, &mut eps, 15, &bits, &mul16_prods(&xy)));
         let c63 = std::array::from_fn::<_, 8, _>(|i| self.constant(0x63 >> i & 1 == 1));
         (0..n)
             .map(|i| {
@@ -752,6 +796,23 @@ mod tests {
         for (i, r) in rows.iter().enumerate() {
             let want = r.bytes().enumerate().fold(0u8, |acc, (j, c)| acc | ((c - b'0') << j));
             assert_eq!(tower().phi[i], want, "row {i} of φ");
+        }
+    }
+
+    /// The 7-AND circuit is the inverse in `F_{2^4}` (`0 ↦ 0`), against the
+    /// tower's product.
+    #[test]
+    fn inv16_circuit_is_the_inverse() {
+        let to16 = |x: u8| F16 { x1: F4Sh::from_u8(x >> 2), x0: F4Sh::from_u8(x & 3) };
+        let mul = |x: F16<bool>, y: F16<bool>| {
+            let m = |u: F4Sh<bool>, v: F4Sh<bool>| F4Sh::from_u8(f4::mul(u.to_u8(), v.to_u8()));
+            let (m1, m0, m2) = (m(x.x1, y.x1), m(x.x0, y.x0), m(x.x1.add(x.x0), y.x1.add(y.x0)));
+            let r = F16 { x1: m2.add(m0), x0: m1.scale(f4::OMEGA).add(m0) };
+            r.x1.to_u8() << 2 | r.x0.to_u8()
+        };
+        assert_eq!(inv16_bits(0), 0);
+        for d in 1..16u8 {
+            assert_eq!(mul(to16(d), to16(inv16_bits(d))), 1, "d = {d}");
         }
     }
 
@@ -815,8 +876,8 @@ mod tests {
         // party 1 one per corrected bit, each packed into bytes per layer.
         // 3 jobs × 16 S-boxes per AES round.
         let per_round = |bits_per_sbox: usize| (48 * bits_per_sbox).div_ceil(8);
-        assert_eq!(st0.bytes_sent, 10 * [9, 3, 6, 18].iter().map(|&a| per_round(2 * a)).sum::<usize>());
-        assert_eq!(st1.bytes_sent, 10 * [8, 4, 2, 4].iter().map(|&k| per_round(k)).sum::<usize>());
+        assert_eq!(st0.bytes_sent, 10 * [9, 3, 4, 18].iter().map(|&a| per_round(2 * a)).sum::<usize>());
+        assert_eq!(st1.bytes_sent, 10 * [8, 4, 3, 4].iter().map(|&k| per_round(k)).sum::<usize>());
     }
 
     #[test]

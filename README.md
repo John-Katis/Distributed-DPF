@@ -64,7 +64,7 @@ REFERENCES.md        papers and techniques this code implements
 | `stream`  | batched depth-first tree walk for the streaming tree mode (`TreeMode`) |
 | `gc`      | half-gates garbled circuits over XOR-shared inputs (`GcParty`, `Garbler`, `Evaluator`) |
 | `f4`      | the field F4 (`h·ω + l` as two bits), scalar and packed |
-| `aes_tower` | AES–MMO in the clear and in 2PC: S-box in the F4 tower (36 ANDs, depth 4; 160 S-boxes / 40 rounds per call), every AND from COTs under one offset (`OtTower`: 18 COTs and 90 bits per S-box), XOR-shared keys with Π_KeyExp on shares (`SharedKey`, 40 S-boxes, no extra rounds) |
+| `aes_tower` | AES–MMO in the clear and in 2PC: S-box in the F4 tower with the 7-AND Boyar–Peralta inversion in F16 (34 ANDs, depth 4; 160 S-boxes / 40 rounds per call), every AND from COTs under one offset (`OtTower`: 19 COTs and 87 bits per S-box), XOR-shared keys with Π_KeyExp on shares (`SharedKey`, 40 S-boxes, no extra rounds) |
 | `foleage` | the FOLEAGE F4-OLE PCG (port of the reference code): ternary random DPF, packed FFT, expansion to OLEs and F4 triples, and the dealer-free seed generation of §5 (chosen 1-of-3 OT from COTs), which the reference code leaves out |
 | `testing` | cleartext point function `point_fn` and `random_beta`, for tests and benchmarks |
 
@@ -184,7 +184,7 @@ bit (one round), as Ferret does:
 | fssnn | PRG correlations for 2n (+2) calls, 2n bit triples, 3n (+2ℓ+1 for `arith`) Ferret COTs per direction |
 | duoram (`2p`) | n AND triples from COTs, n + 2·w random COTs for the Gilboa products |
 | duoram (`3p`) | P2's one message to each party (n AND triples, n + 2 product triples) |
-| ht-aes (`sh`) | the paper's ⟨α⟩, ⟨Δ⟩ (fresh per Gen, not Ferret's key) and AES-key shares, ⟨α_ℓ·Δ⟩ from 2n Ferret random COTs (one round); the OT tower's random Ferret COTs ((2n + 2)·2,880 for the calls and 2·720 for Π_KeyExp of K, K'), n bit-times-block triples from Ferret random OTs, 2κ + 1 daBits and one Beaver triple over F_p from COT OLEs (κ = ⌈log p⌉ + 40, at most 128) |
+| ht-aes (`sh`) | the paper's ⟨α⟩, ⟨Δ⟩ (fresh per Gen, not Ferret's key) and AES-key shares, ⟨α_ℓ·Δ⟩ from 2n Ferret random COTs (one round); the OT tower's random Ferret COTs ((2n + 2)·3,040 for the calls and 2·760 for Π_KeyExp of K, K'), n bit-times-block triples from Ferret random OTs, 2κ + 1 daBits and one Beaver triple over F_p from COT OLEs (κ = ⌈log p⌉ + 40, at most 128) |
 | ht-aes (`mal`) | as `sh` (the paper's ⟨α⟩, ⟨Δ⟩ (fresh per Gen, not Ferret's key) and AES-key shares, ⟨α_ℓ·Δ⟩ from 2n Ferret random COTs (one round)) with the OT tower's COTs for 2n + 4 calls and three key expansions, n + ℓ + 128 bit-times-block triples (branch selection, δ·β, and the Π_Verify mask `(r, δr)` computed here, one round) |
 | ht-aes (`sh-bin`) | as `sh` without the leaf's daBits and triple |
 | ht-aes (`mal-arith`) | as `sh` (the paper's ⟨α⟩, ⟨Δ⟩ (fresh per Gen, not Ferret's key) and AES-key shares, ⟨α_ℓ·Δ⟩ from 2n Ferret random COTs (one round)) with the OT tower's COTs for 2n + 2 + 2·⌈E-degree·κ/128⌉ calls (2n + 8 for `F_{q^4}`) and three key expansions, n string triples, 2(1 + E-degree)κ + 1 daBits over F and four Beaver triples over the MAC field (two signs, δ·β, the Π_Verify mask) from COT OLEs |
