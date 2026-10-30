@@ -10,4 +10,4 @@ pub mod gen;
 pub mod key;
 
 pub use gen::{arith_mal_ands, arith_mal_calls, deal, deal_mask, gen_reference, leaf_counts, run_mal_arith, ArithMalRun, ArithMalSession};
-pub use key::{verify, ArithMalKey, VerifyMask};
+pub use key::{open_checked, verify, verify_and_open, ArithMalKey, VerifyMask};

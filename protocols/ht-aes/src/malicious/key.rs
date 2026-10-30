@@ -149,3 +149,36 @@ pub fn verify<R: RngCore + CryptoRng>(
     }
     Ok(())
 }
+
+/// Opens checked outputs: exchanges the output shares, then checks the
+/// opened `y_i` against their MAC shares, `Σ χ'_i (m_{i,b} ⊕ δ_b·y_i)` for
+/// fresh coin-tossed `χ'_i`, committed and opened, so a party that opens a
+/// share other than the one Π_Verify checked is caught. Returns the outputs.
+pub fn open_checked<R: RngCore + CryptoRng>(ch: &mut Channel, outs: &[(Block, Block)], delta_share: Block, rng: &mut R) -> Result<Vec<Block>, Abort> {
+    let mine: Vec<Block> = outs.iter().map(|o| o.0).collect();
+    ch.send_blocks(&mine);
+    let theirs = ch.recv_blocks(outs.len());
+    if theirs.len() != outs.len() {
+        return Err(Abort("malformed output shares"));
+    }
+    let ys: Vec<Block> = mine.iter().zip(&theirs).map(|(a, b)| *a ^ *b).collect();
+    let chi = CtrPrg::new(coin_block(ch, rng)?).next_words(outs.len());
+    let sigma = outs.iter().zip(&ys).zip(&chi).fold(Block::ZERO, |acc, ((o, &y), &c)| acc ^ gf128::mul(Block(c), o.1 ^ gf128::mul(delta_share, y)));
+    if commit_and_open_blocks(ch, &[sigma], rng)?[0] != sigma {
+        return Err(Abort("opened output MAC check failed"));
+    }
+    Ok(ys)
+}
+
+/// The full output pipeline: [`verify`] on the shared outputs, then
+/// [`open_checked`]. Returns the outputs, or aborts.
+pub fn verify_and_open<R: RngCore + CryptoRng>(
+    ch: &mut Channel,
+    outs: &[(Block, Block)],
+    delta_share: Block,
+    mask: VerifyMask<Block>,
+    rng: &mut R,
+) -> Result<Vec<Block>, Abort> {
+    verify(ch, outs, delta_share, mask, rng)?;
+    open_checked(ch, outs, delta_share, rng)
+}

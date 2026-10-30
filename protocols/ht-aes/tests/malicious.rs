@@ -4,7 +4,7 @@
 use dpf_common::block::Block;
 use dpf_common::coin::Abort;
 use dpf_common::net::run_two_party;
-use ht_aes::malicious::{deal, deal_mask, low, mal_ands, run_mal, verify, Fault, MalKey, MalRun, MalSession};
+use ht_aes::malicious::{deal, deal_mask, low, mal_ands, open_checked, run_mal, verify, Fault, MalKey, MalRun, MalSession};
 use ht_aes::malicious_arith::VerifyMask;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -21,28 +21,31 @@ fn run(n: u64, bits: usize, alpha: u64, beta: Block, seed: u64, faults: [Option<
     [r0, r1]
 }
 
-/// Evaluates both keys at xs and runs Π_Verify on the shares; returns each
-/// party's verdict and the reconstructed outputs (the test sees both shares).
-fn eval_and_verify(
-    keys: [MalKey; 2],
-    d: [Block; 2],
-    masks: [VerifyMask<Block>; 2],
-    xs: Vec<u64>,
-    tamper: bool,
-) -> ([Result<(), Abort>; 2], Vec<Block>) {
-    let outs: Vec<Vec<(Block, Block)>> = keys.iter().map(|k| xs.iter().map(|&x| k.eval_point(x)).collect()).collect();
-    let ys = outs[0].iter().zip(&outs[1]).map(|(a, b)| a.0 ^ b.0).collect();
+/// Where a party falsifies its output share: in Π_Verify, or only when the
+/// outputs are opened after it.
+#[derive(Clone, Copy, PartialEq)]
+enum Tamper {
+    No,
+    Verify,
+    Open,
+}
+
+/// Evaluates both keys at xs and runs the output pipeline (Π_Verify, then the
+/// checked opening); returns each party's result.
+fn eval_and_verify(keys: [MalKey; 2], d: [Block; 2], masks: [VerifyMask<Block>; 2], xs: Vec<u64>, tamper: Tamper) -> [Result<Vec<Block>, Abort>; 2] {
     let party = |p: usize| {
-        let mut outs = outs[p].clone();
+        let outs: Vec<(Block, Block)> = xs.iter().map(|&x| keys[p].eval_point(x)).collect();
         move |c: &mut dpf_common::net::Channel| {
-            if tamper && p == 1 {
-                outs[0].0 ^= Block(1);
-            }
-            verify(c, &outs, d[p], masks[p], &mut ChaCha20Rng::seed_from_u64(p as u64))
+            let mut rng = ChaCha20Rng::seed_from_u64(p as u64);
+            let mut bad = outs.clone();
+            bad[0].0 ^= Block(1);
+            let pick = |t: Tamper| if p == 1 && tamper == t { &bad } else { &outs };
+            verify(c, pick(Tamper::Verify), d[p], masks[p], &mut rng)?;
+            open_checked(c, pick(Tamper::Open), d[p], &mut rng)
         }
     };
     let (a, b) = run_two_party(party(0), party(1));
-    ([a, b], ys)
+    [a, b]
 }
 
 #[test]
@@ -60,14 +63,19 @@ fn mal_gen_matches_dealer_and_verifies() {
         assert_eq!(dealt, [r0.key.clone(), r1.key.clone()]);
         let xs: Vec<u64> = (0..n).collect();
         let (d, m) = ([r0.delta_share, r1.delta_share], [r0.mask, r1.mask]);
-        let ([a, b], ys) = eval_and_verify([r0.key.clone(), r1.key.clone()], d, m, xs.clone(), false);
-        assert_eq!((a, b), (Ok(()), Ok(())));
+        let [a, b] = eval_and_verify([r0.key.clone(), r1.key.clone()], d, m, xs.clone(), Tamper::No);
+        let ys = a.unwrap();
+        assert_eq!(b.unwrap(), ys, "both parties open the same outputs");
         for x in 0..n {
             assert_eq!(ys[x as usize], if x == alpha { beta } else { Block::ZERO });
         }
         // A falsified output share is caught.
-        let ([a, b], _) = eval_and_verify([r0.key, r1.key], d, m, xs, true);
+        let [a, b] = eval_and_verify([r0.key.clone(), r1.key.clone()], d, m, xs.clone(), Tamper::Verify);
         assert!(a.is_err() && b.is_err());
+        // A share falsified only at the opening is caught too.
+        let [a, b] = eval_and_verify([r0.key, r1.key], d, m, xs, Tamper::Open);
+        assert_eq!(a.err(), Some(Abort("opened output MAC check failed")));
+        assert_eq!(b.err(), Some(Abort("opened output MAC check failed")));
     }
 }
 
@@ -83,7 +91,7 @@ fn faults_in_gen_are_caught_by_verify() {
             let mut faults = [None, None];
             faults[cheater] = Some(Fault { level, err });
             let [r0, r1] = run(n, bits, 5, Block(77), 10 + level as u64, faults);
-            let ([a, b], _) = eval_and_verify([r0.key, r1.key], [r0.delta_share, r1.delta_share], [r0.mask, r1.mask], (0..n).collect(), false);
+            let [a, b] = eval_and_verify([r0.key, r1.key], [r0.delta_share, r1.delta_share], [r0.mask, r1.mask], (0..n).collect(), Tamper::No);
             assert_eq!(a.err(), Some(Abort("output MAC check failed")), "level {level} cheater {cheater}");
             assert_eq!(b.err(), Some(Abort("output MAC check failed")));
         }
@@ -98,10 +106,10 @@ fn dealer_keys_verify() {
     let (n, bits) = (32u64, 64usize);
     let (keys, d) = ht_aes::malicious::gen_reference(n, bits, 7, low(Block::random(&mut rng), bits), rng.gen());
     let m = deal_mask(d[0] ^ d[1], &mut rng);
-    let ([a, b], _) = eval_and_verify(keys.clone(), d, m, (0..n).collect(), false);
-    assert_eq!((a, b), (Ok(()), Ok(())));
+    let [a, b] = eval_and_verify(keys.clone(), d, m, (0..n).collect(), Tamper::No);
+    assert!(a.is_ok() && b.is_ok());
     let bad = deal_mask(d[0], &mut rng);
-    let ([a, _], _) = eval_and_verify(keys, d, bad, (0..n).collect(), false);
+    let [a, _] = eval_and_verify(keys, d, bad, (0..n).collect(), Tamper::No);
     assert!(a.is_err());
 }
 
@@ -161,8 +169,9 @@ fn two_gens_in_one_session() {
             deal([k0[g].root, k1[g].root], [k0[g].prf.key(), k0[g].pay.key(), k0[g].mac.key()], n, bits, alphas[g], betas[g], d0 ^ d1),
             [k0[g].clone(), k1[g].clone()]
         );
-        let ([a, b], ys) = eval_and_verify([k0[g].clone(), k1[g].clone()], [d0, d1], [m0[g], m1[g]], (0..n).collect(), false);
-        assert_eq!((a, b), (Ok(()), Ok(())));
+        let [a, b] = eval_and_verify([k0[g].clone(), k1[g].clone()], [d0, d1], [m0[g], m1[g]], (0..n).collect(), Tamper::No);
+        let ys = a.unwrap();
+        assert_eq!(b.unwrap(), ys, "both parties open the same outputs");
         for x in 0..n {
             assert_eq!(ys[x as usize], if x == alphas[g] { betas[g] } else { Block::ZERO });
         }

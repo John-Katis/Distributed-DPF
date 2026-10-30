@@ -157,3 +157,44 @@ pub fn verify<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(
     }
     Ok(())
 }
+
+/// Opens checked outputs: exchanges the output shares, then checks the
+/// opened `y_i` against their MAC shares, `Σ χ'_i (m_{i,b} − δ_b·y_i)` for
+/// fresh coin-tossed `χ'_i`, committed and opened, so a party that opens a
+/// share other than the one Π_Verify checked is caught. Returns the outputs.
+pub fn open_checked<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(
+    ch: &mut Channel,
+    outs: &[(F, E)],
+    delta_share: E,
+    rng: &mut R,
+) -> Result<Vec<F>, Abort> {
+    let mut msg = Vec::with_capacity(outs.len() * F::BYTES);
+    outs.iter().for_each(|o| o.0.put(&mut msg));
+    ch.send(msg);
+    let theirs = ch.recv();
+    if theirs.len() != outs.len() * F::BYTES {
+        return Err(Abort("malformed output shares"));
+    }
+    let ys: Vec<F> = outs.iter().zip(theirs.chunks(F::BYTES)).map(|(o, t)| o.0.add(F::get(t))).collect();
+    let chi = CtrPrg::new(coin_block(ch, rng)?).next_words(outs.len());
+    let sigma =
+        outs.iter().zip(&ys).zip(&chi).fold(E::ZERO, |acc, ((o, &y), &c)| acc.add(E::from_seed(Block(c)).mul(o.1.sub(delta_share.mul(E::embed(y))))));
+    let other = commit_and_open_blocks(ch, &[Block(sigma.to_u128())], rng)?[0];
+    if E::from_u128(other.0).add(sigma) != E::ZERO {
+        return Err(Abort("opened output MAC check failed"));
+    }
+    Ok(ys)
+}
+
+/// The full output pipeline: [`verify`] on the shared outputs, then
+/// [`open_checked`]. Returns the outputs, or aborts.
+pub fn verify_and_open<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(
+    ch: &mut Channel,
+    outs: &[(F, E)],
+    delta_share: E,
+    mask: VerifyMask<E>,
+    rng: &mut R,
+) -> Result<Vec<F>, Abort> {
+    verify(ch, outs, delta_share, mask, rng)?;
+    open_checked(ch, outs, delta_share, rng)
+}
