@@ -2,7 +2,8 @@
 //! and its point and full-domain evaluation.
 
 use crate::field::Field;
-use crate::{child, children, leaf_seed, pay_hash};
+use crate::{child, children, leaf_seed};
+use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::stream::walk;
 
@@ -10,6 +11,10 @@ use dpf_common::stream::walk;
 pub struct ShKey<T: Field> {
     pub party: usize,
     pub n_size: u64,
+    /// `F = H_K`, K opened at the end of Gen.
+    pub prf: Mmo,
+    /// `F^pay = H_{K'}(· ∥ 0)`.
+    pub pay: Mmo,
     /// `st_{0,b}`, with `st_{0,0} ⊕ st_{0,1} = Δ`.
     pub root: Block,
     pub cws: Vec<Block>,
@@ -22,9 +27,9 @@ impl<T: Field> ShKey<T> {
         depth_for(self.n_size)
     }
 
-    /// Root, n words of 16 bytes, the payload word.
+    /// K, K', root, n words of 16 bytes, the payload word.
     pub fn size_bytes(&self) -> usize {
-        16 + 16 * self.cws.len() + T::BYTES
+        2 * 16 + 16 + 16 * self.cws.len() + T::BYTES
     }
 
     /// The part both parties share.
@@ -53,9 +58,9 @@ impl<T: Field> ShKey<T> {
         let n = self.depth();
         let mut st = self.root;
         for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(st, cw, (x >> (n - 1 - i)) & 1 == 1);
+            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1);
         }
-        self.output(st, pay_hash().h(leaf_seed(st)))
+        self.output(st, self.pay.h(leaf_seed(st)))
     }
 
     /// Shares of `f(0), …, f(N − 1)`: all 2^n leaves, one level at a time.
@@ -63,7 +68,7 @@ impl<T: Field> ShKey<T> {
         let mut nodes = vec![self.root];
         for &cw in &self.cws {
             let mut next = Vec::new();
-            children(&nodes, cw, &mut next);
+            children(&self.prf, &nodes, cw, &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -77,12 +82,18 @@ impl<T: Field> ShKey<T> {
     /// party's shares at `x0 .. x0 + ys.len()`, for all x < N.
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[T])) {
         let (mut buf, mut ys) = (Vec::new(), Vec::new());
-        walk(self.root, self.cws.len(), batch, |l, parents, out| children(parents, self.cws[l - 1], out), |x0, leaves| {
-            if x0 < self.n_size {
-                self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut ys);
-                visit(x0, &ys);
-            }
-        });
+        walk(
+            self.root,
+            self.cws.len(),
+            batch,
+            |l, parents, out| children(&self.prf, parents, self.cws[l - 1], out),
+            |x0, leaves| {
+                if x0 < self.n_size {
+                    self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut ys);
+                    visit(x0, &ys);
+                }
+            },
+        );
     }
 
     /// The outputs at `leaves` into `ys`; `buf` is scratch, reused across calls.
@@ -92,7 +103,7 @@ impl<T: Field> ShKey<T> {
         buf.extend(leaves.iter().map(|&s| leaf_seed(s)));
         buf.resize(2 * k, Block::ZERO);
         let (seeds, w) = buf.split_at_mut(k);
-        pay_hash().h_many(seeds, w);
+        self.pay.h_many(seeds, w);
         ys.clear();
         ys.extend(leaves.iter().zip(&*w).map(|(&s, &wv)| self.output(s, wv)));
     }

@@ -5,7 +5,7 @@ use dpf_common::block::Block;
 use dpf_common::coin::Abort;
 use dpf_common::net::run_two_party;
 use ht_aes::field::{Field, Gold, M127};
-use ht_aes::malicious::{mal_calls, Fault};
+use ht_aes::malicious::{mal_ands, Fault};
 use ht_aes::malicious_arith::{deal, gen_reference, run_mal_arith, verify, ArithMalKey, ArithMalRun};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -46,9 +46,9 @@ fn gen_matches_dealer_and_verifies<F: Field>(seed: u64) {
         let [r0, r1] = run(n, alpha, beta, seed + i as u64, [None, None]);
         let depth = r0.key.depth();
         assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 44);
-        assert_eq!(r0.ands, mal_calls(depth) * dpf_common::aes_tower::ANDS_PER_CALL);
+        assert_eq!(r0.ands, mal_ands(depth));
         let delta = r0.delta_share.add(r1.delta_share);
-        let dealt = deal([r0.key.root, r1.key.root], n, alpha, beta, delta);
+        let dealt = deal([r0.key.root, r1.key.root], [r0.key.prf.key(), r0.key.pay.key(), r0.key.mac.key()], n, alpha, beta, delta);
         assert_eq!(dealt, [r0.key.clone(), r1.key.clone()]);
         let xs: Vec<u64> = (0..n).collect();
         let [y0, y1] = eval_and_verify([r0.key.clone(), r1.key.clone()], [r0.delta_share, r1.delta_share], xs.clone(), false);
@@ -79,7 +79,7 @@ fn mal_arith_gen_matches_dealer_and_verifies_m127() {
 fn faults_in_gen_are_caught_by_verify() {
     let mut rng = ChaCha20Rng::seed_from_u64(2);
     let n = 8u64;
-    for level in [0usize, 2, 3, 4] {
+    for level in [0usize, 2, 3, 4, 5] {
         for cheater in [0, 1] {
             let err = Block(1 << rng.gen_range(0..16));
             let mut faults = [None, None];

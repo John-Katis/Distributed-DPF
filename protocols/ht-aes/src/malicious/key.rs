@@ -2,13 +2,14 @@
 //! group) and payload-MAC word `W^MAC_CW ∈ GF(2^128)`; evaluation returns the
 //! output share and its MAC share, and [`verify`] is Π_Verify.
 
-use crate::{child, children, leaf_seed, mac_hash, pay_hash};
+use crate::{child, children, leaf_seed};
+use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
-use dpf_common::stream::walk;
 use dpf_common::coin::{coin_block, commit_and_open_blocks, Abort};
 use dpf_common::gf128;
 use dpf_common::hash::CtrPrg;
 use dpf_common::net::Channel;
+use dpf_common::stream::walk;
 use rand::{CryptoRng, RngCore};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,6 +18,12 @@ pub struct MalKey {
     pub n_size: u64,
     /// ℓ ≤ 128: outputs live in `{0,1}^ℓ ⊂ GF(2^128)`.
     pub bits: usize,
+    /// `F = H_K`.
+    pub prf: Mmo,
+    /// `F^pay = H_{K'}(· ∥ 0)`.
+    pub pay: Mmo,
+    /// `F^mac = H_{K''}(· ∥ 0)`.
+    pub mac: Mmo,
     pub root: Block,
     pub cws: Vec<Block>,
     /// `W_CW = F^pay(s_0) ⊕ F^pay(s_1) ⊕ β` (low ℓ bits).
@@ -28,7 +35,11 @@ pub struct MalKey {
 /// The low `bits` bits of a block.
 #[inline]
 pub fn low(x: Block, bits: usize) -> Block {
-    if bits >= 128 { x } else { Block(x.0 & ((1u128 << bits) - 1)) }
+    if bits >= 128 {
+        x
+    } else {
+        Block(x.0 & ((1u128 << bits) - 1))
+    }
 }
 
 impl MalKey {
@@ -36,9 +47,9 @@ impl MalKey {
         depth_for(self.n_size)
     }
 
-    /// Root, n words, ⌈ℓ/8⌉ bytes of `W_CW`, 16 bytes of `W^MAC_CW`.
+    /// K, K', K'', root, n words, ⌈ℓ/8⌉ bytes of `W_CW`, 16 bytes of `W^MAC_CW`.
     pub fn size_bytes(&self) -> usize {
-        16 + 16 * self.cws.len() + self.bits.div_ceil(8) + 16
+        3 * 16 + 16 + 16 * self.cws.len() + self.bits.div_ceil(8) + 16
     }
 
     pub fn public_part(&self) -> (&[Block], Block, Block) {
@@ -51,11 +62,11 @@ impl MalKey {
         let n = self.depth();
         let mut st = self.root;
         for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(st, cw, (x >> (n - 1 - i)) & 1 == 1);
+            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1);
         }
         let s = leaf_seed(st);
         let t = st.lsb();
-        (low(pay_hash().h(s), self.bits) ^ self.w_cw.and_bit(t), mac_hash().h(s) ^ self.wm_cw.and_bit(t))
+        (low(self.pay.h(s), self.bits) ^ self.w_cw.and_bit(t), self.mac.h(s) ^ self.wm_cw.and_bit(t))
     }
 
     /// Shares `(y, m)` at x = 0, …, N − 1: all 2^n leaves, one level at a time.
@@ -63,7 +74,7 @@ impl MalKey {
         let mut nodes = vec![self.root];
         for &cw in &self.cws {
             let mut next = Vec::new();
-            children(&nodes, cw, &mut next);
+            children(&self.prf, &nodes, cw, &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -77,12 +88,18 @@ impl MalKey {
     /// party's shares at `x0 .. x0 + outs.len()`, for all x < N.
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[(Block, Block)])) {
         let (mut buf, mut outs) = (Vec::new(), Vec::new());
-        walk(self.root, self.cws.len(), batch, |l, parents, out| children(parents, self.cws[l - 1], out), |x0, leaves| {
-            if x0 < self.n_size {
-                self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut outs);
-                visit(x0, &outs);
-            }
-        });
+        walk(
+            self.root,
+            self.cws.len(),
+            batch,
+            |l, parents, out| children(&self.prf, parents, self.cws[l - 1], out),
+            |x0, leaves| {
+                if x0 < self.n_size {
+                    self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut outs);
+                    visit(x0, &outs);
+                }
+            },
+        );
     }
 
     /// The outputs at `leaves` into `outs`; `buf` is scratch, reused across calls.
@@ -93,8 +110,8 @@ impl MalKey {
         buf.resize(3 * k, Block::ZERO);
         let (seeds, rest) = buf.split_at_mut(k);
         let (w, wm) = rest.split_at_mut(k);
-        pay_hash().h_many(seeds, w);
-        mac_hash().h_many(seeds, wm);
+        self.pay.h_many(seeds, w);
+        self.mac.h_many(seeds, wm);
         let (wc, mc) = (self.w_cw, self.wm_cw);
         outs.clear();
         outs.extend(leaves.iter().zip(w.iter().zip(&*wm)).map(|(&st, (&wv, &mv))| {

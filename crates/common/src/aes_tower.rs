@@ -34,8 +34,12 @@
 //! `η = θY = 0xb0`, `ζ = 0xf2` in `F_2[X]/(X⁸ + X⁴ + X³ + X + 1)`, and the F4
 //! element `h·θ + l` is the bit pair of [`crate::f4`] (`θ = ω`).
 //!
-//! The hash is `H_K(x) = π_K(σ(x)) ⊕ σ(x)` with `π_K` AES-128 under a public key
-//! and σ the orthomorphism of GKWY20 ([`crate::hash::sigma`]).
+//! The hash is `H_K(x) = π_K(σ(x)) ⊕ σ(x)` with `π_K` AES-128 and σ the
+//! orthomorphism of GKWY20 ([`crate::hash::sigma`]). In 2PC the key K is
+//! XOR-shared ([`SharedKey`]): Π_KeyExp expands its round keys on shares, 40
+//! S-boxes ([`KEYEXP_SBOXES`]), riding with the S-boxes of the first call
+//! that uses it, so it adds no rounds; AddRoundKey is then a local XOR of
+//! sharings. Once K is opened, [`Mmo`] evaluates `H_K` in the clear.
 
 // `aes` 0.8 re-exports generic-array 0.14, whose newest patch release marks it deprecated.
 #![allow(deprecated)]
@@ -61,6 +65,12 @@ pub const COTS_PER_CALL: usize = 160 * COTS_PER_SBOX;
 pub const ANDS_PER_CALL: usize = 3 * PRODUCTS_PER_CALL;
 /// Rounds per AES-128 call (10 AES rounds × multiplicative depth 4).
 pub const ROUNDS_PER_CALL: usize = 40;
+/// S-boxes of Π_KeyExp: one `SubWord` per round key.
+pub const KEYEXP_SBOXES: usize = 40;
+/// COTs of [`OtTower`] for one Π_KeyExp.
+pub const COTS_PER_KEY: usize = KEYEXP_SBOXES * COTS_PER_SBOX;
+/// ANDs of one Π_KeyExp.
+pub const ANDS_PER_KEY: usize = KEYEXP_SBOXES * 36;
 
 /// θ, a root of `X² + X + 1` in `F_{2^8}` (the F4 generator ω).
 pub const THETA: u8 = 0xbc;
@@ -275,19 +285,20 @@ pub fn sbox_tower(a: u8) -> u8 {
     mat_apply(&tw.out, byte) ^ 0x63
 }
 
+/// The round constants `rcon_r = X^{r−1}`, r = 1..=10.
+const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
+
 /// AES-128 round keys for `key`.
 pub fn key_schedule(key: [u8; 16]) -> [[u8; 16]; 11] {
     let mut rk = [[0u8; 16]; 11];
     rk[0] = key;
-    let mut rcon = 1u8;
     for r in 1..11 {
         let p = rk[r - 1];
         let mut t = [p[13], p[14], p[15], p[12]];
         for b in t.iter_mut() {
             *b = sbox(*b);
         }
-        t[0] ^= rcon;
-        rcon = gf256_mul(rcon, 2);
+        t[0] ^= RCON[r - 1];
         for c in 0..4 {
             for i in 0..4 {
                 let prev = if c == 0 { t[i] } else { rk[r][4 * (c - 1) + i] };
@@ -307,11 +318,26 @@ fn xor8<B: ShareBit>(a: &[B; 8], b: &[B; 8]) -> [B; 8] {
     std::array::from_fn(|i| a[i] ^ b[i])
 }
 
-/// A fixed public AES-128 key and its MMO hash `H(x) = π(σ(x)) ⊕ σ(x)`.
+/// A public AES-128 key and its MMO hash `H(x) = π(σ(x)) ⊕ σ(x)`.
 #[derive(Clone)]
 pub struct Mmo {
+    key: [u8; 16],
     aes: Aes128,
     rk: [[u8; 16]; 11],
+}
+
+impl PartialEq for Mmo {
+    fn eq(&self, o: &Self) -> bool {
+        self.key == o.key
+    }
+}
+
+impl Eq for Mmo {}
+
+impl std::fmt::Debug for Mmo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Mmo({:?})", Block::from_bytes(&self.key))
+    }
 }
 
 /// A shared 128-bit value, bit i of the block in position i.
@@ -319,7 +345,12 @@ pub type Shared128<B> = [B; 128];
 
 impl Mmo {
     pub fn new(key: [u8; 16]) -> Self {
-        Mmo { aes: Aes128::new(GenericArray::from_slice(&key)), rk: key_schedule(key) }
+        Mmo { key, aes: Aes128::new(GenericArray::from_slice(&key)), rk: key_schedule(key) }
+    }
+
+    /// The AES key K.
+    pub fn key(&self) -> [u8; 16] {
+        self.key
     }
 
     /// `π_K(x)`.
@@ -354,10 +385,32 @@ impl Mmo {
         }
     }
 
-    #[cfg(test)]
-    /// The round keys (public).
+    /// The round keys.
     pub fn round_keys(&self) -> &[[u8; 16]; 11] {
         &self.rk
+    }
+}
+
+/// An XOR-shared AES-128 key `⟨K⟩` and the round keys `⟨k_0⟩, …` expanded so
+/// far: only `⟨k_0⟩ = ⟨K⟩` until the first [`mmo_shared`] call that is given
+/// it runs Π_KeyExp, then all eleven.
+pub struct SharedKey<B> {
+    rk: Vec<Shared128<B>>,
+}
+
+impl<B: ShareBit> SharedKey<B> {
+    /// `⟨K⟩`, from this party's share (`𝓕_rand`: each party samples its own).
+    pub fn new(k: Shared128<B>) -> Self {
+        SharedKey { rk: vec![k] }
+    }
+
+    /// A public key, every round key a sharing of a constant (no Π_KeyExp).
+    pub fn public<K: TowerBackend<Bit = B>>(be: &K, m: &Mmo) -> Self {
+        SharedKey { rk: m.rk.iter().map(|k| share_const(be, Block::from_bytes(k))).collect() }
+    }
+
+    fn expanded(&self) -> bool {
+        self.rk.len() == 11
     }
 }
 
@@ -376,28 +429,62 @@ pub fn block_of(x: &Shared128<bool>) -> Block {
     Block::from_bits(x)
 }
 
-/// `⟨H_{K_j}(x_j)⟩` for every job `(mmo_j, ⟨x_j⟩)`, all jobs in the same
-/// [`ROUNDS_PER_CALL`] rounds (each job may use its own key).
-pub fn mmo_shared<K: TowerBackend>(be: &mut K, ch: &mut Channel, jobs: &[(&Mmo, Shared128<K::Bit>)]) -> Vec<Shared128<K::Bit>> {
+/// `⟨H_{K_j}(x_j)⟩` for every job `(j, ⟨x_j⟩)` under `keys[j]`, all jobs in
+/// the same [`ROUNDS_PER_CALL`] rounds. Every key not yet expanded runs
+/// Π_KeyExp in the same rounds: round key r is computed with the S-boxes of
+/// AES round r − 1, so its `SubWord` joins their batch, [`KEYEXP_SBOXES`]
+/// S-boxes per key and no extra round. A key may thus be passed before its
+/// first job, to expand it early.
+pub fn mmo_shared<K: TowerBackend>(
+    be: &mut K,
+    ch: &mut Channel,
+    keys: &mut [SharedKey<K::Bit>],
+    jobs: &[(usize, Shared128<K::Bit>)],
+) -> Vec<Shared128<K::Bit>> {
+    type Byte<B> = [B; 8];
+    let byte = |s: &Shared128<K::Bit>, j: usize| -> Byte<K::Bit> { std::array::from_fn(|i| s[8 * j + i]) };
     let sig = |x: &Shared128<K::Bit>| -> Shared128<K::Bit> { std::array::from_fn(|i| if i < 64 { x[i] ^ x[64 + i] } else { x[i - 64] }) };
-    let us: Vec<Shared128<K::Bit>> = jobs.iter().map(|(_, x)| sig(x)).collect();
-    let rk: Vec<Vec<Shared128<K::Bit>>> = jobs
-        .iter()
-        .map(|(m, _)| m.rk.iter().map(|k| share_const(be, Block::from_bytes(k))).collect())
-        .collect();
     let xor = |a: &Shared128<K::Bit>, b: &Shared128<K::Bit>| -> Shared128<K::Bit> { std::array::from_fn(|i| a[i] ^ b[i]) };
-    let mut v: Vec<Shared128<K::Bit>> = us.iter().zip(&rk).map(|(u, k)| xor(u, &k[0])).collect();
+    let expand: Vec<usize> = (0..keys.len()).filter(|&j| !keys[j].expanded()).collect();
+    for &j in &expand {
+        assert_eq!(keys[j].rk.len(), 1, "a key is expanded within one call");
+    }
+    let us: Vec<Shared128<K::Bit>> = jobs.iter().map(|(_, x)| sig(x)).collect();
+    let mut v: Vec<Shared128<K::Bit>> = us.iter().zip(jobs).map(|(u, &(j, _))| xor(u, &keys[j].rk[0])).collect();
     for r in 1..=10 {
-        // SubBytes on all 16·jobs bytes at once.
-        let bytes: Vec<[K::Bit; 8]> = v.iter().flat_map(|s| (0..16).map(move |j| std::array::from_fn(|i| s[8 * j + i]))).collect();
+        // SubBytes on all 16·jobs bytes, plus SubWord(RotWord(w_{4r−1})) of
+        // each key being expanded, in one batch.
+        let mut bytes: Vec<Byte<K::Bit>> = v.iter().flat_map(|s| (0..16).map(move |j| byte(s, j))).collect();
+        for &j in &expand {
+            let p = &keys[j].rk[r - 1];
+            bytes.extend([13, 14, 15, 12].map(|i| byte(p, i)));
+        }
         let sb = be.sbox(ch, &bytes);
+        // Π_KeyExp: k_r from k_{r−1} and the S-boxes.
+        for (e, &j) in expand.iter().enumerate() {
+            let p = keys[j].rk[r - 1];
+            let o = 16 * jobs.len() + 4 * e;
+            let mut t: [Byte<K::Bit>; 4] = std::array::from_fn(|i| sb[o + i]);
+            for (i, b) in t[0].iter_mut().enumerate() {
+                *b = *b ^ be.constant(RCON[r - 1] >> i & 1 == 1);
+            }
+            let mut k = [K::Bit::default(); 128];
+            for c in 0..4 {
+                for i in 0..4 {
+                    let prev = if c == 0 { t[i] } else { byte(&k, 4 * (c - 1) + i) };
+                    let w = xor8(&byte(&p, 4 * c + i), &prev);
+                    k[8 * (4 * c + i)..8 * (4 * c + i) + 8].copy_from_slice(&w);
+                }
+            }
+            keys[j].rk.push(k);
+        }
         for (job, s) in v.iter_mut().enumerate() {
             // ShiftRows: state byte r + 4c takes byte r + 4((c + r) mod 4).
-            let mut st: [[K::Bit; 8]; 16] = std::array::from_fn(|j| sb[16 * job + (j % 4 + 4 * ((j / 4 + j % 4) % 4))]);
+            let mut st: [Byte<K::Bit>; 16] = std::array::from_fn(|j| sb[16 * job + (j % 4 + 4 * ((j / 4 + j % 4) % 4))]);
             if r < 10 {
                 for c in 0..4 {
-                    let a: [[K::Bit; 8]; 4] = std::array::from_fn(|i| st[4 * c + i]);
-                    let t: [[K::Bit; 8]; 4] = std::array::from_fn(|i| xtime(&a[i]));
+                    let a: [Byte<K::Bit>; 4] = std::array::from_fn(|i| st[4 * c + i]);
+                    let t: [Byte<K::Bit>; 4] = std::array::from_fn(|i| xtime(&a[i]));
                     for i in 0..4 {
                         // b_i = 2a_i ⊕ 3a_{i+1} ⊕ a_{i+2} ⊕ a_{i+3}.
                         let (a1, a2, a3) = (&a[(i + 1) % 4], &a[(i + 2) % 4], &a[(i + 3) % 4]);
@@ -405,7 +492,7 @@ pub fn mmo_shared<K: TowerBackend>(be: &mut K, ch: &mut Channel, jobs: &[(&Mmo, 
                     }
                 }
             }
-            let k = &rk[job][r];
+            let k = &keys[jobs[job].0].rk[r];
             *s = std::array::from_fn(|i| st[i / 8][i % 8] ^ k[i]);
         }
     }
@@ -514,7 +601,15 @@ impl OtTower {
     /// each S-box (its `bits.len() / n` bits, as COTs `off..` of that S-box),
     /// and both parties compute the F4 products `prods` (S-box index, x, y),
     /// in one round. `eps` keeps party 0's corrections per S-box.
-    fn layer(&mut self, ch: &mut Channel, base: usize, eps: &mut [u32], off: usize, bits: &[bool], prods: &[(usize, F4Sh<Sym>, F4Sh<Sym>)]) -> Vec<F4Sh<Sym>> {
+    fn layer(
+        &mut self,
+        ch: &mut Channel,
+        base: usize,
+        eps: &mut [u32],
+        off: usize,
+        bits: &[bool],
+        prods: &[(usize, F4Sh<Sym>, F4Sh<Sym>)],
+    ) -> Vec<F4Sh<Sym>> {
         let n = eps.len();
         let k = bits.len() / n;
         // Three ANDs per product (Karatsuba), two cross terms per AND: (S-box,
@@ -553,11 +648,7 @@ impl OtTower {
             let e: Vec<bool> = bits.iter().enumerate().map(|(t, &v)| v ^ self.choices[at(t / k) + off + t % k]).collect();
             ch.send_bits(&e);
             let zeta = ch.recv_bits(crosses.len());
-            crosses
-                .iter()
-                .enumerate()
-                .map(|(t, &(i, l, b, _))| h.h(self.form(at(i), l), tw + t as u64).lsb() ^ (b && zeta[t]))
-                .collect()
+            crosses.iter().enumerate().map(|(t, &(i, l, b, _))| h.h(self.form(at(i), l), tw + t as u64).lsb() ^ (b && zeta[t])).collect()
         };
         let and: Vec<bool> = ands.iter().zip(out.chunks(2)).map(|(&(_, u, v), c)| (u.s && v.s) ^ c[0] ^ c[1]).collect();
         let sym = |s: bool| Sym { s, l: 0 };
@@ -647,7 +738,7 @@ mod tests {
     use super::*;
     use crate::net::run_two_party;
     use crate::ot::CotPair;
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha20Rng;
 
     #[test]
@@ -678,7 +769,10 @@ mod tests {
         let key: [u8; 16] = std::array::from_fn(|i| i as u8);
         let m = Mmo::new(key);
         let pt: [u8; 16] = std::array::from_fn(|i| (i * 0x11) as u8);
-        assert_eq!(m.pi(Block::from_bytes(&pt)).to_bytes(), [0x69, 0xc4, 0xe0, 0xd8, 0x6a, 0x7b, 0x04, 0x30, 0xd8, 0xcd, 0xb7, 0x80, 0x70, 0xb4, 0xc5, 0x5a]);
+        assert_eq!(
+            m.pi(Block::from_bytes(&pt)).to_bytes(),
+            [0x69, 0xc4, 0xe0, 0xd8, 0x6a, 0x7b, 0x04, 0x30, 0xd8, 0xcd, 0xb7, 0x80, 0x70, 0xb4, 0xc5, 0x5a]
+        );
         assert_eq!(m.round_keys()[10], [0x13, 0x11, 0x1d, 0x7f, 0xe3, 0x94, 0x4a, 0x17, 0xf3, 0x07, 0xa7, 0x8b, 0x4d, 0x2b, 0x30, 0xc5]);
         let xs: Vec<Block> = (0..100u128).map(|i| Block(i * 0x9e37_79b9_7f4a_7c15)).collect();
         let mut out = vec![Block::ZERO; 100];
@@ -703,9 +797,10 @@ mod tests {
                 let mut cot = CotPair::setup(ch, &mut r, delta, false).unwrap();
                 let pool = cot.random_cots(ch, 0, 3 * COTS_PER_CALL, &mut r).unwrap();
                 let mut be = OtTower::new(b, pool, cot.delta());
-                let jobs: Vec<(&Mmo, Shared128<bool>)> = shares.iter().enumerate().map(|(i, &x)| (&keys[i % 2], bits_of(x))).collect();
+                let mut sk: Vec<SharedKey<bool>> = keys.iter().map(|m| SharedKey::public(&be, m)).collect();
+                let jobs: Vec<(usize, Shared128<bool>)> = shares.iter().enumerate().map(|(i, &x)| (i % 2, bits_of(x))).collect();
                 let before = ch.stats();
-                let out = mmo_shared(&mut be, ch, &jobs);
+                let out = mmo_shared(&mut be, ch, &mut sk, &jobs);
                 let s = ch.stats().since(&before);
                 (out.iter().map(block_of).collect::<Vec<_>>(), s, be.ands, be.remaining())
             }
@@ -722,5 +817,38 @@ mod tests {
         let per_round = |bits_per_sbox: usize| (48 * bits_per_sbox).div_ceil(8);
         assert_eq!(st0.bytes_sent, 10 * [9, 3, 6, 18].iter().map(|&a| per_round(2 * a)).sum::<usize>());
         assert_eq!(st1.bytes_sent, 10 * [8, 4, 2, 4].iter().map(|&k| per_round(k)).sum::<usize>());
+    }
+
+    #[test]
+    fn shared_key_expansion_rides_with_the_first_call() {
+        let mut rng = ChaCha20Rng::seed_from_u64(8);
+        let ks: [[u8; 16]; 2] = [rng.gen(), rng.gen()];
+        let k0: [Block; 2] = [Block::random(&mut rng), Block::random(&mut rng)];
+        let xs: Vec<Block> = (0..2).map(|_| Block::random(&mut rng)).collect();
+        let s0: Vec<Block> = (0..2).map(|_| Block::random(&mut rng)).collect();
+        let party = |b: usize| {
+            let (xs, s0) = (xs.clone(), s0.clone());
+            move |ch: &mut Channel| {
+                let mut r = ChaCha20Rng::seed_from_u64(20 + b as u64);
+                let delta = Block::random(&mut r).with_lsb(b == 1);
+                let mut cot = CotPair::setup(ch, &mut r, delta, false).unwrap();
+                let pool = cot.random_cots(ch, 0, 2 * COTS_PER_CALL + 2 * COTS_PER_KEY, &mut r).unwrap();
+                let mut be = OtTower::new(b, pool, cot.delta());
+                // ⟨K_j⟩ = (K_j ⊕ k0_j, k0_j).
+                let mut sk: Vec<SharedKey<bool>> =
+                    (0..2).map(|j| SharedKey::new(bits_of(if b == 0 { Block::from_bytes(&ks[j]) ^ k0[j] } else { k0[j] }))).collect();
+                let share = |i: usize| if b == 0 { s0[i] } else { xs[i] ^ s0[i] };
+                // Only key 0 has a job; key 1 is expanded along and used next.
+                let before = ch.stats();
+                let a = mmo_shared(&mut be, ch, &mut sk, &[(0, bits_of(share(0)))]);
+                let rounds = ch.stats().since(&before).rounds;
+                let c = mmo_shared(&mut be, ch, &mut sk, &[(1, bits_of(share(1)))]);
+                (block_of(&a[0]), block_of(&c[0]), rounds, be.ands, be.remaining())
+            }
+        };
+        let ((a0, c0, rounds, ands, left), (a1, c1, _, _, _)) = run_two_party(party(0), party(1));
+        assert_eq!(a0 ^ a1, Mmo::new(ks[0]).h(xs[0]));
+        assert_eq!(c0 ^ c1, Mmo::new(ks[1]).h(xs[1]));
+        assert_eq!((rounds, ands, left), (ROUNDS_PER_CALL, 2 * ANDS_PER_CALL + 2 * ANDS_PER_KEY, 0));
     }
 }

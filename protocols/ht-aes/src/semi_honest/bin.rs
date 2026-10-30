@@ -4,16 +4,17 @@
 //! Gen is the arithmetic one up to the leaf. In a group of characteristic 2
 //! the sign `(−1)^{t_{n,0}}` is 1 and the payload needs no B2A, so the leaf is
 //! `W_b = F^pay(s_{n,b})` for both b (40 rounds) and the opening of
-//! `W_CW = W_0 ⊕ W_1 ⊕ β`. Evaluation outputs `F^pay(s) ⊕ t·W_CW`.
+//! `W_CW = W_0 ⊕ W_1 ⊕ β`, together with K and K'. Evaluation outputs
+//! `F^pay(s) ⊕ t·W_CW`.
 //!
 //! Rounds: `1 + 41n + 40 + 1 = 41n + 42`. Preprocessing: the OT tower's COTs
-//! for [`crate::sh_calls`] AES–MMO calls, n string triples, n COTs per
+//! for [`crate::sh_calls`] AES–MMO calls and two key expansions, n string triples, n COTs per
 //! direction (the α-bits).
 
 use super::gen::{drive, walk, GenOutput, Pre, Walk};
 use crate::malicious::low;
-use crate::{child, children, leaf_seed, pay_hash, state_hash};
-use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128};
+use crate::{child, children, deal_walk, key_bytes, leaf_seed, open_keys, sample_keys, SH_KEYS};
+use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::net::Channel;
 use dpf_common::ot::FerretConfig;
@@ -27,6 +28,10 @@ pub struct BinKey {
     pub n_size: u64,
     /// ℓ ≤ 128.
     pub bits: usize,
+    /// `F = H_K`.
+    pub prf: Mmo,
+    /// `F^pay = H_{K'}(· ∥ 0)`.
+    pub pay: Mmo,
     pub root: Block,
     pub cws: Vec<Block>,
     /// `W_CW = F^pay(s_0) ⊕ F^pay(s_1) ⊕ β` (low ℓ bits).
@@ -38,9 +43,9 @@ impl BinKey {
         depth_for(self.n_size)
     }
 
-    /// Root, n words, ⌈ℓ/8⌉ bytes of `W_CW`.
+    /// K, K', root, n words, ⌈ℓ/8⌉ bytes of `W_CW`.
     pub fn size_bytes(&self) -> usize {
-        16 + 16 * self.cws.len() + self.bits.div_ceil(8)
+        2 * 16 + 16 + 16 * self.cws.len() + self.bits.div_ceil(8)
     }
 
     /// This party's XOR share of `f(x)`.
@@ -49,9 +54,9 @@ impl BinKey {
         let n = self.depth();
         let mut st = self.root;
         for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(st, cw, (x >> (n - 1 - i)) & 1 == 1);
+            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1);
         }
-        low(pay_hash().h(leaf_seed(st)), self.bits) ^ self.w_cw.and_bit(st.lsb())
+        low(self.pay.h(leaf_seed(st)), self.bits) ^ self.w_cw.and_bit(st.lsb())
     }
 
     /// Shares of `f(0), …, f(N − 1)`: all 2^n leaves, one level at a time.
@@ -59,7 +64,7 @@ impl BinKey {
         let mut nodes = vec![self.root];
         for &cw in &self.cws {
             let mut next = Vec::new();
-            children(&nodes, cw, &mut next);
+            children(&self.prf, &nodes, cw, &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -73,12 +78,18 @@ impl BinKey {
     /// party's shares at `x0 .. x0 + ys.len()`, for all x < N.
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[Block])) {
         let (mut buf, mut ys) = (Vec::new(), Vec::new());
-        stream_walk(self.root, self.cws.len(), batch, |l, parents, out| children(parents, self.cws[l - 1], out), |x0, leaves| {
-            if x0 < self.n_size {
-                self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut ys);
-                visit(x0, &ys);
-            }
-        });
+        stream_walk(
+            self.root,
+            self.cws.len(),
+            batch,
+            |l, parents, out| children(&self.prf, parents, self.cws[l - 1], out),
+            |x0, leaves| {
+                if x0 < self.n_size {
+                    self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut ys);
+                    visit(x0, &ys);
+                }
+            },
+        );
     }
 
     /// The outputs at `leaves` into `ys`; `buf` is scratch, reused across calls.
@@ -88,7 +99,7 @@ impl BinKey {
         buf.extend(leaves.iter().map(|&s| leaf_seed(s)));
         buf.resize(2 * k, Block::ZERO);
         let (seeds, w) = buf.split_at_mut(k);
-        pay_hash().h_many(seeds, w);
+        self.pay.h_many(seeds, w);
         ys.clear();
         ys.extend(leaves.iter().zip(&*w).map(|(&st, &wv)| low(wv, self.bits) ^ self.w_cw.and_bit(st.lsb())));
     }
@@ -97,44 +108,54 @@ impl BinKey {
 /// Setup, preprocessing and generation for one party: XOR shares of α and of
 /// `β ∈ F_2^ℓ`.
 #[allow(clippy::too_many_arguments)]
-pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, alpha_share: u64, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>) -> GenOutput<BinKey> {
+pub fn gen(
+    ch: &mut Channel,
+    n_size: u64,
+    bits: usize,
+    alpha_share: u64,
+    beta_share: Block,
+    seed: [u8; 32],
+    ferret: Option<FerretConfig>,
+) -> GenOutput<BinKey> {
     assert!((1..=128).contains(&bits));
     let n = depth_for(n_size);
-    drive(ch, seed, ferret, n, n, |_, _, _| (), |cot, pre, (), rng, ch| {
-        let b = ch.party();
-        let Pre { mut be, string_triples } = pre;
-        let delta = cot.delta();
-        let Walk { root, st, cws, .. } = walk(&mut be, &string_triples, cot, rng, ch, n, alpha_share, &[], None);
-        let fp = pay_hash();
-        let jobs: [(&Mmo, Shared128<bool>); 2] = [(fp, bits_of(leaf_seed(st))), (fp, bits_of(leaf_seed(st ^ delta)))];
-        let w = mmo_shared(&mut be, ch, &jobs);
-        let w_share = low(block_of(&w[0]) ^ block_of(&w[1]), bits) ^ low(beta_share, bits);
-        ch.send(w_share.to_bytes().to_vec());
-        let theirs = ch.recv();
-        assert_eq!(theirs.len(), 16, "malformed payload share");
-        let w_cw = w_share ^ Block::from_bytes(&theirs);
-        (BinKey { party: b, n_size, bits, root, cws, w_cw }, be.ands)
-    })
+    drive(
+        ch,
+        seed,
+        ferret,
+        n,
+        n,
+        |_, _, _| (),
+        |cot, pre, (), rng, ch| {
+            let b = ch.party();
+            let Pre { mut be, string_triples } = pre;
+            let delta = cot.delta();
+            let (ks, mut keys) = sample_keys(rng, SH_KEYS);
+            let Walk { root, st, cws, .. } = walk(&mut be, &string_triples, &mut keys, cot, rng, ch, n, alpha_share, &[], None);
+            let w = mmo_shared(&mut be, ch, &mut keys, &[(1, bits_of(leaf_seed(st))), (1, bits_of(leaf_seed(st ^ delta)))]);
+            let w_share = low(block_of(&w[0]) ^ block_of(&w[1]), bits) ^ low(beta_share, bits);
+            let mut msg = w_share.to_bytes().to_vec();
+            msg.extend(key_bytes(&ks));
+            ch.send(msg);
+            let mut theirs = ch.recv();
+            assert_eq!(theirs.len(), 16 + 16 * SH_KEYS, "malformed payload share");
+            let mut prf = open_keys(&ks, &theirs.split_off(16)).into_iter();
+            let (prf, pay) = (prf.next().unwrap(), prf.next().unwrap());
+            let w_cw = w_share ^ Block::from_bytes(&theirs);
+            (BinKey { party: b, n_size, bits, prf, pay, root, cws, w_cw }, be.ands)
+        },
+    )
 }
 
-/// Trusted-dealer generation for given roots (`lsb(root_b) = b`): the cleartext
-/// Gen, and the bit-exact oracle of [`gen`].
-pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: Block) -> [BinKey; 2] {
+/// Trusted-dealer generation for given roots (`lsb(root_b) = b`) and AES keys
+/// `[K, K']`: the cleartext Gen, and the bit-exact oracle of [`gen`].
+pub fn deal(roots: [Block; 2], keys: [[u8; 16]; SH_KEYS], n_size: u64, bits: usize, alpha: u64, beta: Block) -> [BinKey; 2] {
     assert!(alpha < n_size);
-    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
     assert_eq!(beta, low(beta, bits), "β must fit in the output width");
-    let n = depth_for(n_size);
-    let delta = roots[0] ^ roots[1];
-    let mut st = roots;
-    let mut cws = Vec::with_capacity(n);
-    for i in 0..n {
-        let a = (alpha >> (n - 1 - i)) & 1 == 1;
-        let cw = state_hash().h(st[0]) ^ state_hash().h(st[1]) ^ delta.and_bit(!a);
-        st = [child(st[0], cw, a), child(st[1], cw, a)];
-        cws.push(cw);
-    }
-    let w_cw = low(pay_hash().h(leaf_seed(st[0])) ^ pay_hash().h(leaf_seed(st[1])), bits) ^ beta;
-    let mk = |party: usize| BinKey { party, n_size, bits, root: roots[party], cws: cws.clone(), w_cw };
+    let (prf, pay) = (Mmo::new(keys[0]), Mmo::new(keys[1]));
+    let (cws, st) = deal_walk(&prf, roots, depth_for(n_size), alpha);
+    let w_cw = low(pay.h(leaf_seed(st[0])) ^ pay.h(leaf_seed(st[1])), bits) ^ beta;
+    let mk = |party: usize| BinKey { party, n_size, bits, prf: prf.clone(), pay: pay.clone(), root: roots[party], cws: cws.clone(), w_cw };
     [mk(0), mk(1)]
 }
 
@@ -142,5 +163,6 @@ pub fn deal(roots: [Block; 2], n_size: u64, bits: usize, alpha: u64, beta: Block
 pub fn gen_reference(n_size: u64, bits: usize, alpha: u64, beta: Block, seed: [u8; 32]) -> [BinKey; 2] {
     let mut rng = ChaCha20Rng::from_seed(seed);
     let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
-    deal(roots, n_size, bits, alpha, beta)
+    let keys: [[u8; 16]; SH_KEYS] = std::array::from_fn(|_| Block::random(&mut rng).to_bytes());
+    deal(roots, keys, n_size, bits, alpha, beta)
 }

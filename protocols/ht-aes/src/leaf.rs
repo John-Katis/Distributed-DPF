@@ -17,8 +17,8 @@
 //!    Beaver mask `d_i = ρ − u_i` of each sign product (`ρ = 1 − 2r`), and
 //!    the masks of the products in `S_i`.
 //! 2. Open `e_i = V_i − v_i`.
-//! 3. Open `X_i = ρ·V_i`; then `W_CW,i = (1 − 2c)·X_i`, since
-//!    `1 − 2t = (1 − 2c)(1 − 2r)`.
+//! 3. Open `X_i = ρ·V_i`, with the AES key shares; then `W_CW,i = (1 −
+//!    2c)·X_i`, since `1 − 2t = (1 − 2c)(1 − 2r)`.
 //!
 //! Three rounds after the leaf PRF calls.
 
@@ -102,9 +102,19 @@ fn elems<F: Field>(b: &[u8]) -> Vec<F> {
 /// mask blocks `masks[i] = [W_{i,0}, W_{i,1}]`, this party's share `t` of the
 /// tag `t_{n,0}`, and `subs[i]`. `err[i]` is added to this party's share of
 /// `X_i` before it is opened (a deliberate deviation, for the abort tests).
+/// `tail` rides with the last message (the AES key shares) and the other
+/// party's tail, of the same length, is returned with the words.
 /// Consumes [`leaf_dabits`]`(masks.len())` daBits and one triple per word and
 /// per product.
-pub fn arith_leaf<F: Field>(ch: &mut Channel, masks: &[[Block; 2]], subs: &[Sub<F>], t: bool, pre: &mut FpPre<F>, err: &[F]) -> Vec<F> {
+pub fn arith_leaf<F: Field>(
+    ch: &mut Channel,
+    masks: &[[Block; 2]],
+    subs: &[Sub<F>],
+    t: bool,
+    pre: &mut FpPre<F>,
+    err: &[F],
+    tail: &[u8],
+) -> (Vec<F>, Vec<u8>) {
     let b = ch.party();
     let words = masks.len();
     assert!(subs.len() == words && err.len() == words);
@@ -193,16 +203,24 @@ pub fn arith_leaf<F: Field>(ch: &mut Channel, masks: &[[Block; 2]], subs: &[Sub<
             s.add(err[i])
         })
         .collect();
-    let mut msg = Vec::with_capacity(words * F::BYTES);
+    let mut msg = Vec::with_capacity(words * F::BYTES + tail.len());
     x_mine.iter().for_each(|x| x.put(&mut msg));
-    let theirs = elems::<F>(&swap(ch, msg));
+    msg.extend_from_slice(tail);
+    let mut theirs = swap(ch, msg);
+    let their_tail = theirs.split_off(words * F::BYTES);
+    let theirs = elems::<F>(&theirs);
     let c_t = c[nbits - 1];
-    x_mine.iter().zip(&theirs).map(|(a, x)| {
-        let xv = a.add(*x);
-        if c_t {
-            xv.neg()
-        } else {
-            xv
-        }
-    }).collect()
+    let ws = x_mine
+        .iter()
+        .zip(&theirs)
+        .map(|(a, x)| {
+            let xv = a.add(*x);
+            if c_t {
+                xv.neg()
+            } else {
+                xv
+            }
+        })
+        .collect();
+    (ws, their_tail)
 }

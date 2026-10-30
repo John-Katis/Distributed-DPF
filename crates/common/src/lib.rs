@@ -9,8 +9,9 @@
 //! * [`gf128`]: GF(2^128) multiplication.
 //! * [`f4`]: the field F4, scalar and packed.
 //! * [`foleage`]: the FOLEAGE F4-OLE PCG with dealer-free seed generation.
-//! * [`aes_tower`]: fixed-key AES–MMO in the clear and in 2PC, S-box in the
-//!   F4 tower, F4 products from a pluggable backend.
+//! * [`aes_tower`]: AES–MMO in the clear and in 2PC under a shared key
+//!   (Π_KeyExp on shares), S-box in the F4 tower, every AND from COTs (the
+//!   OT tower).
 //! * [`arith`]: Z_2^ℓ helpers and the OT-based arithmetic MUX.
 //! * [`bool2pc`]: F_AND / F_OR from CrypTFlow2 bit triples and the COT-based
 //!   block MUX, on XOR-shared bits.

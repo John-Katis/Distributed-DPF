@@ -1,5 +1,5 @@
 //! Our distributed half-tree DPF (the paper's `htDPF.Gen`, §"Fully
-//! Distributed DPF"), with `F_PRF` instantiated by fixed-key AES–MMO in 2PC
+//! Distributed DPF"), with `F_PRF` instantiated by AES–MMO under a shared key in 2PC
 //! on the OT tower ([`dpf_common::aes_tower::OtTower`]): every AND of the
 //! S-boxes from Ferret COTs.
 //!
@@ -15,10 +15,14 @@
 //!   product, whose opening rides with B.
 //!
 //! `Δ = Δ_0 ⊕ Δ_1` (`lsb(Δ_b) = b`, so lsb(Δ) = 1) is the XOR of the parties'
-//! COT keys. The key of party b is its root `st_{0,b}`, fresh per Gen with
-//! `st_{0,0} ⊕ st_{0,1} = Δ` and `lsb(st_{0,b}) = b`, and the public words; evaluation is a local
-//! half-tree walk with `L = F(st)`, `R = st ⊕ L`, `st' = child ⊕ t·CW`. The
-//! payload is read at the leaf through a second hash `F^pay(s) = H'(s ∥ 0)`.
+//! COT keys. The AES keys K (state), K' (payload) and, in the malicious
+//! variants, K'' (MAC) are XOR-shared per Gen (`𝓕_rand`), expanded on shares
+//! by Π_KeyExp alongside the level-1 calls, and opened with the last message
+//! of Gen. The key of party b is its root `st_{0,b}`, fresh per Gen with
+//! `st_{0,0} ⊕ st_{0,1} = Δ` and `lsb(st_{0,b}) = b`, and the public part: K,
+//! K' (K''), the words; evaluation is a local half-tree walk with `L =
+//! H_K(st)`, `R = st ⊕ L`, `st' = child ⊕ t·CW`. The payload is read at the
+//! leaf through `F^pay(s) = H_{K'}(s ∥ 0)`.
 //!
 //! * [`semi_honest`]: payload in `G = F_p` ([`field`]), the paper's leaf
 //!   ([`leaf`]: B2A by daBits, the sign by a daBit and one Beaver triple).
@@ -35,50 +39,75 @@ pub mod malicious;
 pub mod malicious_arith;
 pub mod semi_honest;
 
-use dpf_common::aes_tower::{Mmo, ANDS_PER_CALL};
+use dpf_common::aes_tower::{bits_of, Mmo, SharedKey, ANDS_PER_CALL, ANDS_PER_KEY};
 use dpf_common::block::Block;
-use std::sync::OnceLock;
+use rand::{CryptoRng, RngCore};
 
-/// The state-expansion PRF `F = H_K` (fixed public AES key).
-pub fn state_hash() -> &'static Mmo {
-    static H: OnceLock<Mmo> = OnceLock::new();
-    H.get_or_init(|| Mmo::new(*b"ht-aes/state-prf"))
+/// AES keys of the semi-honest variants: `K` (the state expansion `F = H_K`)
+/// and `K'` (the payload mask `F^pay = H_{K'}(· ∥ 0)`).
+pub const SH_KEYS: usize = 2;
+/// AES keys of the malicious variants: `K`, `K'` and `K''` (the MAC mask
+/// `F^mac = H_{K''}(· ∥ 0)`).
+pub const MAL_KEYS: usize = 3;
+
+/// This party's shares of `k` fresh AES keys (`𝓕_rand`: each party samples
+/// its own share), and their sharings for [`dpf_common::aes_tower::mmo_shared`].
+pub(crate) fn sample_keys<R: RngCore + CryptoRng>(rng: &mut R, k: usize) -> (Vec<Block>, Vec<SharedKey<bool>>) {
+    let mine: Vec<Block> = (0..k).map(|_| Block::random(rng)).collect();
+    let shared = mine.iter().map(|&x| SharedKey::new(bits_of(x))).collect();
+    (mine, shared)
 }
 
-/// The payload mask `F^pay`, an independent public key.
-pub fn pay_hash() -> &'static Mmo {
-    static H: OnceLock<Mmo> = OnceLock::new();
-    H.get_or_init(|| Mmo::new(*b"ht-aes/payload!!"))
+/// The key shares as one message, opened with the last message of Gen.
+pub(crate) fn key_bytes(mine: &[Block]) -> Vec<u8> {
+    mine.iter().flat_map(|k| k.to_bytes()).collect()
 }
 
-/// The payload-MAC mask `F^mac` of the malicious variant, a third key.
-pub fn mac_hash() -> &'static Mmo {
-    static H: OnceLock<Mmo> = OnceLock::new();
-    H.get_or_init(|| Mmo::new(*b"ht-aes/mac-mask!"))
+/// `𝓕_Reveal(⟨K_j⟩)` from this party's shares and the other party's message.
+pub(crate) fn open_keys(mine: &[Block], theirs: &[u8]) -> Vec<Mmo> {
+    assert_eq!(theirs.len(), 16 * mine.len(), "malformed key shares");
+    mine.iter().zip(theirs.chunks(16)).map(|(&k, t)| Mmo::new((k ^ Block::from_bytes(t)).to_bytes())).collect()
 }
 
-/// One half-tree step: the child of `st` in direction `bit`, corrected.
+/// One half-tree step under `F = f`: the child of `st` in direction `bit`, corrected.
 #[inline]
-pub fn child(st: Block, cw: Block, bit: bool) -> Block {
-    let l = state_hash().h(st);
+pub fn child(f: &Mmo, st: Block, cw: Block, bit: bool) -> Block {
+    let l = f.h(st);
     let c = if bit { st ^ l } else { l };
     c ^ cw.and_bit(st.lsb())
 }
 
 /// [`child`] for a whole batch: appends both corrected children of every
 /// parent to `out`, interleaved `[L(p0), R(p0), L(p1), …]`.
-pub fn children(parents: &[Block], cw: Block, out: &mut Vec<Block>) {
+pub fn children(f: &Mmo, parents: &[Block], cw: Block, out: &mut Vec<Block>) {
     let (start, k) = (out.len(), parents.len());
     out.resize(start + 2 * k, Block::ZERO);
     let kids = &mut out[start..];
     // H(parents) into the upper half, then spread in place: slot i is read
     // before slots 2i, 2i + 1 ≤ k + i are written.
-    state_hash().h_many(parents, &mut kids[k..]);
+    f.h_many(parents, &mut kids[k..]);
     for (i, &st) in parents.iter().enumerate() {
         let lv = kids[k + i] ^ cw.and_bit(st.lsb());
         kids[2 * i] = lv;
         kids[2 * i + 1] = st ^ lv;
     }
+}
+
+/// The cleartext walk of a dealer: the n level words for roots `st` (`st_0 ⊕
+/// st_1 = Δ`) and α, and the two leaf states.
+pub(crate) fn deal_walk(f: &Mmo, roots: [Block; 2], n: usize, alpha: u64) -> (Vec<Block>, [Block; 2]) {
+    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
+    let delta = roots[0] ^ roots[1];
+    let mut st = roots;
+    let mut cws = Vec::with_capacity(n);
+    for i in 0..n {
+        let a = (alpha >> (n - 1 - i)) & 1 == 1;
+        let cw = f.h(st[0]) ^ f.h(st[1]) ^ delta.and_bit(!a);
+        st = [child(f, st[0], cw, a), child(f, st[1], cw, a)];
+        cws.push(cw);
+    }
+    debug_assert_eq!(st[0] ^ st[1], delta);
+    (cws, st)
 }
 
 /// The leaf input of the payload hashes: the seed with its control bit cleared.
@@ -93,7 +122,7 @@ pub fn sh_calls(n: usize) -> usize {
     2 * n + 2
 }
 
-/// ANDs in one semi-honest Gen of depth n.
+/// ANDs in one semi-honest Gen of depth n: the calls and Π_KeyExp of K, K'.
 pub fn sh_ands(n: usize) -> usize {
-    sh_calls(n) * ANDS_PER_CALL
+    sh_calls(n) * ANDS_PER_CALL + SH_KEYS * ANDS_PER_KEY
 }

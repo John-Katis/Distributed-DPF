@@ -3,7 +3,8 @@
 //! of the output and of its MAC, and [`verify`] is Π_Verify over F_p.
 
 use crate::field::Field;
-use crate::{child, children, leaf_seed, mac_hash, pay_hash};
+use crate::{child, children, leaf_seed};
+use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::coin::{coin_block, commit_and_open_blocks, Abort};
 use dpf_common::hash::CtrPrg;
@@ -15,6 +16,12 @@ use rand::{CryptoRng, RngCore};
 pub struct ArithMalKey<F: Field> {
     pub party: usize,
     pub n_size: u64,
+    /// `F = H_K`.
+    pub prf: Mmo,
+    /// `F^pay = H_{K'}(· ∥ 0)`.
+    pub pay: Mmo,
+    /// `F^mac = H_{K''}(· ∥ 0)`.
+    pub mac: Mmo,
     pub root: Block,
     pub cws: Vec<Block>,
     /// `W_CW = (−1)^{t_{n,0}}·(W_0 − W_1 − β)`.
@@ -28,9 +35,9 @@ impl<F: Field> ArithMalKey<F> {
         depth_for(self.n_size)
     }
 
-    /// Root, n words, `W_CW` and `W^MAC_CW`.
+    /// K, K', K'', root, n words, `W_CW` and `W^MAC_CW`.
     pub fn size_bytes(&self) -> usize {
-        16 + 16 * self.cws.len() + 2 * F::BYTES
+        3 * 16 + 16 + 16 * self.cws.len() + 2 * F::BYTES
     }
 
     /// `(−1)^b·(F^pay(s) + t·W_CW, F^mac(s) + t·W^MAC_CW)` at a leaf, from the
@@ -55,10 +62,10 @@ impl<F: Field> ArithMalKey<F> {
         let n = self.depth();
         let mut st = self.root;
         for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(st, cw, (x >> (n - 1 - i)) & 1 == 1);
+            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1);
         }
         let s = leaf_seed(st);
-        self.output(st, pay_hash().h(s), mac_hash().h(s))
+        self.output(st, self.pay.h(s), self.mac.h(s))
     }
 
     /// Shares `(y, m)` at x = 0, …, N − 1: all 2^n leaves, one level at a time.
@@ -66,7 +73,7 @@ impl<F: Field> ArithMalKey<F> {
         let mut nodes = vec![self.root];
         for &cw in &self.cws {
             let mut next = Vec::new();
-            children(&nodes, cw, &mut next);
+            children(&self.prf, &nodes, cw, &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -80,12 +87,18 @@ impl<F: Field> ArithMalKey<F> {
     /// party's shares at `x0 .. x0 + outs.len()`, for all x < N.
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[(F, F)])) {
         let (mut buf, mut outs) = (Vec::new(), Vec::new());
-        walk(self.root, self.cws.len(), batch, |l, parents, out| children(parents, self.cws[l - 1], out), |x0, leaves| {
-            if x0 < self.n_size {
-                self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut outs);
-                visit(x0, &outs);
-            }
-        });
+        walk(
+            self.root,
+            self.cws.len(),
+            batch,
+            |l, parents, out| children(&self.prf, parents, self.cws[l - 1], out),
+            |x0, leaves| {
+                if x0 < self.n_size {
+                    self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut outs);
+                    visit(x0, &outs);
+                }
+            },
+        );
     }
 
     /// The outputs at `leaves` into `outs`; `buf` is scratch, reused across calls.
@@ -96,8 +109,8 @@ impl<F: Field> ArithMalKey<F> {
         buf.resize(3 * k, Block::ZERO);
         let (seeds, rest) = buf.split_at_mut(k);
         let (w, wm) = rest.split_at_mut(k);
-        pay_hash().h_many(seeds, w);
-        mac_hash().h_many(seeds, wm);
+        self.pay.h_many(seeds, w);
+        self.mac.h_many(seeds, wm);
         outs.clear();
         outs.extend(leaves.iter().zip(w.iter().zip(&*wm)).map(|(&st, (&wv, &mv))| self.output(st, wv, mv)));
     }

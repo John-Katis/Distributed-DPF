@@ -32,10 +32,7 @@ fn run<F: Field>(n: u64, alpha: u64, beta: F, seed: u64) -> [ShKey<F>; 2] {
     let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
     let b0 = F::random(&mut rng);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-    let (o0, o1) = run_two_party(
-        move |c| gen(c, n, a0, b0, seeds[0], None),
-        move |c| gen(c, n, alpha ^ a0, beta.sub(b0), seeds[1], None),
-    );
+    let (o0, o1) = run_two_party(move |c| gen(c, n, a0, b0, seeds[0], None), move |c| gen(c, n, alpha ^ a0, beta.sub(b0), seeds[1], None));
     let depth = o0.key.depth();
     assert_eq!(o0.ands, ht_aes::sh_ands(depth));
     assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), 41 * depth + 44);
@@ -51,7 +48,7 @@ fn gen_matches_point_function_and_dealer<F: Field>(seed: u64) {
             let beta = F::random(&mut rng);
             let keys = run::<F>(n, alpha, beta, s);
             check(&keys, n, alpha, beta);
-            assert_eq!(deal([keys[0].root, keys[1].root], n, alpha, beta), keys);
+            assert_eq!(deal([keys[0].root, keys[1].root], [keys[0].prf.key(), keys[0].pay.key()], n, alpha, beta), keys);
         }
     }
 }
@@ -73,7 +70,7 @@ fn dealer_keys_are_point_functions() {
         let alpha = rng.gen_range(0..n);
         let beta = M127::random(&mut rng);
         let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
-        check(&deal(roots, n, alpha, beta), n, alpha, beta);
+        check(&deal(roots, [rng.gen(), rng.gen()], n, alpha, beta), n, alpha, beta);
     }
 }
 

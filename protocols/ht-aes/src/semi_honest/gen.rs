@@ -14,6 +14,10 @@
 //! **Generation**, with `α` XOR-shared (bit `n − 1 − i` is level i + 1) and
 //! `β` additively shared in `G = F_p` ([`crate::field`]):
 //!
+//! 0. Fresh XOR-shared AES keys K (state) and K' (payload), `𝓕_rand`; their
+//!    round keys are expanded on shares (Π_KeyExp, 40 S-boxes each) in the
+//!    rounds of the level-1 calls, and both are opened with the last message.
+//!
 //! 1. `⟨α_ℓ·Δ⟩` for all levels from the derandomised COTs (one round):
 //!    `α_{ℓ,b}·Δ_b ⊕ M_b[α_{ℓ,b}] ⊕ K_b[α_{ℓ,1−b}]`.
 //! 2. A fresh root per Gen: party 0 samples `R` (lsb 0) as `st_{0,0}` and
@@ -21,22 +25,24 @@
 //!    `st_{0,1} = R ⊕ Δ_0 ⊕ Δ_1`; `⟨st_{0,0}⟩ = (R, 0)`, `⟨Δ⟩ = (Δ_0, Δ_1)`.
 //!    Δ is the session's COT key, so roots `Δ_b` would repeat across Gens and
 //!    two keys would reveal Δ (hence α) by `CW_ℓ ⊕ CW'_ℓ`.
-//! 3. Per level: two AES–MMO calls on `⟨st_{ℓ−1,0}⟩`, `⟨st_{ℓ−1,0}⟩ ⊕ ⟨Δ⟩` (40
-//!    rounds), then one exchange carrying the CW share and the Beaver opening
+//! 3. Per level: two AES–MMO calls `H_K` on `⟨st_{ℓ−1,0}⟩`, `⟨st_{ℓ−1,0}⟩ ⊕
+//!    ⟨Δ⟩` (40 rounds), then one exchange carrying the CW share and the Beaver opening
 //!    `(α_ℓ ⊕ a, st_{ℓ−1,0} ⊕ B)` of the branch selection; the new state is
 //!    local.
-//! 4. Leaf: `W_b = F^pay(s_{n,b} ∥ 0)` for both b (40 rounds), read in F_p
+//! 4. Leaf: `W_b = H_{K'}(s_{n,b} ∥ 0)` for both b (40 rounds), read in F_p
 //!    from their low κ bits; then the paper's leaf ([`arith_leaf`]): B2A of
 //!    the 2κ bits by daBits and `W_CW = (1 − 2c)·ρV` with `c = t_{n,0} ⊕ r`,
-//!    `ρ = 1 − 2r` for a daBit r and one Beaver triple (three rounds).
+//!    `ρ = 1 − 2r` for a daBit r and one Beaver triple (three rounds, the
+//!    last one also opening K and K').
 //!
 //! Rounds: `1 + 41n + 40 + 3 = 41n + 44`.
 
 use super::key::ShKey;
 use crate::field::Field;
 use crate::leaf::{arith_leaf, fp_pre, fp_pre_cots, leaf_dabits, FpPre, Sub};
-use crate::{leaf_seed, pay_hash, sh_calls, state_hash};
-use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, OtTower, Shared128, COTS_PER_CALL};
+use crate::{deal_walk, key_bytes, open_keys, sample_keys, SH_KEYS};
+use crate::{leaf_seed, sh_calls};
+use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, OtTower, SharedKey, COTS_PER_CALL, COTS_PER_KEY};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::bool2pc::rot_string_triples;
 use dpf_common::net::{Channel, CommStats};
@@ -69,10 +75,19 @@ pub struct Pre {
     pub string_triples: Vec<(bool, Block, Block)>,
 }
 
-/// The OT tower's COTs for `calls` AES–MMO calls, `strings` bit-times-block
-/// triples from Ferret random OTs and `cots` COTs per direction.
-pub(crate) fn precompute_counts(ch: &mut Channel, cot: &mut CotPair, calls: usize, strings: usize, cots: usize, rng: &mut ChaCha20Rng) -> Pre {
-    let pool = cot.random_cots(ch, 0, calls * COTS_PER_CALL, rng).expect("semi-honest COT");
+/// The OT tower's COTs for `calls` AES–MMO calls and `keys` key expansions,
+/// `strings` bit-times-block triples from Ferret random OTs and `cots` COTs
+/// per direction.
+pub(crate) fn precompute_counts(
+    ch: &mut Channel,
+    cot: &mut CotPair,
+    calls: usize,
+    keys: usize,
+    strings: usize,
+    cots: usize,
+    rng: &mut ChaCha20Rng,
+) -> Pre {
+    let pool = cot.random_cots(ch, 0, calls * COTS_PER_CALL + keys * COTS_PER_KEY, rng).expect("semi-honest COT");
     let be = OtTower::new(ch.party(), pool, cot.delta());
     let string_triples = rot_string_triples(ch, cot, strings, rng);
     cot.precompute(ch, cots, cots, rng).expect("semi-honest COT");
@@ -101,7 +116,8 @@ pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfi
     Setup { cot, rng, stats: ch.stats(), time: t_setup.elapsed() }
 }
 
-/// Steps 1–3: `⟨α_ℓ·Δ⟩`, then the n levels. `extra` rides with the level-0
+/// Steps 1–3: `⟨α_ℓ·Δ⟩`, then the n levels under `F = H_K` with `keys[0] =
+/// ⟨K⟩`; every key in `keys` is expanded during level 1. `extra` rides with the level-0
 /// message (n ≥ 1) and the other party's `extra` (of the same length) is
 /// returned. `cw_err = Some((ℓ, ε))` XORs ε into this party's CW share at
 /// level ℓ (a deliberate deviation, for the malicious abort tests). Returns
@@ -119,6 +135,7 @@ pub(crate) struct Walk {
 pub(crate) fn walk(
     be: &mut OtTower,
     string_triples: &[(bool, Block, Block)],
+    keys: &mut [SharedKey<bool>],
     cot: &mut CotPair,
     rng: &mut ChaCha20Rng,
     ch: &mut Channel,
@@ -130,7 +147,6 @@ pub(crate) fn walk(
     assert!(n >= 1);
     let b = ch.party();
     let delta = cot.delta();
-    let fs = state_hash();
 
     // 1. ⟨α_ℓ·Δ⟩.
     let a: Vec<bool> = (0..n).map(|i| (alpha_share >> (n - 1 - i)) & 1 == 1).collect();
@@ -149,8 +165,7 @@ pub(crate) fn walk(
     let mut reply = Vec::new();
     for i in 0..n {
         // 3A. L_0, L_1.
-        let jobs: [(&Mmo, Shared128<bool>); 2] = [(fs, bits_of(st)), (fs, bits_of(st ^ delta))];
-        let l = mmo_shared(be, ch, &jobs);
+        let l = mmo_shared(be, ch, keys, &[(0, bits_of(st)), (0, bits_of(st ^ delta))]);
         let (l0, l1) = (block_of(&l[0]), block_of(&l[1]));
         // 3B + C opening.
         let mut cw_share = l0 ^ l1 ^ delta ^ a_delta[i];
@@ -195,19 +210,30 @@ pub(crate) fn walk(
     Walk { root, st, cws, reply }
 }
 
-fn gen_with<F: Field>(cot: &mut CotPair, pre: Pre, fpre: &mut FpPre<F>, rng: &mut ChaCha20Rng, ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F) -> (ShKey<F>, usize) {
+fn gen_with<F: Field>(
+    cot: &mut CotPair,
+    pre: Pre,
+    fpre: &mut FpPre<F>,
+    rng: &mut ChaCha20Rng,
+    ch: &mut Channel,
+    n_size: u64,
+    alpha_share: u64,
+    beta_share: F,
+) -> (ShKey<F>, usize) {
     let b = ch.party();
     let n = depth_for(n_size);
     let Pre { mut be, string_triples } = pre;
     let delta = cot.delta();
-    let fp = pay_hash();
-    let Walk { root, st, cws, .. } = walk(&mut be, &string_triples, cot, rng, ch, n, alpha_share, &[], None);
+    // 0. ⟨K⟩, ⟨K'⟩.
+    let (ks, mut keys) = sample_keys(rng, SH_KEYS);
+    let Walk { root, st, cws, .. } = walk(&mut be, &string_triples, &mut keys, cot, rng, ch, n, alpha_share, &[], None);
 
-    // 4. Leaf word.
-    let jobs: [(&Mmo, Shared128<bool>); 2] = [(fp, bits_of(leaf_seed(st))), (fp, bits_of(leaf_seed(st ^ delta)))];
-    let w = mmo_shared(&mut be, ch, &jobs);
-    let w_cw = arith_leaf(ch, &[[block_of(&w[0]), block_of(&w[1])]], &[Sub::Share(beta_share)], st.lsb(), fpre, &[F::ZERO])[0];
-    (ShKey { party: b, n_size, root, cws, w_cw }, be.ands)
+    // 4. Leaf word, with the key reveal.
+    let w = mmo_shared(&mut be, ch, &mut keys, &[(1, bits_of(leaf_seed(st))), (1, bits_of(leaf_seed(st ^ delta)))]);
+    let (ws, theirs) = arith_leaf(ch, &[[block_of(&w[0]), block_of(&w[1])]], &[Sub::Share(beta_share)], st.lsb(), fpre, &[F::ZERO], &key_bytes(&ks));
+    let mut prf = open_keys(&ks, &theirs).into_iter();
+    let (prf, pay) = (prf.next().unwrap(), prf.next().unwrap());
+    (ShKey { party: b, n_size, prf, pay, root, cws, w_cw: ws[0] }, be.ands)
 }
 
 /// Runs this party's side of setup, preprocessing and generation.
@@ -216,7 +242,14 @@ fn gen_with<F: Field>(cot: &mut CotPair, pre: Pre, fpre: &mut FpPre<F>, rng: &mu
 ///   `β ∈ F_p`.
 /// * `ferret`: the silent-OT parameters (`Some(FerretConfig::B13)` for
 ///   benchmarks); `None` keeps IKNP, for tests.
-pub fn gen<F: Field>(ch: &mut Channel, n_size: u64, alpha_share: u64, beta_share: F, seed: [u8; 32], ferret: Option<FerretConfig>) -> GenOutput<ShKey<F>> {
+pub fn gen<F: Field>(
+    ch: &mut Channel,
+    n_size: u64,
+    alpha_share: u64,
+    beta_share: F,
+    seed: [u8; 32],
+    ferret: Option<FerretConfig>,
+) -> GenOutput<ShKey<F>> {
     let n = depth_for(n_size);
     let (dabits, triples) = (leaf_dabits::<F>(1), 1);
     drive(
@@ -246,7 +279,7 @@ pub(crate) fn drive<K, P>(
     let cots_before = cot.produced;
 
     let t_pre = Instant::now();
-    let pre = precompute_counts(ch, &mut cot, sh_calls(n), n, cots, &mut rng);
+    let pre = precompute_counts(ch, &mut cot, sh_calls(n), SH_KEYS, n, cots, &mut rng);
     let more = extra(&mut cot, &mut rng, ch);
     let pre_stats = ch.stats().since(&setup_stats);
     let pre_time = t_pre.elapsed();
@@ -269,27 +302,16 @@ pub(crate) fn drive<K, P>(
     }
 }
 
-/// Trusted-dealer generation for given roots (`lsb(root_b) = b`): the cleartext
-/// Gen, and the bit-exact oracle of [`gen`].
-pub fn deal<F: Field>(roots: [Block; 2], n_size: u64, alpha: u64, beta: F) -> [ShKey<F>; 2] {
+/// Trusted-dealer generation for given roots (`lsb(root_b) = b`) and AES keys
+/// `[K, K']`: the cleartext Gen, and the bit-exact oracle of [`gen`].
+pub fn deal<F: Field>(roots: [Block; 2], keys: [[u8; 16]; SH_KEYS], n_size: u64, alpha: u64, beta: F) -> [ShKey<F>; 2] {
     assert!(alpha < n_size);
-    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
-    let n = depth_for(n_size);
-    let delta = roots[0] ^ roots[1];
-    let mut st = roots;
-    let mut cws = Vec::with_capacity(n);
-    for i in 0..n {
-        let a = (alpha >> (n - 1 - i)) & 1 == 1;
-        let l = [state_hash().h(st[0]), state_hash().h(st[1])];
-        let cw = l[0] ^ l[1] ^ delta.and_bit(!a);
-        st = [crate::child(st[0], cw, a), crate::child(st[1], cw, a)];
-        cws.push(cw);
-    }
-    debug_assert_eq!(st[0] ^ st[1], delta);
-    let w = |s: Block| F::from_block(pay_hash().h(leaf_seed(s)));
+    let (prf, pay) = (Mmo::new(keys[0]), Mmo::new(keys[1]));
+    let (cws, st) = deal_walk(&prf, roots, depth_for(n_size), alpha);
+    let w = |s: Block| F::from_block(pay.h(leaf_seed(s)));
     let v = w(st[0]).sub(w(st[1])).sub(beta);
     let w_cw = if st[0].lsb() { v.neg() } else { v };
-    let mk = |party: usize| ShKey { party, n_size, root: roots[party], cws: cws.clone(), w_cw };
+    let mk = |party: usize| ShKey { party, n_size, prf: prf.clone(), pay: pay.clone(), root: roots[party], cws: cws.clone(), w_cw };
     [mk(0), mk(1)]
 }
 
@@ -297,5 +319,6 @@ pub fn deal<F: Field>(roots: [Block; 2], n_size: u64, alpha: u64, beta: F) -> [S
 pub fn gen_reference<F: Field>(n_size: u64, alpha: u64, beta: F, seed: [u8; 32]) -> [ShKey<F>; 2] {
     let mut rng = ChaCha20Rng::from_seed(seed);
     let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
-    deal(roots, n_size, alpha, beta)
+    let keys: [[u8; 16]; SH_KEYS] = std::array::from_fn(|_| Block::random(&mut rng).to_bytes());
+    deal(roots, keys, n_size, alpha, beta)
 }
