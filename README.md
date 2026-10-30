@@ -184,10 +184,10 @@ bit (one round), as Ferret does:
 | fssnn | PRG correlations for 2n (+2) calls, 2n bit triples, 3n (+2ℓ+1 for `arith`) Ferret COTs per direction |
 | duoram (`2p`) | n AND triples from COTs, n + 2·w random COTs for the Gilboa products |
 | duoram (`3p`) | P2's one message to each party (n AND triples, n + 2 product triples) |
-| ht-aes (`sh`) | the OT tower's random Ferret COTs ((2n + 2)·2,880 for the calls and 2·720 for Π_KeyExp of K, K'), n bit-times-block triples from Ferret random OTs, n Ferret COTs per direction, 2κ + 1 daBits and one Beaver triple over F_p from COT OLEs (κ = ⌈log p⌉ + 40, at most 128) |
-| ht-aes (`mal`) | the OT tower's COTs for 2n + 4 calls and three key expansions, n + ℓ + 128 bit-times-block triples (branch selection, δ·β, Π_Verify mask), n Ferret COTs per direction |
-| ht-aes (`sh-bin`) | as `sh` with n Ferret COTs per direction (the α-bits only) |
-| ht-aes (`mal-arith`) | the OT tower's COTs for 2n + 2 + 2·⌈E-degree·κ/128⌉ calls (2n + 8 for `F_{q^4}`) and three key expansions, n string triples, n Ferret COTs per direction, 2(1 + E-degree)κ + 1 daBits over F and four Beaver triples over the MAC field (two signs, δ·β, the Π_Verify mask) from COT OLEs |
+| ht-aes (`sh`) | the paper's ⟨α⟩, ⟨Δ⟩ (fresh per Gen, not Ferret's key) and AES-key shares, ⟨α_ℓ·Δ⟩ from 2n Ferret random COTs (one round); the OT tower's random Ferret COTs ((2n + 2)·2,880 for the calls and 2·720 for Π_KeyExp of K, K'), n bit-times-block triples from Ferret random OTs, 2κ + 1 daBits and one Beaver triple over F_p from COT OLEs (κ = ⌈log p⌉ + 40, at most 128) |
+| ht-aes (`mal`) | as `sh` (the paper's ⟨α⟩, ⟨Δ⟩ (fresh per Gen, not Ferret's key) and AES-key shares, ⟨α_ℓ·Δ⟩ from 2n Ferret random COTs (one round)) with the OT tower's COTs for 2n + 4 calls and three key expansions, n + ℓ + 128 bit-times-block triples (branch selection, δ·β, and the Π_Verify mask `(r, δr)` computed here, one round) |
+| ht-aes (`sh-bin`) | as `sh` without the leaf's daBits and triple |
+| ht-aes (`mal-arith`) | as `sh` (the paper's ⟨α⟩, ⟨Δ⟩ (fresh per Gen, not Ferret's key) and AES-key shares, ⟨α_ℓ·Δ⟩ from 2n Ferret random COTs (one round)) with the OT tower's COTs for 2n + 2 + 2·⌈E-degree·κ/128⌉ calls (2n + 8 for `F_{q^4}`) and three key expansions, n string triples, 2(1 + E-degree)κ + 1 daBits over F and four Beaver triples over the MAC field (two signs, δ·β, the Π_Verify mask) from COT OLEs |
 
 For Duoram, generation proper is its own preprocessing (the DPF at a random
 target) plus the one-round online phase, which the bench also prints as a

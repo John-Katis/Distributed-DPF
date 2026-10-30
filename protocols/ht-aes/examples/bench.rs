@@ -24,7 +24,6 @@
 //! applies to `eval` and `full` only.
 
 use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
-use dpf_common::block::depth_for;
 use dpf_common::net::run_two_party;
 use dpf_common::ot::FerretConfig;
 use dpf_common::stream::TreeMode;
@@ -40,21 +39,19 @@ fn gen_sh<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     let mut last = None;
     for _ in 0..o.reps {
         drop(last.take());
-        let alpha = rng.gen_range(0..o.size);
         let beta = F::random(rng);
-        let a0: u64 = rng.gen::<u64>() & dpf_common::arith::mask(depth_for(o.size));
         let b0 = F::random(rng);
         let b1 = beta.sub(b0);
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
         let n = o.size;
-        let timed = |party: usize, a: u64, b: F| {
+        let timed = |party: usize, b: F| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = gen(c, n, a, b, seeds[party], Some(FerretConfig::B13));
+                let out = gen(c, n, b, seeds[party], Some(FerretConfig::B13));
                 (out, t.elapsed())
             }
         };
-        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, a0, b0), timed(1, alpha ^ a0, b1));
+        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, b0), timed(1, b1));
         setup.push(r0.setup_time.max(r1.setup_time));
         pre.push(r0.pre_time.max(r1.pre_time));
         g0.push(r0.gen_time);
@@ -119,20 +116,18 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
     let bits = o.out_bits;
     for _ in 0..o.reps {
         drop(last.take());
-        let alpha = rng.gen_range(0..o.size);
-        let a0: u64 = rng.gen::<u64>() & dpf_common::arith::mask(depth_for(o.size));
         let b0 = low(dpf_common::block::Block::random(rng), bits);
         let b1 = low(dpf_common::block::Block::random(rng), bits) ^ b0;
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
         let n = o.size;
-        let timed = |party: usize, a: u64, b: dpf_common::block::Block| {
+        let timed = |party: usize, b: dpf_common::block::Block| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = run_mal(c, n, bits, a, b, seeds[party], Some(FerretConfig::B13), None);
+                let out = run_mal(c, n, bits, b, seeds[party], Some(FerretConfig::B13), None);
                 (out, t.elapsed())
             }
         };
-        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, a0, b0), timed(1, alpha ^ a0, b1));
+        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, b0), timed(1, b1));
         setup.push(r0.setup_time.max(r1.setup_time));
         pre.push(r0.pre_time.max(r1.pre_time));
         g0.push(r0.gen_time);
@@ -199,20 +194,18 @@ fn gen_sh_bin(o: &Opts, rng: &mut ChaCha20Rng) {
     let bits = o.out_bits;
     for _ in 0..o.reps {
         drop(last.take());
-        let alpha = rng.gen_range(0..o.size);
-        let a0: u64 = rng.gen::<u64>() & dpf_common::arith::mask(depth_for(o.size));
         let b0 = low(dpf_common::block::Block::random(rng), bits);
         let b1 = low(dpf_common::block::Block::random(rng), bits) ^ b0;
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
         let n = o.size;
-        let timed = |party: usize, a: u64, b: dpf_common::block::Block| {
+        let timed = |party: usize, b: dpf_common::block::Block| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = gen(c, n, bits, a, b, seeds[party], Some(FerretConfig::B13));
+                let out = gen(c, n, bits, b, seeds[party], Some(FerretConfig::B13));
                 (out, t.elapsed())
             }
         };
-        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, a0, b0), timed(1, alpha ^ a0, b1));
+        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, b0), timed(1, b1));
         setup.push(r0.setup_time.max(r1.setup_time));
         pre.push(r0.pre_time.max(r1.pre_time));
         g0.push(r0.gen_time);
@@ -278,19 +271,17 @@ fn gen_mal_arith<F: Field, E: Ext<F>>(o: &Opts, rng: &mut ChaCha20Rng) {
     let mut last = None;
     for _ in 0..o.reps {
         drop(last.take());
-        let alpha = rng.gen_range(0..o.size);
-        let a0: u64 = rng.gen::<u64>() & dpf_common::arith::mask(depth_for(o.size));
         let (b0, beta) = (F::random(rng), F::random(rng));
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
         let n = o.size;
-        let timed = |party: usize, a: u64, b: F| {
+        let timed = |party: usize, b: F| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = run_mal_arith::<F, E>(c, n, a, b, seeds[party], Some(FerretConfig::B13), None);
+                let out = run_mal_arith::<F, E>(c, n, b, seeds[party], Some(FerretConfig::B13), None);
                 (out, t.elapsed())
             }
         };
-        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, a0, b0), timed(1, alpha ^ a0, beta.sub(b0)));
+        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, b0), timed(1, beta.sub(b0)));
         setup.push(r0.setup_time.max(r1.setup_time));
         pre.push(r0.pre_time.max(r1.pre_time));
         g0.push(r0.gen_time);

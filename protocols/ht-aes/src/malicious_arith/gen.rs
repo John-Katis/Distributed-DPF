@@ -26,14 +26,14 @@
 //! ([`super::verify`]) checks at evaluation time, up to the one-bit
 //! selective-failure leak of the paper's paragraph "Selective failure".
 //!
-//! Rounds: `1 + 41n + 40 + 3 = 41n + 44`.
+//! Rounds: `41n + 40 + 3 = 41n + 43`.
 
 use super::key::{ArithMalKey, VerifyMask};
 use crate::field::{mask_blocks, mask_value, Ext, Field};
 use crate::leaf::{arith_leaf, fp_pre, fp_pre_cots, leaf_dabits, FpPre, Sub};
 use crate::malicious::Fault;
-use crate::semi_honest::gen::{precompute_counts, setup, walk, Pre, Setup, Walk};
-use crate::{deal_walk, key_bytes, leaf_seed, mask_tweak, open_keys, sample_keys, MAL_KEYS};
+use crate::semi_honest::gen::{precompute, setup, walk, Pre, Setup, Walk};
+use crate::{deal_walk, key_bytes, leaf_seed, mask_tweak, open_keys, MAL_KEYS};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128, ANDS_PER_CALL, ANDS_PER_KEY};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::net::{Channel, CommStats};
@@ -77,45 +77,43 @@ impl<F: Field, E: Ext<F>> ArithMalSession<F, E> {
     }
 
     /// The OT tower's COTs for [`arith_mal_calls`] AES–MMO calls and three
-    /// key expansions, n string triples (branch selection), n COTs per
-    /// direction, and the leaf's daBits over F and Beaver triples over E
+    /// key expansions, the paper's preprocessing (`semi_honest::gen::precompute`: ⟨α⟩, ⟨Δ⟩,
+    /// ⟨K⟩, ⟨K'⟩, ⟨K''⟩, ⟨α_ℓ·Δ⟩), n string triples (branch selection), and the leaf's daBits over F and Beaver triples over E
     /// ([`leaf_counts`]), the first one the Π_Verify mask `(r, δr)`.
     pub fn precompute(&mut self, ch: &mut Channel, n: usize) -> (Pre, FpPre<F, E>) {
         let s = &mut self.s;
         let (dabits, triples) = leaf_counts::<F, E>();
-        let pre = precompute_counts(ch, &mut s.cot, arith_mal_calls::<F, E>(n), MAL_KEYS, n, n + fp_pre_cots::<F, E>(dabits, triples), &mut s.rng);
+        let pre = precompute(ch, &mut s.cot, n, arith_mal_calls::<F, E>(n), MAL_KEYS, n, fp_pre_cots::<F, E>(dabits, triples), &mut s.rng);
         let fpre = fp_pre(ch, &mut s.cot, dabits, triples, &[self.delta_mac], &mut s.rng);
         (pre, fpre)
     }
 
-    /// One generation: XOR shares of α, additive shares of `β ∈ F`. Returns
-    /// the key, the ANDs and this key's Π_Verify mask. A fault at level `n`
+    /// One generation of a key for the random α of `pre` and `β ∈ F`
+    /// (additive shares). Returns the key, the ANDs, this key's Π_Verify mask
+    /// and this party's share of α. A fault at level `n`
     /// hits the payload word, at `n + 1` the MAC word (its error read as an
     /// element of E), at `n + 2` the share of K opened.
     pub fn gen(
         &mut self,
         ch: &mut Channel,
         n_size: u64,
-        alpha_share: u64,
         beta_share: F,
         pre: (Pre, FpPre<F, E>),
         fault: Option<Fault>,
-    ) -> (ArithMalKey<F, E>, usize, VerifyMask<E>) {
+    ) -> (ArithMalKey<F, E>, usize, VerifyMask<E>, u64) {
         let b = ch.party();
         let n = depth_for(n_size);
         let err = |lvl: usize| match fault {
             Some(f) if f.level == lvl => E::from_u128(f.err.0),
             _ => E::ZERO,
         };
-        let (Pre { mut be, string_triples }, mut fpre) = pre;
+        let (mut pre, mut fpre): (Pre, FpPre<F, E>) = pre;
         let (r, _, dr) = fpre.triples.remove(0);
-        let s = &mut self.s;
-        let (ks, mut keys) = sample_keys(&mut s.rng, MAL_KEYS);
         let cw_err = fault.filter(|f| f.level < n).map(|f| (f.level, f.err));
-        let Walk { root, st, cws, .. } = walk(&mut be, &string_triples, &mut keys, &mut s.cot, &mut s.rng, ch, n, alpha_share, &[], cw_err);
+        let Walk { st, cws, .. } = walk(&mut pre, ch, &[], cw_err);
 
         // 2. Leaf masks, XOR-shared; the public tweaks are party 0's.
-        let delta = s.cot.delta();
+        let delta = pre.delta;
         let seeds = [leaf_seed(st), leaf_seed(st ^ delta)];
         let mb = mask_blocks::<F, E>();
         let tw = |j: usize| if b == 0 { mask_tweak(j) } else { Block::ZERO };
@@ -123,23 +121,25 @@ impl<F: Field, E: Ext<F>> ArithMalSession<F, E> {
         for x in seeds {
             jobs.extend((0..mb).map(|j| (2, bits_of(x ^ tw(j)))));
         }
-        let w: Vec<Block> = mmo_shared(&mut be, ch, &mut keys, &jobs).iter().map(block_of).collect();
+        let w: Vec<Block> = mmo_shared(&mut pre.be, ch, &mut pre.keys, &jobs).iter().map(block_of).collect();
 
         // 3. The leaf: W_CW and W^MAC_CW, with the key reveal.
         let masks = [[vec![w[0]], vec![w[1]]], [w[2..2 + mb].to_vec(), w[2 + mb..].to_vec()]];
         let subs = [Sub::Share(E::embed(beta_share)), Sub::Product(self.delta_mac, E::embed(beta_share))];
-        let mut ks = ks;
+        let mut ks = pre.key_shares.clone();
         ks[0] ^= fault.filter(|f| f.level == n + 2).map_or(Block::ZERO, |f| f.err);
         let (words, theirs) = arith_leaf(ch, &masks, &[1, E::DEG], &subs, st.lsb(), &mut fpre, &[err(n), err(n + 1)], &key_bytes(&ks));
         let [prf, pay, mac]: [Mmo; MAL_KEYS] = open_keys(&ks, &theirs).try_into().unwrap();
         let (w_cw, wm_cw) = (words[0].coord(0), words[1]);
-        (ArithMalKey { party: b, n_size, prf, pay, mac, root, cws, w_cw, wm_cw }, be.ands, VerifyMask { r, dr })
+        (ArithMalKey { party: b, n_size, prf, pay, mac, root: delta, cws, w_cw, wm_cw }, pre.be.ands, VerifyMask { r, dr }, pre.alpha_share)
     }
 }
 
 /// Everything one party gets from [`run_mal_arith`].
 pub struct ArithMalRun<F: Field, E: Ext<F>> {
     pub key: ArithMalKey<F, E>,
+    /// This party's XOR share of the random index α.
+    pub alpha_share: u64,
     /// This party's share of the payload-MAC key δ.
     pub delta_share: E,
     /// This party's share of the key's Π_Verify mask.
@@ -153,7 +153,7 @@ pub struct ArithMalRun<F: Field, E: Ext<F>> {
     pub gen_time: Duration,
     /// ANDs of the AES calls and key expansions.
     pub ands: usize,
-    /// COTs consumed after setup (the OT tower's, α-bits, string triples,
+    /// COTs consumed after setup (the OT tower's, ⟨α_ℓ·Δ⟩, string triples,
     /// leaf OLEs).
     pub cots: usize,
 }
@@ -163,7 +163,6 @@ pub struct ArithMalRun<F: Field, E: Ext<F>> {
 pub fn run_mal_arith<F: Field, E: Ext<F>>(
     ch: &mut Channel,
     n_size: u64,
-    alpha_share: u64,
     beta_share: F,
     seed: [u8; 32],
     ferret: Option<FerretConfig>,
@@ -181,9 +180,10 @@ pub fn run_mal_arith<F: Field, E: Ext<F>>(
     ch.sync();
     let before = ch.stats();
     let t = Instant::now();
-    let (key, ands, mask) = s.gen(ch, n_size, alpha_share, beta_share, pre, fault);
+    let (key, ands, mask, alpha_share) = s.gen(ch, n_size, beta_share, pre, fault);
     ArithMalRun {
         key,
+        alpha_share,
         delta_share: s.delta_mac,
         mask,
         setup_stats,
@@ -215,7 +215,6 @@ pub fn deal<F: Field, E: Ext<F>>(
     beta: F,
     delta_mac: E,
 ) -> [ArithMalKey<F, E>; 2] {
-    assert!(alpha < n_size);
     let [prf, pay, mac] = keys.map(Mmo::new);
     let (cws, st) = deal_walk(&prf, roots, depth_for(n_size), alpha);
     let s = [leaf_seed(st[0]), leaf_seed(st[1])];
@@ -246,6 +245,7 @@ pub fn deal_mask<E: Field, R: RngCore + CryptoRng>(delta_mac: E, rng: &mut R) ->
 
 /// Dealer keys from a seed, with the δ shares.
 pub fn gen_reference<F: Field, E: Ext<F>>(n_size: u64, alpha: u64, beta: F, seed: [u8; 32]) -> ([ArithMalKey<F, E>; 2], [E; 2]) {
+    assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::from_seed(seed);
     let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
     let keys: [[u8; 16]; MAL_KEYS] = std::array::from_fn(|_| Block::random(&mut rng).to_bytes());

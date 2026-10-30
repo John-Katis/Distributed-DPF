@@ -31,15 +31,13 @@ fn check(keys: &[BinKey; 2], n: u64, alpha: u64, beta: Block) {
 fn gen_matches_point_function_and_dealer() {
     let mut rng = ChaCha20Rng::seed_from_u64(1);
     for (i, (n, bits)) in [(8u64, 64usize), (16, 7), (13, 128)].into_iter().enumerate() {
-        let alpha = rng.gen_range(0..n);
         let beta = low(Block::random(&mut rng), bits);
-        let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
         let b0 = low(Block::random(&mut rng), bits);
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-        let (o0, o1) =
-            run_two_party(move |c| gen(c, n, bits, a0, b0, seeds[0], None), move |c| gen(c, n, bits, alpha ^ a0, beta ^ b0, seeds[1], None));
+        let (o0, o1) = run_two_party(move |c| gen(c, n, bits, b0, seeds[0], None), move |c| gen(c, n, bits, beta ^ b0, seeds[1], None));
         let depth = o0.key.depth();
-        assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), 41 * depth + 42, "case {i}");
+        assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), 41 * depth + 41, "case {i}");
+        let alpha = o0.alpha_share ^ o1.alpha_share;
         let keys = [o0.key, o1.key];
         check(&keys, n, alpha, beta);
         assert_eq!(deal([keys[0].root, keys[1].root], [keys[0].prf.key(), keys[0].pay.key()], n, bits, alpha, beta), keys);

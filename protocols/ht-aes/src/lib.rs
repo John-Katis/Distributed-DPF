@@ -9,20 +9,21 @@
 //!
 //! * A: `⟨L_b⟩ = F(⟨st_{ℓ−1,b}⟩)` for `b ∈ {0, 1}`, two AES–MMO calls in 2PC
 //!   (5,760 ANDs, 2,880 COTs and 40 rounds each, run in parallel);
-//! * B: `CW_ℓ = L_0 ⊕ L_1 ⊕ Δ ⊕ α_ℓ·Δ` is opened (`⟨α_ℓ·Δ⟩` from one COT per
-//!   direction);
+//! * B: `CW_ℓ = L_0 ⊕ L_1 ⊕ Δ ⊕ α_ℓ·Δ` is opened (`⟨α_ℓ·Δ⟩` preprocessed);
 //! * C: `st_{ℓ,0} = L_0 ⊕ α_ℓ·st_{ℓ−1,0} ⊕ t_{ℓ−1,0}·CW_ℓ`, one bit-times-block
 //!   product, whose opening rides with B.
 //!
-//! `Δ = Δ_0 ⊕ Δ_1` (`lsb(Δ_b) = b`, so lsb(Δ) = 1) is the XOR of the parties'
-//! COT keys. The AES keys K (state), K' (payload) and, in the malicious
-//! variants, K'' (MAC) are XOR-shared per Gen (`𝓕_rand`), expanded on shares
-//! by Π_KeyExp alongside the level-1 calls, and opened with the last message
-//! of Gen. The key of party b is its root `st_{0,b}`, fresh per Gen with
-//! `st_{0,0} ⊕ st_{0,1} = Δ` and `lsb(st_{0,b}) = b`, and the public part: K,
-//! K' (K''), the words; evaluation is a local half-tree walk with `L =
-//! H_K(st)`, `R = st ⊕ L`, `st' = child ⊕ t·CW`. The payload is read at the
-//! leaf through `F^pay(s) = H_{K'}(s ∥ 0)`.
+//! Preprocessing is the paper's, per Gen and input-independent
+//! (`semi_honest::gen::precompute`): a random `⟨α⟩`, a fresh `⟨Δ⟩ = (Δ_0,
+//! Δ_1)` with `lsb(Δ_b) = b` (so lsb(Δ) = 1), the AES keys K (state), K'
+//! (payload) and, in the malicious variants, K'' (MAC), and `⟨α_ℓ·Δ⟩` by 𝓕_COT
+//! with the chosen offsets `Δ_b`, from Ferret random COTs; Δ is independent
+//! of Ferret's own key Γ, which only the OT extension and the OT tower use.
+//! The keys are expanded on shares by Π_KeyExp alongside the level-1 calls and
+//! opened with the last message of Gen. The key of party b is its root
+//! `st_{0,b} = Δ_b` and the public part: K, K' (K''), the words; evaluation
+//! is a local half-tree walk with `L = H_K(st)`, `R = st ⊕ L`, `st' = child ⊕
+//! t·CW`. The payload is read at the leaf through `F^pay(s) = H_{K'}(s ∥ 0)`.
 //!
 //! * [`semi_honest`]: payload in `G = F_p` ([`field`]), the paper's leaf
 //!   ([`leaf`]: B2A by daBits, the sign by a daBit and one Beaver triple).
@@ -97,6 +98,7 @@ pub fn children(f: &Mmo, parents: &[Block], cw: Block, out: &mut Vec<Block>) {
 /// st_1 = Δ`) and α, and the two leaf states.
 pub(crate) fn deal_walk(f: &Mmo, roots: [Block; 2], n: usize, alpha: u64) -> (Vec<Block>, [Block; 2]) {
     assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
+    assert!(n >= 64 || alpha >> n == 0, "α ∈ {{0,1}}^n");
     let delta = roots[0] ^ roots[1];
     let mut st = roots;
     let mut cws = Vec::with_capacity(n);

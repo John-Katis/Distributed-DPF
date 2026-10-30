@@ -14,14 +14,14 @@ use ht_aes::malicious_arith::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
-fn run<F: Field, E: Ext<F>>(n: u64, alpha: u64, beta: F, seed: u64, faults: [Option<Fault>; 2]) -> [ArithMalRun<F, E>; 2] {
+/// One Gen of a key for β (α is sampled in preprocessing: α_0 ⊕ α_1).
+fn run<F: Field, E: Ext<F>>(n: u64, beta: F, seed: u64, faults: [Option<Fault>; 2]) -> [ArithMalRun<F, E>; 2] {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
-    let a0: u64 = rng.gen::<u64>() % n.next_power_of_two();
     let b0 = F::random(&mut rng);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let (r0, r1) = run_two_party(
-        move |c| run_mal_arith::<F, E>(c, n, a0, b0, seeds[0], None, faults[0]),
-        move |c| run_mal_arith::<F, E>(c, n, alpha ^ a0, beta.sub(b0), seeds[1], None, faults[1]),
+        move |c| run_mal_arith::<F, E>(c, n, b0, seeds[0], None, faults[0]),
+        move |c| run_mal_arith::<F, E>(c, n, beta.sub(b0), seeds[1], None, faults[1]),
     );
     [r0, r1]
 }
@@ -62,11 +62,11 @@ fn eval_and_verify<F: Field, E: Ext<F>>(
 fn gen_matches_dealer_and_verifies<F: Field, E: Ext<F>>(seed: u64) {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     for (i, n) in [8u64, 13, 16].into_iter().enumerate() {
-        let alpha = rng.gen_range(0..n);
         let beta = F::random(&mut rng);
-        let [r0, r1] = run::<F, E>(n, alpha, beta, seed + i as u64, [None, None]);
+        let [r0, r1] = run::<F, E>(n, beta, seed + i as u64, [None, None]);
+        let alpha = r0.alpha_share ^ r1.alpha_share;
         let depth = r0.key.depth();
-        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 44);
+        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 43);
         assert_eq!(r0.ands, arith_mal_ands::<F, E>(depth));
         let delta = r0.delta_share.add(r1.delta_share);
         let dealt = deal([r0.key.root, r1.key.root], [r0.key.prf.key(), r0.key.pay.key(), r0.key.mac.key()], n, alpha, beta, delta);
@@ -115,7 +115,7 @@ fn faults_in_gen_are_caught_by_verify() {
             let err = Block(1 << rng.gen_range(0..16));
             let mut faults = [None, None];
             faults[cheater] = Some(Fault { level, err });
-            let [r0, r1] = run::<BabyBear, BabyBear4>(n, 5, BabyBear(77), 10 + level as u64, faults);
+            let [r0, r1] = run::<BabyBear, BabyBear4>(n, BabyBear(77), 10 + level as u64, faults);
             let [a, b] = eval_and_verify([r0.key, r1.key], [r0.delta_share, r1.delta_share], [r0.mask, r1.mask], (0..n).collect(), Tamper::No);
             assert_eq!(a.err(), Some(Abort("output MAC check failed")), "level {level} cheater {cheater}");
             assert_eq!(b.err(), Some(Abort("output MAC check failed")));

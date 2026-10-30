@@ -7,13 +7,13 @@
 //! `W_CW = W_0 ⊕ W_1 ⊕ β`, together with K and K'. Evaluation outputs
 //! `F^pay(s) ⊕ t·W_CW`.
 //!
-//! Rounds: `1 + 41n + 40 + 1 = 41n + 42`. Preprocessing: the OT tower's COTs
-//! for [`crate::sh_calls`] AES–MMO calls and two key expansions, n string triples, n COTs per
-//! direction (the α-bits).
+//! Rounds: `41n + 40 + 1 = 41n + 41`. Preprocessing: the paper's (⟨α⟩, ⟨Δ⟩,
+//! ⟨K⟩, ⟨K'⟩, ⟨α_ℓ·Δ⟩) and the OT tower's COTs for [`crate::sh_calls`] AES–MMO
+//! calls and two key expansions, n string triples (`super::gen::precompute`).
 
-use super::gen::{drive, walk, GenOutput, Pre, Walk};
+use super::gen::{drive, walk, GenOutput, Walk};
 use crate::malicious::low;
-use crate::{child, children, deal_walk, key_bytes, leaf_seed, open_keys, sample_keys, SH_KEYS};
+use crate::{child, children, deal_walk, key_bytes, leaf_seed, open_keys, SH_KEYS};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::net::Channel;
@@ -108,15 +108,7 @@ impl BinKey {
 /// Setup, preprocessing and generation for one party: XOR shares of α and of
 /// `β ∈ F_2^ℓ`.
 #[allow(clippy::too_many_arguments)]
-pub fn gen(
-    ch: &mut Channel,
-    n_size: u64,
-    bits: usize,
-    alpha_share: u64,
-    beta_share: Block,
-    seed: [u8; 32],
-    ferret: Option<FerretConfig>,
-) -> GenOutput<BinKey> {
+pub fn gen(ch: &mut Channel, n_size: u64, bits: usize, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>) -> GenOutput<BinKey> {
     assert!((1..=128).contains(&bits));
     let n = depth_for(n_size);
     drive(
@@ -124,25 +116,23 @@ pub fn gen(
         seed,
         ferret,
         n,
-        n,
+        0,
         |_, _, _| (),
-        |cot, pre, (), rng, ch| {
+        |mut pre, (), ch| {
             let b = ch.party();
-            let Pre { mut be, string_triples } = pre;
-            let delta = cot.delta();
-            let (ks, mut keys) = sample_keys(rng, SH_KEYS);
-            let Walk { root, st, cws, .. } = walk(&mut be, &string_triples, &mut keys, cot, rng, ch, n, alpha_share, &[], None);
-            let w = mmo_shared(&mut be, ch, &mut keys, &[(1, bits_of(leaf_seed(st))), (1, bits_of(leaf_seed(st ^ delta)))]);
+            let Walk { st, cws, .. } = walk(&mut pre, ch, &[], None);
+            let delta = pre.delta;
+            let w = mmo_shared(&mut pre.be, ch, &mut pre.keys, &[(1, bits_of(leaf_seed(st))), (1, bits_of(leaf_seed(st ^ delta)))]);
             let w_share = low(block_of(&w[0]) ^ block_of(&w[1]), bits) ^ low(beta_share, bits);
             let mut msg = w_share.to_bytes().to_vec();
-            msg.extend(key_bytes(&ks));
+            msg.extend(key_bytes(&pre.key_shares));
             ch.send(msg);
             let mut theirs = ch.recv();
             assert_eq!(theirs.len(), 16 + 16 * SH_KEYS, "malformed payload share");
-            let mut prf = open_keys(&ks, &theirs.split_off(16)).into_iter();
+            let mut prf = open_keys(&pre.key_shares, &theirs.split_off(16)).into_iter();
             let (prf, pay) = (prf.next().unwrap(), prf.next().unwrap());
             let w_cw = w_share ^ Block::from_bytes(&theirs);
-            (BinKey { party: b, n_size, bits, prf, pay, root, cws, w_cw }, be.ands)
+            (BinKey { party: b, n_size, bits, prf, pay, root: delta, cws, w_cw }, pre.be.ands)
         },
     )
 }
@@ -150,7 +140,6 @@ pub fn gen(
 /// Trusted-dealer generation for given roots (`lsb(root_b) = b`) and AES keys
 /// `[K, K']`: the cleartext Gen, and the bit-exact oracle of [`gen`].
 pub fn deal(roots: [Block; 2], keys: [[u8; 16]; SH_KEYS], n_size: u64, bits: usize, alpha: u64, beta: Block) -> [BinKey; 2] {
-    assert!(alpha < n_size);
     assert_eq!(beta, low(beta, bits), "β must fit in the output width");
     let (prf, pay) = (Mmo::new(keys[0]), Mmo::new(keys[1]));
     let (cws, st) = deal_walk(&prf, roots, depth_for(n_size), alpha);
@@ -161,6 +150,7 @@ pub fn deal(roots: [Block; 2], keys: [[u8; 16]; SH_KEYS], n_size: u64, bits: usi
 
 /// Trusted-dealer generation from a seed.
 pub fn gen_reference(n_size: u64, bits: usize, alpha: u64, beta: Block, seed: [u8; 32]) -> [BinKey; 2] {
+    assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::from_seed(seed);
     let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
     let keys: [[u8; 16]; SH_KEYS] = std::array::from_fn(|_| Block::random(&mut rng).to_bytes());
