@@ -1,0 +1,15 @@
+[package]
+name = "exp-bp-sbox"
+description = "Experiment: the Boyar–Peralta depth-16 AES S-box (34 ANDs, AND-depth 4) on the OT tower's ANDs-from-COTs protocol, against the F4 tower (36 ANDs) of ht-aes."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+ht-aes = { path = "../../protocols/ht-aes" }
+rand.workspace = true
+rand_chacha.workspace = true
+
+[[example]]
+name = "bench-bp-sbox"
+path = "examples/bench.rs"

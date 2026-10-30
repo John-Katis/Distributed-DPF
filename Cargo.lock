@@ -106,6 +106,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "exp-bp-sbox"
+version = "0.1.0"
+dependencies = [
+ "dpf-common",
+ "ht-aes",
+ "rand",
+ "rand_chacha",
+]
+
+[[package]]
 name = "exp-f4-triples"
 version = "0.1.0"
 dependencies = [
