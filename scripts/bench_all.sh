@@ -3,10 +3,12 @@
 # FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal}) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen) or results-eval/ (eval, full, all).
 #
-#   [OUT_LIST=a,b,..] [SKIP_OURS=1] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--max-in-bits-path n] [--append] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
+#   [OUT_LIST=a,b,..] [SKIP_OURS=1] [ONLY="name .."] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--max-in-bits-path n] [--append] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
 #
 # SKIP_OURS=1 runs only the other papers' protocols and leaves the ht-aes
-# CSVs as they are.
+# CSVs as they are. ONLY="fssnn-bin ht-aes-sh .." runs only the protocols
+# with these CSV names (the first argument of each `run` below) and leaves
+# the other CSVs as they are, e.g. to resume an interrupted sweep.
 #
 # mode is gen|eval|full|all (default gen). The sweep covers in-bits 20..=36
 # for gen and 8..=32 otherwise (--min-in-bits, --max-in-bits) and out-bits
@@ -92,6 +94,7 @@ trap 'exit 130' INT
 run() {
   local name=$1 csv="$OUT/$1.csv" n m i k reps first=1 code max=$MAX_IN
   shift
+  [[ -n ${ONLY:-} && " $ONLY " != *" $name "* ]] && return
   case $name in fssnn-*|ht-aes-*) max=$MAX_PATH ;; esac
   echo "$name"
   if ((APPEND)); then first=0; else : > "$csv"; fi
