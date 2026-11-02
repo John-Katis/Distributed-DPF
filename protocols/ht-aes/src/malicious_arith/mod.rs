@@ -1,5 +1,6 @@
 //! Malicious variant with an arithmetic payload (the paper's "Full protocols
-//! in the malicious setting"): the semi-honest Gen on the same preprocessing,
+//! in the malicious setting"): the semi-honest Gen with ν = 0 and fresh
+//! public keys per Gen and per level, on the same preprocessing,
 //! plus the persistent payload-MAC key `⟨δ⟩`, the MAC mask `F^mac`, the
 //! payload-MAC word `W^MAC_CW` and Π_Verify. Payload in F, MAC in E ⊇ F: the
 //! paper's [`crate::field::BabyBear`] with [`crate::field::BabyBear4`], or

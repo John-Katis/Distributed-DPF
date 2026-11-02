@@ -1,6 +1,7 @@
 //! Malicious variant (the paper's "Full protocols in the malicious setting"):
-//! the semi-honest Gen on the same preprocessing (the OT tower's Ferret
-//! COTs, string triples), plus the persistent payload-MAC key `⟨δ⟩`, the
+//! the semi-honest Gen (top phase, level-independent lower levels) with fresh
+//! public keys per Gen and per level, on the same preprocessing (the OT
+//! tower's Ferret COTs, string triples), plus the persistent payload-MAC key `⟨δ⟩`, the
 //! MAC mask `F^mac`, the payload-MAC word `W^MAC_CW` and Π_Verify on the
 //! outputs. Payload in `{0,1}^ℓ ⊂ GF(2^128)`.
 

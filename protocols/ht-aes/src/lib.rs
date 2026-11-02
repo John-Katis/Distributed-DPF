@@ -19,45 +19,21 @@
 //! * [`semi_honest::bin`]: the same Gen with a binary payload, no B2A.
 //! * [`malicious`]: payload in `{0,1}^ℓ ⊂ GF(2^128)` with the paper's
 //!   payload-MAC word under a persistent key δ and Π_Verify on the outputs.
-//! * [`malicious_arith`]: the same for an arithmetic payload in F_p.
+//! * [`malicious_arith`]: the same for an arithmetic payload in F_p, with
+//!   the product-based leaf ([`leaf::arith_leaf`]).
 //!
-//! The malicious variants still run the level-by-level Gen under XOR-shared
-//! keys K, K', K'' ([`level_walk`]): the paper's §malicious is yet to be
-//! revised to the public K.
+//! The malicious variants take fresh public keys per Gen and per level,
+//! `K_1, …, K_n`, and separate `K_pay`, `K_mac` (the revision of the paper's
+//! §malicious for public keys); `mal-arith` runs with ν = 0, no top phase.
 
 pub mod field;
 pub mod leaf;
-pub mod level_walk;
 pub mod malicious;
 pub mod malicious_arith;
 pub mod semi_honest;
 
-use dpf_common::aes_tower::{bits_of, Mmo, SharedKey, ANDS_PER_CALL};
+use dpf_common::aes_tower::{Mmo, ANDS_PER_CALL};
 use dpf_common::block::Block;
-use rand::{CryptoRng, RngCore};
-
-/// AES keys of the malicious variants: `K`, `K'` and `K''` (the MAC mask
-/// `F^mac = H_{K''}(· ∥ 0)`).
-pub const MAL_KEYS: usize = 3;
-
-/// This party's shares of `k` fresh AES keys (`𝓕_rand`: each party samples
-/// its own share), and their sharings for [`dpf_common::aes_tower::mmo_shared`].
-pub(crate) fn sample_keys<R: RngCore + CryptoRng>(rng: &mut R, k: usize) -> (Vec<Block>, Vec<SharedKey<bool>>) {
-    let mine: Vec<Block> = (0..k).map(|_| Block::random(rng)).collect();
-    let shared = mine.iter().map(|&x| SharedKey::new(bits_of(x))).collect();
-    (mine, shared)
-}
-
-/// The key shares as one message, opened with the last message of Gen.
-pub(crate) fn key_bytes(mine: &[Block]) -> Vec<u8> {
-    mine.iter().flat_map(|k| k.to_bytes()).collect()
-}
-
-/// `𝓕_Reveal(⟨K_j⟩)` from this party's shares and the other party's message.
-pub(crate) fn open_keys(mine: &[Block], theirs: &[u8]) -> Vec<Mmo> {
-    assert_eq!(theirs.len(), 16 * mine.len(), "malformed key shares");
-    mine.iter().zip(theirs.chunks(16)).map(|(&k, t)| Mmo::new((k ^ Block::from_bytes(t)).to_bytes())).collect()
-}
 
 /// One half-tree step under `F = f`: the child of `st` in direction `bit`, corrected.
 #[inline]
@@ -89,32 +65,17 @@ pub fn children_masked(f: &Mmo, parents: &[Block], cw: Block, m: Block, out: &mu
     }
 }
 
-/// The cleartext walk of a dealer: the n level words for roots `st` (`st_0 ⊕
-/// st_1 = Δ`) and α, and the two leaf states.
-pub(crate) fn deal_walk(f: &Mmo, roots: [Block; 2], n: usize, alpha: u64) -> (Vec<Block>, [Block; 2]) {
-    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
-    assert!(n >= 64 || alpha >> n == 0, "α ∈ {{0,1}}^n");
-    let delta = roots[0] ^ roots[1];
-    let mut st = roots;
-    let mut cws = Vec::with_capacity(n);
-    for i in 0..n {
-        let a = (alpha >> (n - 1 - i)) & 1 == 1;
-        let cw = f.h(st[0]) ^ f.h(st[1]) ^ delta.and_bit(!a);
-        st = [child(f, st[0], cw, a), child(f, st[1], cw, a)];
-        cws.push(cw);
-    }
-    debug_assert_eq!(st[0] ^ st[1], delta);
-    (cws, st)
-}
-
-/// The cleartext walk of the semi-honest Gen with switch level ν: the n
-/// level words and the words `M_ν, …, M_n` for roots `st` (`st_0 ⊕ st_1 =
-/// Δ`), α and the on-path states `us = [U_ν, …, U_n]` of party 0, and the
-/// two leaf states (`U_n`, `U_n ⊕ Δ`).
-pub(crate) fn deal_walk_nu(f: &Mmo, roots: [Block; 2], n: usize, nu: usize, alpha: u64, us: &[Block]) -> (Vec<Block>, Vec<Block>, [Block; 2]) {
+/// The cleartext walk of the Gen with switch level ν: the n level words and
+/// the words `M_ν, …, M_n` for the level keys `fs` (one for all levels, or
+/// `K_1, …, K_n`), roots `st` (`st_0 ⊕ st_1 = Δ`), α and the on-path states
+/// `us = [U_ν, …, U_n]` of party 0, and the two leaf states (`U_n`, `U_n ⊕
+/// Δ`).
+pub(crate) fn deal_walk_nu(fs: &[Mmo], roots: [Block; 2], n: usize, nu: usize, alpha: u64, us: &[Block]) -> (Vec<Block>, Vec<Block>, [Block; 2]) {
     assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
     assert!(n >= 64 || alpha >> n == 0, "α ∈ {{0,1}}^n");
     assert!(nu <= n && us.len() == n - nu + 1, "U_ν, …, U_n");
+    assert!(fs.len() == 1 || fs.len() == n, "one key, or one per level");
+    let key = |i: usize| &fs[if fs.len() == 1 { 0 } else { i }];
     let delta = roots[0] ^ roots[1];
     let mut st = roots;
     let (mut cws, mut ms) = (Vec::with_capacity(n), Vec::with_capacity(us.len()));
@@ -128,6 +89,7 @@ pub(crate) fn deal_walk_nu(f: &Mmo, roots: [Block; 2], n: usize, nu: usize, alph
     join(0, &mut st);
     for i in 0..n {
         let a = (alpha >> (n - 1 - i)) & 1 == 1;
+        let f = key(i);
         let cw = f.h(st[0]) ^ f.h(st[1]) ^ delta.and_bit(!a);
         st = [child(f, st[0], cw, a), child(f, st[1], cw, a)];
         cws.push(cw);
@@ -145,7 +107,7 @@ pub fn leaf_seed(st: Block) -> Block {
 
 /// The domain tweak of block j of a leaf mask that needs more than one hash
 /// output (the MAC mask in `F_{q^4}`: [`field::mask_blocks`] blocks): `F^mac`
-/// block j is `H_{K''}(s ∥ 0 ⊕ tweak(j))`, block 0 being `H_{K''}(s ∥ 0)`.
+/// block j is `H_{K_mac}(s ∥ 0 ⊕ tweak(j))`, block 0 being `H_{K_mac}(s ∥ 0)`.
 #[inline]
 pub fn mask_tweak(j: usize) -> Block {
     Block((j as u128) << 120)

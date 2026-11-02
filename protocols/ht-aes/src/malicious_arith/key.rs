@@ -5,7 +5,8 @@
 
 use super::gen::mac_mask;
 use crate::field::{Ext, Field};
-use crate::{child, children, leaf_seed};
+use crate::semi_honest::key::level_word;
+use crate::{child, children_masked, leaf_seed};
 use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::coin::{coin_block, commit_and_open_blocks, Abort};
@@ -26,14 +27,18 @@ pub struct VerifyMask<E> {
 pub struct ArithMalKey<F: Field, E: Ext<F>> {
     pub party: usize,
     pub n_size: u64,
-    /// `F = H_K`.
-    pub prf: Mmo,
-    /// `F^pay = H_{K'}(· ∥ 0)`.
+    /// `K_1, …, K_n`: level ℓ is expanded by `H_{K_ℓ}`.
+    pub prf: Vec<Mmo>,
+    /// `F^pay = H_{K_pay}(· ∥ 0)`.
     pub pay: Mmo,
-    /// `F^mac`: [`crate::field::mask_blocks`] blocks of `H_{K''}(· ∥ 0 ⊕ tweak(j))`.
+    /// `F^mac`: [`crate::field::mask_blocks`] blocks of `H_{K_mac}(· ∥ 0 ⊕ tweak(j))`.
     pub mac: Mmo,
     pub root: Block,
+    /// The switch level ν (0: the Gen has no top phase).
+    pub nu: usize,
     pub cws: Vec<Block>,
+    /// `M_ν, …, M_n`.
+    pub ms: Vec<Block>,
     /// `W_CW = (−1)^{t_{n,0}}·(W_0 − W_1 − β)`.
     pub w_cw: F,
     /// `W^MAC_CW = (−1)^{t_{n,0}}·(W̃_0 − W̃_1 − δβ)`.
@@ -45,9 +50,15 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
         depth_for(self.n_size)
     }
 
-    /// K, K', K'', root, n words, `W_CW` and `W^MAC_CW`.
+    /// n + 2 keys, root, n + (n − ν + 1) words, `W_CW` and `W^MAC_CW`.
     pub fn size_bytes(&self) -> usize {
-        3 * 16 + 16 + 16 * self.cws.len() + F::BYTES + E::BYTES
+        16 * (self.prf.len() + 2) + 16 + 16 * (self.cws.len() + self.ms.len()) + F::BYTES + E::BYTES
+    }
+
+    /// `M_ℓ`, zero above the switch level.
+    #[inline]
+    pub fn m(&self, level: usize) -> Block {
+        level_word(self.nu, &self.ms, level)
     }
 
     /// `(−1)^b·(F^pay(s) + t·W_CW, F^mac(s) + t·W^MAC_CW)` at a leaf, from the
@@ -70,9 +81,9 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
     pub fn eval_point(&self, x: u64) -> (F, E) {
         assert!(x < self.n_size);
         let n = self.depth();
-        let mut st = self.root;
+        let mut st = self.root ^ self.m(0);
         for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1);
+            st = child(&self.prf[i], st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
         }
         let s = leaf_seed(st);
         self.output(st, self.pay.h(s), mac_mask::<F, E>(&self.mac, s))
@@ -80,10 +91,10 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
 
     /// Shares `(y, m)` at x = 0, …, N − 1: all 2^n leaves, one level at a time.
     pub fn eval_full(&self) -> Vec<(F, E)> {
-        let mut nodes = vec![self.root];
-        for &cw in &self.cws {
+        let mut nodes = vec![self.root ^ self.m(0)];
+        for (i, &cw) in self.cws.iter().enumerate() {
             let mut next = Vec::new();
-            children(&self.prf, &nodes, cw, &mut next);
+            children_masked(&self.prf[i], &nodes, cw, self.m(i + 1), &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -98,10 +109,10 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[(F, E)])) {
         let (mut buf, mut outs) = (Vec::new(), Vec::new());
         walk(
-            self.root,
+            self.root ^ self.m(0),
             self.cws.len(),
             batch,
-            |l, parents, out| children(&self.prf, parents, self.cws[l - 1], out),
+            |l, parents, out| children_masked(&self.prf[l - 1], parents, self.cws[l - 1], self.m(l), out),
             |x0, leaves| {
                 if x0 < self.n_size {
                     self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut outs);

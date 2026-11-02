@@ -10,7 +10,7 @@
 //! Rounds: `max(ν + 3, 42)` for ν < n, `max(n + 3, 41)` for ν = n.
 //! Preprocessing: as the arithmetic variant's, without the leaf's daBits.
 
-use super::gen::{drive, walk, GenOutput, Walk};
+use super::gen::{drive, tag_leaf_jobs, walk, GenOutput, Walk};
 use super::key::level_word;
 use crate::malicious::low;
 use crate::{child, children_masked, deal_walk_nu, default_nu, leaf_seed};
@@ -128,13 +128,14 @@ pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_s
         |_, _, _| (),
         |mut pre, (), ch| {
             let b = ch.party();
-            let Walk { cws, ms, leaf, mut leaf_lane } = walk(&mut pre, ch);
+            let jobs = tag_leaf_jobs(&pre, 0);
+            let Walk { cws, ms, leaf, mut leaf_lane } = walk(&mut pre, ch, &jobs, None);
             let w_share = low(leaf[0] ^ leaf[1], bits) ^ low(beta_share, bits);
             let theirs = ch.exchange_on(&mut leaf_lane, w_share.to_bytes().to_vec());
             assert_eq!(theirs.len(), 16, "malformed payload share");
             ch.join(leaf_lane);
             let w_cw = w_share ^ Block::from_bytes(&theirs);
-            (BinKey { party: b, n_size, bits, prf: pre.prf, root: pre.delta, nu: pre.nu, cws, ms, w_cw }, pre.be.ands)
+            (BinKey { party: b, n_size, bits, prf: pre.keys.swap_remove(0), root: pre.delta, nu: pre.nu, cws, ms, w_cw }, pre.be.ands)
         },
     )
 }
@@ -146,7 +147,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_s
 pub fn deal(roots: [Block; 2], key: [u8; 16], n_size: u64, nu: usize, bits: usize, alpha: u64, beta: Block, us: &[Block]) -> [BinKey; 2] {
     assert_eq!(beta, low(beta, bits), "β must fit in the output width");
     let prf = Mmo::new(key);
-    let (cws, ms, st) = deal_walk_nu(&prf, roots, depth_for(n_size), nu, alpha, us);
+    let (cws, ms, st) = deal_walk_nu(std::slice::from_ref(&prf), roots, depth_for(n_size), nu, alpha, us);
     let w_cw = low(prf.h(leaf_seed(st[0])) ^ prf.h(leaf_seed(st[1])), bits) ^ beta;
     let mk = |party: usize| BinKey { party, n_size, bits, prf: prf.clone(), root: roots[party], nu, cws: cws.clone(), ms: ms.clone(), w_cw };
     [mk(0), mk(1)]

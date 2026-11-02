@@ -10,15 +10,20 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 /// One Gen of a key for β (α is sampled in preprocessing: α_0 ⊕ α_1).
-fn run(n: u64, bits: usize, beta: Block, seed: u64, faults: [Option<Fault>; 2]) -> [MalRun; 2] {
+fn run(n: u64, nu: Option<usize>, bits: usize, beta: Block, seed: u64, faults: [Option<Fault>; 2]) -> [MalRun; 2] {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let b0 = low(Block::random(&mut rng), bits);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let (r0, r1) = run_two_party(
-        move |c| run_mal(c, n, bits, b0, seeds[0], None, faults[0]),
-        move |c| run_mal(c, n, bits, beta ^ b0, seeds[1], None, faults[1]),
+        move |c| run_mal(c, n, nu, bits, b0, seeds[0], None, faults[0]),
+        move |c| run_mal(c, n, nu, bits, beta ^ b0, seeds[1], None, faults[1]),
     );
     [r0, r1]
+}
+
+/// `[K_1, …, K_n, K_pay, K_mac]` of a key.
+fn keys_of(k: &MalKey) -> Vec<[u8; 16]> {
+    k.prf.iter().chain([&k.pay, &k.mac]).map(|m| m.key()).collect()
 }
 
 /// Where a party falsifies its output share: in Π_Verify, or only when the
@@ -51,15 +56,18 @@ fn eval_and_verify(keys: [MalKey; 2], d: [Block; 2], masks: [VerifyMask<Block>; 
 #[test]
 fn mal_gen_matches_dealer_and_verifies() {
     let mut rng = ChaCha20Rng::seed_from_u64(1);
-    for (i, (n, bits)) in [(8u64, 64usize), (13, 128), (16, 5)].into_iter().enumerate() {
+    let cases = [(8u64, None, 64usize), (13, Some(0), 128), (16, Some(2), 5), (16, Some(4), 64), (1 << 9, Some(5), 64)];
+    for (i, (n, nu, bits)) in cases.into_iter().enumerate() {
         let beta = low(Block::random(&mut rng), bits);
-        let [r0, r1] = run(n, bits, beta, i as u64, [None, None]);
+        let [r0, r1] = run(n, nu, bits, beta, i as u64, [None, None]);
         let alpha = r0.alpha_share ^ r1.alpha_share;
-        let depth = r0.key.depth();
-        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 41);
-        assert_eq!(r0.ands, mal_ands(depth));
+        let (depth, nu) = (r0.key.depth(), r0.key.nu);
+        let rounds = (nu + 3).max(if nu < depth { 42 } else { 41 });
+        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), rounds, "case {i}");
+        assert_eq!(r0.ands, mal_ands(depth, nu));
         let delta = r0.delta_share ^ r1.delta_share;
-        let dealt = deal([r0.key.root, r1.key.root], [r0.key.prf.key(), r0.key.pay.key(), r0.key.mac.key()], n, bits, alpha, beta, delta);
+        let us: Vec<Block> = r0.onpath_share.iter().zip(&r1.onpath_share).map(|(&a, &b)| a ^ b).collect();
+        let dealt = deal([r0.key.root, r1.key.root], &keys_of(&r0.key), n, nu, bits, alpha, beta, delta, &us);
         assert_eq!(dealt, [r0.key.clone(), r1.key.clone()]);
         let xs: Vec<u64> = (0..n).collect();
         let (d, m) = ([r0.delta_share, r1.delta_share], [r0.mask, r1.mask]);
@@ -79,18 +87,20 @@ fn mal_gen_matches_dealer_and_verifies() {
     }
 }
 
-/// A wrong CW share, payload word, MAC word or share of K in Gen: the run of Gen
-/// completes, and Π_Verify over the whole domain aborts.
+/// A wrong share of a CW (in the top phase or below it), the payload word,
+/// the MAC word or `M_ν` in Gen: the run of Gen completes, and Π_Verify over
+/// the whole domain aborts.
 #[test]
 fn faults_in_gen_are_caught_by_verify() {
     let mut rng = ChaCha20Rng::seed_from_u64(2);
-    let (n, bits) = (8u64, 16usize);
-    for level in [0usize, 2, 3, 4, 5] {
+    let (n, bits) = (16u64, 16usize);
+    // Depth 4, ν = 2: CW_1, CW_2 in the top phase, CW_3, CW_4 below it.
+    for level in [0usize, 1, 2, 3, 4, 5, 6] {
         for cheater in [0, 1] {
             let err = Block(1 << rng.gen_range(0..16));
             let mut faults = [None, None];
             faults[cheater] = Some(Fault { level, err });
-            let [r0, r1] = run(n, bits, Block(77), 10 + level as u64, faults);
+            let [r0, r1] = run(n, Some(2), bits, Block(77), 10 + level as u64, faults);
             let [a, b] = eval_and_verify([r0.key, r1.key], [r0.delta_share, r1.delta_share], [r0.mask, r1.mask], (0..n).collect(), Tamper::No);
             assert_eq!(a.err(), Some(Abort("output MAC check failed")), "level {level} cheater {cheater}");
             assert_eq!(b.err(), Some(Abort("output MAC check failed")));
@@ -147,12 +157,13 @@ fn two_gens_in_one_session() {
     let party = |b: usize| {
         move |c: &mut dpf_common::net::Channel| {
             let mut s = MalSession::setup(c, seeds[b], None);
-            let keys: Vec<(MalKey, VerifyMask<Block>, u64)> = (0..2)
+            let keys: Vec<(MalKey, VerifyMask<Block>, u64, Vec<Block>)> = (0..2)
                 .map(|g| {
-                    let pre = s.precompute(c, depth, bits);
+                    let pre = s.precompute(c, depth, 4, bits);
+                    let us = pre.pre.us.clone();
                     let be = if b == 0 { b0[g] } else { betas[g] ^ b0[g] };
                     let (k, _, m, a) = s.gen(c, n, bits, be, pre, None);
-                    (k, m, a)
+                    (k, m, a, us)
                 })
                 .collect();
             (keys, s.delta_mac)
@@ -162,7 +173,8 @@ fn two_gens_in_one_session() {
     for g in 0..2 {
         let alpha = k0[g].2 ^ k1[g].2;
         let (a, b) = (k0[g].0.clone(), k1[g].0.clone());
-        assert_eq!(deal([a.root, b.root], [a.prf.key(), a.pay.key(), a.mac.key()], n, bits, alpha, betas[g], d0 ^ d1), [a.clone(), b.clone()]);
+        let us: Vec<Block> = k0[g].3.iter().zip(&k1[g].3).map(|(&x, &y)| x ^ y).collect();
+        assert_eq!(deal([a.root, b.root], &keys_of(&a), n, 4, bits, alpha, betas[g], d0 ^ d1, &us), [a.clone(), b.clone()]);
         let [ra, rb] = eval_and_verify([a, b], [d0, d1], [k0[g].1, k1[g].1], (0..n).collect(), Tamper::No);
         let ys = ra.unwrap();
         assert_eq!(rb.unwrap(), ys, "both parties open the same outputs");
@@ -170,6 +182,8 @@ fn two_gens_in_one_session() {
             assert_eq!(ys[x as usize], if x == alpha { betas[g] } else { Block::ZERO });
         }
     }
-    // The roots are the shares of Δ, fresh per Gen.
+    // The roots are the shares of Δ, fresh per Gen, and so are the public keys.
     assert_ne!(k0[0].0.root ^ k1[0].0.root, k0[1].0.root ^ k1[1].0.root, "Δ is fresh per Gen");
+    assert_ne!(k0[0].0.prf[0], k0[1].0.prf[0], "K_1 is fresh per Gen");
+    assert_ne!(k0[0].0.prf[0], k0[0].0.prf[1], "K_1 ≠ K_2");
 }

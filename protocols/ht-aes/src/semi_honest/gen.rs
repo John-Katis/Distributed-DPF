@@ -93,15 +93,49 @@ pub struct Pre {
     pub y: Block,
     /// `⟨t_{n,0}⟩`.
     pub t_leaf: bool,
-    /// The public key K: `F = H_K`, `F^pay = H_K(· ∥ 0)`.
-    pub prf: Mmo,
+    /// The public AES keys, `𝓕_reveal(𝓕_rand)` in preprocessing: the level
+    /// keys first (one K for all levels, or `K_1, …, K_n`), then the extra
+    /// ones (the malicious variants' `K_pay`, `K_mac`).
+    pub keys: Vec<Mmo>,
+    /// One key per level (`K_ℓ` expands level ℓ − 1 into level ℓ).
+    pub per_level: bool,
     /// The OT tower, on its random COTs.
     pub be: OtTower,
-    /// `(a, B, a·B)`: Step C's n − ν, then the switch's two.
+    /// `(a, B, a·B)`: Step C's n − ν, the switch's two (if ν > 0), then the
+    /// caller's extra ones, which [`walk`] leaves here.
     pub string_triples: Vec<(bool, Block, Block)>,
 }
 
+/// Bit-times-block triples [`walk`] consumes: Step C's and the switch's.
+pub fn walk_strings(n: usize, nu: usize) -> usize {
+    n - nu + if nu > 0 { 2 } else { 0 }
+}
+
 impl Pre {
+    /// Index into [`keys`](Self::keys) of the key of level ℓ ≥ 1.
+    pub fn level_key(&self, l: usize) -> usize {
+        if self.per_level {
+            l - 1
+        } else {
+            0
+        }
+    }
+
+    /// Index of extra key j.
+    pub fn extra_key(&self, j: usize) -> usize {
+        if self.per_level {
+            self.alpha_delta.len() + j
+        } else {
+            1 + j
+        }
+    }
+
+    /// The keys of levels 1..=n, cloned (n of them, or one for all levels).
+    pub fn level_keys(&self) -> Vec<Mmo> {
+        let k = if self.per_level { self.alpha_delta.len() } else { 1 };
+        self.keys[..k].to_vec()
+    }
+
     /// The bits of α, level 1 first.
     fn alpha_bits(&self) -> Vec<bool> {
         let n = self.alpha_delta.len();
@@ -153,34 +187,50 @@ pub(crate) fn alpha_delta<R: rand::RngCore + rand::CryptoRng>(
         .collect()
 }
 
-/// The preprocessing of one Gen of depth n with switch level ν, with `cots`
-/// more COTs per direction (the leaf's).
-pub(crate) fn precompute(ch: &mut Channel, cot: &mut CotPair, n: usize, nu: usize, cots: usize, rng: &mut ChaCha20Rng) -> Pre {
+/// The preprocessing of one Gen of depth n with switch level ν: the OT
+/// tower's COTs for `calls` AES–MMO calls, one public key for all levels or
+/// one per level (`per_level`) and `extra_keys` more, [`walk_strings`] +
+/// `extra_strings` bit-times-block triples, and `cots` more COTs per
+/// direction (the leaf's).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn precompute(
+    ch: &mut Channel,
+    cot: &mut CotPair,
+    n: usize,
+    nu: usize,
+    calls: usize,
+    per_level: bool,
+    extra_keys: usize,
+    extra_strings: usize,
+    cots: usize,
+    rng: &mut ChaCha20Rng,
+) -> Pre {
     assert!(n >= 1 && nu <= n, "0 ≤ ν ≤ n");
     let b = ch.party();
-    let pool = cot.random_cots(ch, 0, sh_calls(n, nu) * COTS_PER_CALL, rng).expect("semi-honest COT");
+    let pool = cot.random_cots(ch, 0, calls * COTS_PER_CALL, rng).expect("semi-honest COT");
     let be = OtTower::new(b, pool, cot.delta());
-    let string_triples = rot_string_triples(ch, cot, n - nu + 2, rng);
+    let string_triples = rot_string_triples(ch, cot, walk_strings(n, nu) + extra_strings, rng);
     cot.precompute(ch, n + 1 + cots, n + 1 + cots, rng).expect("semi-honest COT");
     let alpha_share: u64 = rng.gen::<u64>() & dpf_common::arith::mask(n);
     let delta = Block::random(rng).with_lsb(b == 1);
     let mut us: Vec<Block> = (nu..n).map(|_| Block::random(rng)).collect();
     let y = Block::random(rng).with_lsb(false);
     let t_leaf: bool = rng.gen();
-    // K ← 𝓕_reveal(𝓕_rand), then ⟨α_ℓ·Δ⟩ and ⟨t_{n,0}·Δ⟩ by 𝓕_COT.
-    let k_share = Block::random(rng);
-    ch.send(k_share.to_bytes().to_vec());
-    let prf = Mmo::new((k_share ^ Block::from_bytes(&ch.recv())).to_bytes());
+    // The keys ← 𝓕_reveal(𝓕_rand), then ⟨α_ℓ·Δ⟩ and ⟨t_{n,0}·Δ⟩ by 𝓕_COT.
+    let nk = if per_level { n } else { 1 } + extra_keys;
+    let k_shares: Vec<Block> = (0..nk).map(|_| Block::random(rng)).collect();
+    ch.send_blocks(&k_shares);
+    let keys = k_shares.iter().zip(ch.recv_blocks(nk)).map(|(&a, b)| Mmo::new((a ^ b).to_bytes())).collect();
     let bits: Vec<bool> = (0..n).map(|i| (alpha_share >> (n - 1 - i)) & 1 == 1).chain([t_leaf]).collect();
     let mut alpha_delta = alpha_delta(ch, cot, &bits, delta, rng);
     us.push(y ^ alpha_delta.pop().unwrap());
-    Pre { nu, alpha_share, delta, alpha_delta, us, y, t_leaf, prf, be, string_triples }
+    Pre { nu, alpha_share, delta, alpha_delta, us, y, t_leaf, keys, per_level, be, string_triples }
 }
 
 /// `⟨x_i·Y_i⟩` for shared bits `x_i` and blocks `Y_i`, by Beaver on the
 /// bit-times-block triples `(a, B, a·B)`: one round on `lane`, opening `x ⊕ a`
 /// and `Y ⊕ B`.
-fn bit_times_block(ch: &mut Channel, lane: &mut Lane, xy: &[(bool, Block)], triples: &mut std::vec::Drain<(bool, Block, Block)>) -> Vec<Block> {
+pub(crate) fn bit_times_block(ch: &mut Channel, lane: &mut Lane, xy: &[(bool, Block)], triples: &mut std::vec::Drain<(bool, Block, Block)>) -> Vec<Block> {
     let b = ch.party();
     let t: Vec<(bool, Block, Block)> = triples.take(xy.len()).collect();
     assert_eq!(t.len(), xy.len(), "bit-times-block triples exhausted");
@@ -203,29 +253,47 @@ fn bit_times_block(ch: &mut Channel, lane: &mut Lane, xy: &[(bool, Block)], trip
 }
 
 /// What [`walk`] leaves: the n level words, the words `M_ν, …, M_n`, and
-/// this party's shares of the leaf masks `h^(0)`, `h^(1)` with the lane they
+/// this party's shares of the outputs of the leaf jobs with the lane they
 /// may be opened on (after the AES–MMO calls).
 pub(crate) struct Walk {
     pub cws: Vec<Block>,
     pub ms: Vec<Block>,
-    pub leaf: [Block; 2],
+    pub leaf: Vec<Block>,
     pub leaf_lane: Lane,
 }
 
+/// A deliberate deviation in [`walk`], for the malicious abort tests: ε is
+/// XORed into this party's share of `CW_{i+1}` (`i < n`) or of `M_ν` (`i = n`)
+/// before it is opened.
+pub(crate) type WalkErr = Option<(usize, Block)>;
+
+fn err_at(err: WalkErr, i: usize) -> Block {
+    match err {
+        Some((l, e)) if l == i => e,
+        _ => Block::ZERO,
+    }
+}
+
 /// The top phase and the switch (Figure "DPF.Gen", lines 6–13) on `lane`:
-/// returns `CW_1, …, CW_ν` and `M_ν`.
-fn top(pre: &Pre, ch: &mut Channel, lane: &mut Lane, triples: &mut std::vec::Drain<(bool, Block, Block)>) -> (Vec<Block>, Block) {
+/// returns `CW_1, …, CW_ν` and `M_ν`. For ν = 0 there is no switch:
+/// `⟨st_{0,0}⟩ = (Δ_0, 0)`.
+fn top(pre: &Pre, ch: &mut Channel, lane: &mut Lane, triples: &mut std::vec::Drain<(bool, Block, Block)>, err: WalkErr) -> (Vec<Block>, Block) {
     let b = ch.party();
-    let delta = pre.delta;
+    let (n, delta) = (pre.alpha_delta.len(), pre.delta);
+    if pre.nu == 0 {
+        let share = if b == 0 { delta } else { Block::ZERO } ^ pre.us[0] ^ err_at(err, n);
+        let m0 = share ^ Block::from_bytes(&ch.exchange_on(lane, share.to_bytes().to_vec()));
+        return (vec![], m0);
+    }
     let mut nodes = vec![delta];
     let mut ls = Vec::new();
     let mut cws = Vec::with_capacity(pre.nu);
     for i in 0..pre.nu {
         ls.resize(nodes.len(), Block::ZERO);
-        pre.prf.h_many(&nodes, &mut ls);
+        pre.keys[pre.level_key(i + 1)].h_many(&nodes, &mut ls);
         // ⟨CW_ℓ⟩ = Z_{ℓ,b} ⊕ ⟨ᾱ_ℓ·Δ⟩, ⟨ᾱ_ℓ·Δ⟩ = ⟨Δ⟩ ⊕ ⟨α_ℓ·Δ⟩.
         let z = ls.iter().fold(Block::ZERO, |acc, &l| acc ^ l);
-        let share = z ^ delta ^ pre.alpha_delta[i];
+        let share = z ^ delta ^ pre.alpha_delta[i] ^ err_at(err, i);
         let cw = share ^ Block::from_bytes(&ch.exchange_on(lane, share.to_bytes().to_vec()));
         let mut next = Vec::with_capacity(2 * nodes.len());
         for (&st, &l) in nodes.iter().zip(&ls) {
@@ -245,24 +313,27 @@ fn top(pre: &Pre, ch: &mut Channel, lane: &mut Lane, triples: &mut std::vec::Dra
     // 1 ⊕ t_{ν,0} = a_1 ⊕ e_1 ⊕ a_0e_0, then ⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ (1 ⊕ ⟨t_{ν,0}⟩)·⟨Δ⟩.
     let not_t = (v >> 1) & 1 == 1;
     let p = bit_times_block(ch, lane, &[(not_t ^ g, delta)], triples)[0];
-    let share = e_b ^ p ^ pre.us[0];
+    let share = e_b ^ p ^ pre.us[0] ^ err_at(err, n);
     let m_nu = share ^ Block::from_bytes(&ch.exchange_on(lane, share.to_bytes().to_vec()));
     (cws, m_nu)
 }
 
-/// Generation up to the leaf words: the top phase and the switch on one
-/// lane, Step C on another, the AES–MMO calls of the lower levels and the
-/// leaf on the main line, then Steps B and the openings of `M_ℓ`.
-pub(crate) fn walk(pre: &mut Pre, ch: &mut Channel) -> Walk {
+/// Generation up to the leaf: the top phase and the switch on one lane,
+/// Step C on another, the AES–MMO calls of the lower levels and the
+/// `leaf_jobs` (key index, this party's share of the input) on the main line,
+/// then Step B and the openings of `M_ℓ`. Consumes the first
+/// [`walk_strings`] triples of `pre` and leaves the rest.
+pub(crate) fn walk(pre: &mut Pre, ch: &mut Channel, leaf_jobs: &[(usize, Block)], err: WalkErr) -> Walk {
     let (n, nu, delta) = (pre.alpha_delta.len(), pre.nu, pre.delta);
     let a = pre.alpha_bits();
-    let mut triples_v = std::mem::take(&mut pre.string_triples);
-    let mut triples = triples_v.drain(..);
+    let rest = pre.string_triples.split_off(walk_strings(n, nu));
+    let mut mine = std::mem::replace(&mut pre.string_triples, rest);
+    let mut triples = mine.drain(..);
     // Step C's triples come first, the switch's last.
     let k = n - nu;
     let mut step_c: Vec<(bool, Block, Block)> = triples.by_ref().take(k).collect();
     let mut lane = ch.lane();
-    let (mut cws, m_nu) = top(pre, ch, &mut lane, &mut triples);
+    let (mut cws, m_nu) = top(pre, ch, &mut lane, &mut triples, err);
     drop(triples);
     let mut ms = vec![m_nu];
     // Step C: ⟨P_ℓ⟩ = ⟨α_ℓ·U_{ℓ−1}⟩.
@@ -273,15 +344,20 @@ pub(crate) fn walk(pre: &mut Pre, ch: &mut Channel) -> Walk {
     } else {
         vec![]
     };
-    // Step A and the leaf masks, in one batch.
-    let mut jobs: Vec<(usize, _)> = (0..k).flat_map(|j| [(0, bits_of(pre.us[j])), (0, bits_of(pre.us[j] ^ delta))]).collect();
-    jobs.extend([(0, bits_of(leaf_seed(pre.y))), (0, bits_of(leaf_seed(pre.y ^ delta)))]);
-    let mut key = [SharedKey::public(&pre.be, &pre.prf)];
-    let out: Vec<Block> = mmo_shared(&mut pre.be, ch, &mut key, &jobs).iter().map(block_of).collect();
+    // Step A (level ℓ = ν + j + 1 hashes U_{ℓ−1} under K_ℓ) and the leaf jobs, in one batch.
+    let mut jobs: Vec<(usize, _)> = (0..k)
+        .flat_map(|j| {
+            let kl = pre.level_key(nu + j + 1);
+            [(kl, bits_of(pre.us[j])), (kl, bits_of(pre.us[j] ^ delta))]
+        })
+        .collect();
+    jobs.extend(leaf_jobs.iter().map(|&(kj, x)| (kj, bits_of(x))));
+    let mut keys: Vec<SharedKey<bool>> = pre.keys.iter().map(|m| SharedKey::public(&pre.be, m)).collect();
+    let out: Vec<Block> = mmo_shared(&mut pre.be, ch, &mut keys, &jobs).iter().map(block_of).collect();
     let leaf_lane = ch.lane();
     if k > 0 {
         // Step B: ⟨CW_ℓ⟩ = ⟨L_{ℓ,0}⟩ ⊕ ⟨L_{ℓ,1}⟩ ⊕ ⟨Δ⟩ ⊕ ⟨α_ℓ·Δ⟩.
-        let shares: Vec<Block> = (0..k).map(|j| out[2 * j] ^ out[2 * j + 1] ^ delta ^ pre.alpha_delta[nu + j]).collect();
+        let shares: Vec<Block> = (0..k).map(|j| out[2 * j] ^ out[2 * j + 1] ^ delta ^ pre.alpha_delta[nu + j] ^ err_at(err, nu + j)).collect();
         ch.send_blocks(&shares);
         let low: Vec<Block> = shares.iter().zip(ch.recv_blocks(k)).map(|(&x, y)| x ^ y).collect();
         // ⟨M_ℓ⟩ = ⟨L_{ℓ,0}⟩ ⊕ ⟨P_ℓ⟩ ⊕ lsb(⟨U_{ℓ−1}⟩)·CW_ℓ ⊕ ⟨U_ℓ⟩.
@@ -291,15 +367,23 @@ pub(crate) fn walk(pre: &mut Pre, ch: &mut Channel) -> Walk {
         cws.extend(low);
     }
     ch.join(lane);
-    Walk { cws, ms, leaf: [out[2 * k], out[2 * k + 1]], leaf_lane }
+    Walk { cws, ms, leaf: out[2 * k..].to_vec(), leaf_lane }
+}
+
+/// This party's leaf jobs of the semi-honest Gen: `H_K(s^(c) ∥ 0)` for the
+/// on-path leaf states `Y`, `Y ⊕ Δ` with tags 0 and 1, under key `key`.
+pub(crate) fn tag_leaf_jobs(pre: &Pre, key: usize) -> [(usize, Block); 2] {
+    [(key, leaf_seed(pre.y)), (key, leaf_seed(pre.y ^ pre.delta))]
 }
 
 fn gen_with<F: Field>(mut pre: Pre, fpre: FpPre<F, F>, ch: &mut Channel, n_size: u64, beta: F) -> (ShKey<F>, usize) {
     let b = ch.party();
-    let Walk { cws, ms, leaf, mut leaf_lane } = walk(&mut pre, ch);
-    let w_cw = tag_leaf(ch, &mut leaf_lane, leaf, pre.t_leaf, &fpre.dabits, beta);
+    let jobs = tag_leaf_jobs(&pre, 0);
+    let Walk { cws, ms, leaf, mut leaf_lane } = walk(&mut pre, ch, &jobs, None);
+    let w_cw = tag_leaf(ch, &mut leaf_lane, [leaf[0], leaf[1]], pre.t_leaf, &fpre.dabits, beta);
     ch.join(leaf_lane);
-    (ShKey { party: b, n_size, prf: pre.prf, root: pre.delta, nu: pre.nu, cws, ms, w_cw }, pre.be.ands)
+    let prf = pre.keys.swap_remove(0);
+    (ShKey { party: b, n_size, prf, root: pre.delta, nu: pre.nu, cws, ms, w_cw }, pre.be.ands)
 }
 
 /// Runs this party's side of setup, preprocessing and generation of a key for
@@ -362,7 +446,7 @@ pub(crate) fn drive<K, P>(
     let cots_before = cot.produced;
 
     let t_pre = Instant::now();
-    let pre = precompute(ch, &mut cot, n, nu, cots, &mut rng);
+    let pre = precompute(ch, &mut cot, n, nu, sh_calls(n, nu), false, 0, 0, cots, &mut rng);
     let (alpha_share, onpath_share) = (pre.alpha_share, pre.us.clone());
     let more = extra(&mut cot, &mut rng, ch);
     let pre_stats = ch.stats().since(&setup_stats);
@@ -394,7 +478,7 @@ pub(crate) fn drive<K, P>(
 /// `α < 2^n` (n = [`depth_for`]`(n_size)`).
 pub fn deal<F: Field>(roots: [Block; 2], key: [u8; 16], n_size: u64, nu: usize, alpha: u64, beta: F, us: &[Block]) -> [ShKey<F>; 2] {
     let prf = Mmo::new(key);
-    let (cws, ms, st) = deal_walk_nu(&prf, roots, depth_for(n_size), nu, alpha, us);
+    let (cws, ms, st) = deal_walk_nu(std::slice::from_ref(&prf), roots, depth_for(n_size), nu, alpha, us);
     let w = |s: Block| F::from_block(prf.h(leaf_seed(s)));
     let v = w(st[0]).sub(w(st[1])).sub(beta);
     let w_cw = if st[0].lsb() { v.neg() } else { v };

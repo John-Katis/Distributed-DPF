@@ -3,7 +3,8 @@
 //! output share and its MAC share, and [`verify`] is Π_Verify.
 
 use crate::malicious_arith::VerifyMask;
-use crate::{child, children, leaf_seed};
+use crate::semi_honest::key::level_word;
+use crate::{child, children_masked, leaf_seed};
 use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::coin::{coin_block, commit_and_open_blocks, Abort};
@@ -19,14 +20,18 @@ pub struct MalKey {
     pub n_size: u64,
     /// ℓ ≤ 128: outputs live in `{0,1}^ℓ ⊂ GF(2^128)`.
     pub bits: usize,
-    /// `F = H_K`.
-    pub prf: Mmo,
-    /// `F^pay = H_{K'}(· ∥ 0)`.
+    /// `K_1, …, K_n`: level ℓ is expanded by `H_{K_ℓ}`.
+    pub prf: Vec<Mmo>,
+    /// `F^pay = H_{K_pay}(· ∥ 0)`.
     pub pay: Mmo,
-    /// `F^mac = H_{K''}(· ∥ 0)`.
+    /// `F^mac = H_{K_mac}(· ∥ 0)`.
     pub mac: Mmo,
     pub root: Block,
+    /// The switch level ν.
+    pub nu: usize,
     pub cws: Vec<Block>,
+    /// `M_ν, …, M_n`.
+    pub ms: Vec<Block>,
     /// `W_CW = F^pay(s_0) ⊕ F^pay(s_1) ⊕ β` (low ℓ bits).
     pub w_cw: Block,
     /// `W^MAC_CW = F^mac(s_0) ⊕ F^mac(s_1) ⊕ δ·β`.
@@ -48,22 +53,29 @@ impl MalKey {
         depth_for(self.n_size)
     }
 
-    /// K, K', K'', root, n words, ⌈ℓ/8⌉ bytes of `W_CW`, 16 bytes of `W^MAC_CW`.
+    /// n + 2 keys, root, n + (n − ν + 1) words, ⌈ℓ/8⌉ bytes of `W_CW`, 16
+    /// bytes of `W^MAC_CW`.
     pub fn size_bytes(&self) -> usize {
-        3 * 16 + 16 + 16 * self.cws.len() + self.bits.div_ceil(8) + 16
+        16 * (self.prf.len() + 2) + 16 + 16 * (self.cws.len() + self.ms.len()) + self.bits.div_ceil(8) + 16
     }
 
-    pub fn public_part(&self) -> (&[Block], Block, Block) {
-        (&self.cws, self.w_cw, self.wm_cw)
+    pub fn public_part(&self) -> (&[Block], &[Block], Block, Block) {
+        (&self.cws, &self.ms, self.w_cw, self.wm_cw)
+    }
+
+    /// `M_ℓ`, zero above the switch level.
+    #[inline]
+    pub fn m(&self, level: usize) -> Block {
+        level_word(self.nu, &self.ms, level)
     }
 
     /// This party's shares `(y, m)` at x: XOR shares of `f(x)` and of `δ·f(x)`.
     pub fn eval_point(&self, x: u64) -> (Block, Block) {
         assert!(x < self.n_size);
         let n = self.depth();
-        let mut st = self.root;
+        let mut st = self.root ^ self.m(0);
         for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1);
+            st = child(&self.prf[i], st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
         }
         let s = leaf_seed(st);
         let t = st.lsb();
@@ -72,10 +84,10 @@ impl MalKey {
 
     /// Shares `(y, m)` at x = 0, …, N − 1: all 2^n leaves, one level at a time.
     pub fn eval_full(&self) -> Vec<(Block, Block)> {
-        let mut nodes = vec![self.root];
-        for &cw in &self.cws {
+        let mut nodes = vec![self.root ^ self.m(0)];
+        for (i, &cw) in self.cws.iter().enumerate() {
             let mut next = Vec::new();
-            children(&self.prf, &nodes, cw, &mut next);
+            children_masked(&self.prf[i], &nodes, cw, self.m(i + 1), &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -90,10 +102,10 @@ impl MalKey {
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[(Block, Block)])) {
         let (mut buf, mut outs) = (Vec::new(), Vec::new());
         walk(
-            self.root,
+            self.root ^ self.m(0),
             self.cws.len(),
             batch,
-            |l, parents, out| children(&self.prf, parents, self.cws[l - 1], out),
+            |l, parents, out| children_masked(&self.prf[l - 1], parents, self.cws[l - 1], self.m(l), out),
             |x0, leaves| {
                 if x0 < self.n_size {
                     self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut outs);

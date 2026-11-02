@@ -22,7 +22,7 @@
 //!    Beaver mask `d_i = ρ − u_i` of each sign product (`ρ = 1 − 2r`), and
 //!    the masks of the products in `S_i`.
 //! 2. Open `e_i = V_i − v_i`.
-//! 3. Open `X_i = ρ·V_i`, with the AES key shares; then `W_CW,i = (1 −
+//! 3. Open `X_i = ρ·V_i`; then `W_CW,i = (1 −
 //!    2c)·X_i`, since `1 − 2t = (1 − 2c)(1 − 2r)`.
 //!
 //! Three rounds after the leaf PRF calls.
@@ -118,11 +118,10 @@ pub enum Sub<E: Field> {
     Product(E, E),
 }
 
-/// Exchanges `mine` and returns the other party's message (lengths equal).
-fn swap(ch: &mut Channel, mine: Vec<u8>) -> Vec<u8> {
+/// Exchanges `mine` on `lane` and returns the other party's message (lengths equal).
+fn swap(ch: &mut Channel, lane: &mut Lane, mine: Vec<u8>) -> Vec<u8> {
     let n = mine.len();
-    ch.send(mine);
-    let theirs = ch.recv();
+    let theirs = ch.exchange_on(lane, mine);
     assert_eq!(theirs.len(), n, "malformed leaf message");
     theirs
 }
@@ -137,21 +136,19 @@ fn elems<E: Field>(b: &[u8]) -> Vec<E> {
 /// (κ bits per coordinate, read across the blocks), this party's share `t`
 /// of the tag `t_{n,0}`, and `subs[i]`. `err[i]` is added to this party's
 /// share of `X_i` before it is opened (a deliberate deviation, for the abort
-/// tests). `tail` rides with the last message (the AES key shares) and the
-/// other party's tail, of the same length, is returned with the words.
-/// Consumes [`leaf_dabits`]`(degs)` daBits and one triple per word and per
-/// product.
+/// tests). Runs on `lane`, three rounds. Consumes [`leaf_dabits`]`(degs)`
+/// daBits and one triple per word and per product.
 #[allow(clippy::too_many_arguments)]
 pub fn arith_leaf<F: Field, E: Ext<F>>(
     ch: &mut Channel,
+    lane: &mut Lane,
     masks: &[[Vec<Block>; 2]],
     degs: &[usize],
     subs: &[Sub<E>],
     t: bool,
     pre: &mut FpPre<F, E>,
     err: &[E],
-    tail: &[u8],
-) -> (Vec<E>, Vec<u8>) {
+) -> Vec<E> {
     let b = ch.party();
     let words = masks.len();
     assert!(subs.len() == words && err.len() == words && degs.len() == words);
@@ -183,7 +180,7 @@ pub fn arith_leaf<F: Field, E: Ext<F>>(
         d.put(&mut msg);
         e.put(&mut msg);
     });
-    let theirs = swap(ch, msg);
+    let theirs = swap(ch, lane, msg);
     let nb = nbits.div_ceil(8);
     let c: Vec<bool> = (0..nbits).map(|i| c_mine[i] ^ ((theirs[i / 8] >> (i % 8)) & 1 == 1)).collect();
     let rest = elems::<E>(&theirs[nb..]);
@@ -234,10 +231,10 @@ pub fn arith_leaf<F: Field, E: Ext<F>>(
     let e_mine: Vec<E> = v.iter().zip(&sign).map(|(x, &(_, vv, _))| x.sub(vv)).collect();
     let mut msg = Vec::with_capacity(words * E::BYTES);
     e_mine.iter().for_each(|x| x.put(&mut msg));
-    let theirs = elems::<E>(&swap(ch, msg));
+    let theirs = elems::<E>(&swap(ch, lane, msg));
     let e: Vec<E> = e_mine.iter().zip(&theirs).map(|(a, x)| a.add(*x)).collect();
 
-    // Round 3: X_i = ρ·V_i, opened with the tail; W_CW = (1 − 2c)·X.
+    // Round 3: X_i = ρ·V_i; W_CW = (1 − 2c)·X.
     let x_mine: Vec<E> = (0..words)
         .map(|i| {
             let (u, vv, w) = sign[i];
@@ -248,12 +245,9 @@ pub fn arith_leaf<F: Field, E: Ext<F>>(
             s.add(err[i])
         })
         .collect();
-    let mut msg = Vec::with_capacity(words * E::BYTES + tail.len());
+    let mut msg = Vec::with_capacity(words * E::BYTES);
     x_mine.iter().for_each(|x| x.put(&mut msg));
-    msg.extend_from_slice(tail);
-    let mut theirs = swap(ch, msg);
-    let their_tail = theirs.split_off(words * E::BYTES);
-    let theirs = elems::<E>(&theirs);
+    let theirs = elems::<E>(&swap(ch, lane, msg));
     let c_t = c[nbits - 1];
     let ws = x_mine
         .iter()
@@ -267,7 +261,7 @@ pub fn arith_leaf<F: Field, E: Ext<F>>(
             }
         })
         .collect();
-    (ws, their_tail)
+    ws
 }
 
 /// The leaf of the semi-honest Gen (Figure "DPF.Gen"), indexed by tag: for

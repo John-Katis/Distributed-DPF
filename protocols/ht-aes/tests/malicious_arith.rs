@@ -66,10 +66,14 @@ fn gen_matches_dealer_and_verifies<F: Field, E: Ext<F>>(seed: u64) {
         let [r0, r1] = run::<F, E>(n, beta, seed + i as u64, [None, None]);
         let alpha = r0.alpha_share ^ r1.alpha_share;
         let depth = r0.key.depth();
-        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 41 * depth + 43);
+        // M_0 (one round) and the AES–MMO calls (40), then the leaf (3).
+        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), 43);
         assert_eq!(r0.ands, arith_mal_ands::<F, E>(depth));
+        assert_eq!(r0.key.nu, 0);
         let delta = r0.delta_share.add(r1.delta_share);
-        let dealt = deal([r0.key.root, r1.key.root], [r0.key.prf.key(), r0.key.pay.key(), r0.key.mac.key()], n, alpha, beta, delta);
+        let us: Vec<Block> = r0.onpath_share.iter().zip(&r1.onpath_share).map(|(&a, &b)| a ^ b).collect();
+        let keys: Vec<[u8; 16]> = r0.key.prf.iter().chain([&r0.key.pay, &r0.key.mac]).map(|m| m.key()).collect();
+        let dealt = deal([r0.key.root, r1.key.root], &keys, n, alpha, beta, delta, &us);
         assert_eq!(dealt, [r0.key.clone(), r1.key.clone()]);
         let xs: Vec<u64> = (0..n).collect();
         let (d, m) = ([r0.delta_share, r1.delta_share], [r0.mask, r1.mask]);
@@ -104,8 +108,8 @@ fn mal_arith_gen_matches_dealer_and_verifies_m127() {
     gen_matches_dealer_and_verifies::<M127, M127>(11);
 }
 
-/// A wrong CW share, payload word, MAC word or share of K in Gen: the run of
-/// Gen completes, and Π_Verify over the whole domain aborts.
+/// A wrong CW share, payload word, MAC word or share of `M_0` in Gen: the run
+/// of Gen completes, and Π_Verify over the whole domain aborts.
 #[test]
 fn faults_in_gen_are_caught_by_verify() {
     let mut rng = ChaCha20Rng::seed_from_u64(2);

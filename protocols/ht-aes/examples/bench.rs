@@ -12,9 +12,10 @@
 //!   in one batch, and the leaf indexed by tag (daBits, no product).
 //! * `sh-bin`: as `sh` with an XOR-shared payload in F_2^ℓ (no B2A at the
 //!   leaf).
-//! * `mal`: malicious, on the level-by-level Gen under shared keys, payload in
+//! * `mal`: malicious, the `sh` Gen with fresh public keys per level (`--nu`
+//!   as for `sh`), payload in
 //!   `{0,1}^ℓ ⊂ GF(2^128)` with a payload MAC and Π_Verify.
-//! * `mal-arith`: malicious, as `mal`: payload in Babybear
+//! * `mal-arith`: malicious, as `mal` with ν = 0 (no top phase): payload in Babybear
 //!   with MACs in `F_{q^4}` (the paper's) for `--out-bits` ≤ 31, payload and
 //!   MAC in Goldilocks for ≤ 64, in `2^127 − 1` above.
 //!
@@ -120,11 +121,11 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
         let b0 = low(dpf_common::block::Block::random(rng), bits);
         let b1 = low(dpf_common::block::Block::random(rng), bits) ^ b0;
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-        let n = o.size;
+        let (n, nu) = (o.size, o.nu);
         let timed = |party: usize, b: dpf_common::block::Block| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = run_mal(c, n, bits, b, seeds[party], Some(FerretConfig::B13), None);
+                let out = run_mal(c, n, nu, bits, b, seeds[party], Some(FerretConfig::B13), None);
                 (out, t.elapsed())
             }
         };
@@ -346,7 +347,7 @@ fn main() {
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
         assert!(!(o.stream && o.runs("gen")), "ht-aes Gen has no streaming tree: it follows only the path to α");
-        assert!(o.nu.is_none() || matches!(o.variant.as_str(), "sh" | "sh-bin"), "--nu applies to sh and sh-bin only");
+        assert!(o.nu.is_none() || o.variant != "mal-arith", "mal-arith has no top phase (ν = 0)");
         let (bb, wide) = (o.out_bits <= 31, o.out_bits > 64);
         match o.variant.as_str() {
             "sh" => {
