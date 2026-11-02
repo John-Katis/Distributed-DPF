@@ -130,7 +130,7 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --i
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-arith --in-bits 16 --out-bits 31
 cargo run --release -p ht-aes --example bench-ht-aes -- gen --variant sh --in-bits 32 --out-bits 31 --nu 16   # switch level ν (sh, sh-bin, mal)
-scripts/bench_all.sh                          # Gen, n = 8..32, out-bits 64 and 128, one CSV per protocol in results-gen/
+scripts/bench_all.sh                          # Gen, n = 12..42 (others measured to 36, estimated above), out-bits 64 and 128, one CSV per protocol in results-gen/
 scripts/bench_all.sh full                     # full-domain eval, same sweep, into results-eval/
 ```
 

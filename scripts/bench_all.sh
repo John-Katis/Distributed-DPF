@@ -10,7 +10,7 @@
 # with these CSV names (the first argument of each `run` below) and leaves
 # the other CSVs as they are, e.g. to resume an interrupted sweep.
 #
-# mode is gen|eval|full|all (default gen). The sweep covers in-bits 20..=36
+# mode is gen|eval|full|all (default gen). The sweep covers in-bits 12..=36
 # for gen and 8..=32 otherwise (--min-in-bits, --max-in-bits) and out-bits
 # OUT_LIST (default 64,128), so each output width has all protocols side by
 # side. In gen mode FssNN and ours, whose Gen follows only the path to alpha,
@@ -18,7 +18,7 @@
 # measured up to 36 and its CSV gets estimated rows (variant `+est`) above its
 # last measured width up to 42, by scripts/estimate_gen.py (computation x2 per
 # bit, setup constant, communication, rounds and network time linear in n).
-# So after a gen sweep every CSV has rows for in-bits 20..=42. --append adds
+# So after a gen sweep every CSV has rows for in-bits 12..=42. --append adds
 # the rows to the existing CSVs instead of starting them afresh, e.g. --append
 # --min-in-bits 37 runs only FssNN and ours on 37..=42. --reps-from n R (gen default: 33 2) runs each point from in-bits n on
 # as R separate 1-rep processes, one CSV row each, so the rows can be
@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $MODE == gen ]]; then
-  : "${MIN_IN:=20}" "${MAX_IN:=36}" "${MAX_PATH:=42}" "${REPS_FROM:=33}" "${SPLIT:=2}"
+  : "${MIN_IN:=12}" "${MAX_IN:=36}" "${MAX_PATH:=42}" "${REPS_FROM:=33}" "${SPLIT:=2}"
 else
   : "${MIN_IN:=8}" "${MAX_IN:=32}" "${MAX_PATH:=$MAX_IN}" "${REPS_FROM:=64}" "${SPLIT:=1}"
 fi
