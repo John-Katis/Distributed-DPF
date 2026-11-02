@@ -113,9 +113,16 @@ pub fn mask_tweak(j: usize) -> Block {
     Block((j as u128) << 120)
 }
 
-/// The default switch level: ν = 20 (the paper's), at most n − 1.
+/// The default switch level: ν = 17, or n − 1 below n = 18. Measured (sh,
+/// Babybear, 2026-11-02; `other_tex/nu_scan_temp.tex`): each level moved
+/// into the top phase saves ~0.76 ms of 2PC compute and 3.55 kB, while the
+/// top phase's local cost doubles per level, so the optimum is a fixed level
+/// (16–17 at n = 20 and n = 32), not a fraction of n.
+pub const BEST_NU: usize = 17;
+
+/// [`BEST_NU`], at most n − 1.
 pub fn default_nu(n: usize) -> usize {
-    20.min(n.saturating_sub(1))
+    BEST_NU.min(n.saturating_sub(1))
 }
 
 /// AES–MMO calls in 2PC in one semi-honest Gen of depth n with switch level

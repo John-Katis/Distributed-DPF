@@ -7,7 +7,7 @@
 //! * `sh`: semi-honest, public payload in a prime field by `--out-bits`:
 //!   Babybear (the paper's) for ≤ 31, Goldilocks for ≤ 64, `2^127 − 1`
 //!   above; public K, a local top phase of ν levels (`--nu`, default
-//!   `min(20, n − 1)`; the label gets `+nu<ν>` when it is given), the lower
+//!   `min(17, n − 1)`; the label gets `+nu<ν>` when it is given), the lower
 //!   levels' AES–MMO calls on the OT tower (every AND from Ferret COTs) all
 //!   in one batch, and the leaf indexed by tag (daBits, no product).
 //! * `sh-bin`: as `sh` with an XOR-shared payload in F_2^ℓ (no B2A at the
