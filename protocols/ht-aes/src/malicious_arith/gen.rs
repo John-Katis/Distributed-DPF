@@ -32,7 +32,8 @@ use super::key::{ArithMalKey, VerifyMask};
 use crate::field::{mask_blocks, mask_value, Ext, Field};
 use crate::leaf::{arith_leaf, fp_pre, fp_pre_cots, leaf_dabits, FpPre, Sub};
 use crate::malicious::Fault;
-use crate::semi_honest::gen::{precompute, setup, walk, Pre, Setup, Walk};
+use crate::level_walk::{precompute, walk, Pre, Walk};
+use crate::semi_honest::gen::{setup, Setup};
 use crate::{deal_walk, key_bytes, leaf_seed, mask_tweak, open_keys, MAL_KEYS};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, Shared128, ANDS_PER_CALL, ANDS_PER_KEY};
 use dpf_common::block::{depth_for, Block};
@@ -77,7 +78,7 @@ impl<F: Field, E: Ext<F>> ArithMalSession<F, E> {
     }
 
     /// The OT tower's COTs for [`arith_mal_calls`] AES–MMO calls and three
-    /// key expansions, the paper's preprocessing (`semi_honest::gen::precompute`: ⟨α⟩, ⟨Δ⟩,
+    /// key expansions, the paper's preprocessing (`level_walk::precompute`: ⟨α⟩, ⟨Δ⟩,
     /// ⟨K⟩, ⟨K'⟩, ⟨K''⟩, ⟨α_ℓ·Δ⟩), n string triples (branch selection), and the leaf's daBits over F and Beaver triples over E
     /// ([`leaf_counts`]), the first one the Π_Verify mask `(r, δr)`.
     pub fn precompute(&mut self, ch: &mut Channel, n: usize) -> (Pre, FpPre<F, E>) {

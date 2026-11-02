@@ -30,17 +30,20 @@ fn check(keys: &[BinKey; 2], n: u64, alpha: u64, beta: Block) {
 #[test]
 fn gen_matches_point_function_and_dealer() {
     let mut rng = ChaCha20Rng::seed_from_u64(1);
-    for (i, (n, bits)) in [(8u64, 64usize), (16, 7), (13, 128)].into_iter().enumerate() {
+    let cases = [(8u64, None, 64usize), (8, Some(3), 64), (16, Some(0), 7), (13, None, 128), (1 << 9, Some(6), 33), (1 << 9, Some(9), 1)];
+    for (i, (n, nu, bits)) in cases.into_iter().enumerate() {
         let beta = low(Block::random(&mut rng), bits);
         let b0 = low(Block::random(&mut rng), bits);
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-        let (o0, o1) = run_two_party(move |c| gen(c, n, bits, b0, seeds[0], None), move |c| gen(c, n, bits, beta ^ b0, seeds[1], None));
-        let depth = o0.key.depth();
-        assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), 41 * depth + 41, "case {i}");
+        let (o0, o1) = run_two_party(move |c| gen(c, n, nu, bits, b0, seeds[0], None), move |c| gen(c, n, nu, bits, beta ^ b0, seeds[1], None));
+        let (depth, nu) = (o0.key.depth(), o0.key.nu);
+        let rounds = (nu + 3).max(if nu < depth { 42 } else { 41 });
+        assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), rounds, "case {i}");
         let alpha = o0.alpha_share ^ o1.alpha_share;
+        let us: Vec<Block> = o0.onpath_share.iter().zip(&o1.onpath_share).map(|(&a, &b)| a ^ b).collect();
         let keys = [o0.key, o1.key];
         check(&keys, n, alpha, beta);
-        assert_eq!(deal([keys[0].root, keys[1].root], [keys[0].prf.key(), keys[0].pay.key()], n, bits, alpha, beta), keys);
+        assert_eq!(deal([keys[0].root, keys[1].root], keys[0].prf.key(), n, nu, bits, alpha, beta, &us), keys);
     }
 }
 

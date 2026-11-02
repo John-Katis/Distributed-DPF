@@ -26,7 +26,8 @@
 
 use super::key::{low, MalKey};
 use crate::malicious_arith::VerifyMask;
-use crate::semi_honest::gen::{precompute, setup, walk, Pre, Setup, Walk};
+use crate::level_walk::{precompute, walk, Pre, Walk};
+use crate::semi_honest::gen::{setup, Setup};
 use crate::{deal_walk, key_bytes, leaf_seed, open_keys, MAL_KEYS};
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo};
 use dpf_common::block::{depth_for, Block};
@@ -103,7 +104,7 @@ impl MalSession {
         MalSession { s, delta_mac }
     }
 
-    /// The preprocessing of one Gen (`semi_honest::gen::precompute` for [`mal_calls`]
+    /// The preprocessing of one Gen (`level_walk::precompute` for [`mal_calls`]
     /// AES–MMO calls, three keys, `n + ℓ` string triples for the branch
     /// selection and δ·β), and the Π_Verify mask: a random r and `⟨δr⟩ = Σ_i
     /// r_i·⟨X^i δ⟩` from 128 more string triples, one round.

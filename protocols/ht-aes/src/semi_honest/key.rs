@@ -1,8 +1,8 @@
-//! The semi-honest key: root `st_{0,b}`, n level words, the payload word in F_p,
-//! and its point and full-domain evaluation.
+//! The semi-honest key: K, root `st_{0,b}`, n level words, the words `M_ν, …,
+//! M_n`, the payload word in F_p, and its point and full-domain evaluation.
 
 use crate::field::Field;
-use crate::{child, children, leaf_seed};
+use crate::{child, children_masked, leaf_seed};
 use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::stream::walk;
@@ -11,13 +11,15 @@ use dpf_common::stream::walk;
 pub struct ShKey<T: Field> {
     pub party: usize,
     pub n_size: u64,
-    /// `F = H_K`, K opened at the end of Gen.
+    /// `F = H_K` and `F^pay = H_K(· ∥ 0)`, K public.
     pub prf: Mmo,
-    /// `F^pay = H_{K'}(· ∥ 0)`.
-    pub pay: Mmo,
     /// `st_{0,b}`, with `st_{0,0} ⊕ st_{0,1} = Δ`.
     pub root: Block,
+    /// The switch level ν.
+    pub nu: usize,
     pub cws: Vec<Block>,
+    /// `M_ν, …, M_n`, XORed onto every node of levels ν..=n.
+    pub ms: Vec<Block>,
     /// `W_CW = (−1)^{t_{n,0}}·(W_0 − W_1 − β)`.
     pub w_cw: T,
 }
@@ -27,14 +29,20 @@ impl<T: Field> ShKey<T> {
         depth_for(self.n_size)
     }
 
-    /// K, K', root, n words of 16 bytes, the payload word.
+    /// K, root, n + (n − ν + 1) words of 16 bytes, the payload word.
     pub fn size_bytes(&self) -> usize {
-        2 * 16 + 16 + 16 * self.cws.len() + T::BYTES
+        16 + 16 + 16 * (self.cws.len() + self.ms.len()) + T::BYTES
     }
 
     /// The part both parties share.
-    pub fn public_part(&self) -> (&[Block], T) {
-        (&self.cws, self.w_cw)
+    pub fn public_part(&self) -> (&[Block], &[Block], T) {
+        (&self.cws, &self.ms, self.w_cw)
+    }
+
+    /// `M_ℓ`, zero above the switch level.
+    #[inline]
+    pub fn m(&self, level: usize) -> Block {
+        level_word(self.nu, &self.ms, level)
     }
 
     /// `(−1)^b·(F^pay(s) + t·W_CW)` at a leaf, `F^pay` read in F_p
@@ -56,19 +64,19 @@ impl<T: Field> ShKey<T> {
     pub fn eval_point(&self, x: u64) -> T {
         assert!(x < self.n_size);
         let n = self.depth();
-        let mut st = self.root;
+        let mut st = self.root ^ self.m(0);
         for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1);
+            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
         }
-        self.output(st, self.pay.h(leaf_seed(st)))
+        self.output(st, self.prf.h(leaf_seed(st)))
     }
 
     /// Shares of `f(0), …, f(N − 1)`: all 2^n leaves, one level at a time.
     pub fn eval_full(&self) -> Vec<T> {
-        let mut nodes = vec![self.root];
-        for &cw in &self.cws {
+        let mut nodes = vec![self.root ^ self.m(0)];
+        for (i, &cw) in self.cws.iter().enumerate() {
             let mut next = Vec::new();
-            children(&self.prf, &nodes, cw, &mut next);
+            children_masked(&self.prf, &nodes, cw, self.m(i + 1), &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -83,10 +91,10 @@ impl<T: Field> ShKey<T> {
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[T])) {
         let (mut buf, mut ys) = (Vec::new(), Vec::new());
         walk(
-            self.root,
+            self.root ^ self.m(0),
             self.cws.len(),
             batch,
-            |l, parents, out| children(&self.prf, parents, self.cws[l - 1], out),
+            |l, parents, out| children_masked(&self.prf, parents, self.cws[l - 1], self.m(l), out),
             |x0, leaves| {
                 if x0 < self.n_size {
                     self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut ys);
@@ -103,8 +111,18 @@ impl<T: Field> ShKey<T> {
         buf.extend(leaves.iter().map(|&s| leaf_seed(s)));
         buf.resize(2 * k, Block::ZERO);
         let (seeds, w) = buf.split_at_mut(k);
-        self.pay.h_many(seeds, w);
+        self.prf.h_many(seeds, w);
         ys.clear();
         ys.extend(leaves.iter().zip(&*w).map(|(&s, &wv)| self.output(s, wv)));
+    }
+}
+
+/// `M_ℓ` of words `ms = [M_ν, …, M_n]`, zero for ℓ < ν.
+#[inline]
+pub(crate) fn level_word(nu: usize, ms: &[Block], level: usize) -> Block {
+    if level >= nu {
+        ms[level - nu]
+    } else {
+        Block::ZERO
     }
 }

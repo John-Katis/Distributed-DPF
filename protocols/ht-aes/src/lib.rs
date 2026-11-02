@@ -1,52 +1,41 @@
 //! Our distributed half-tree DPF (the paper's `htDPF.Gen`, §"Fully
-//! Distributed DPF"), with `F_PRF` instantiated by AES–MMO under a shared key in 2PC
-//! on the OT tower ([`dpf_common::aes_tower::OtTower`]): every AND of the
-//! S-boxes from Ferret COTs.
+//! Distributed DPF"), with `F_PRF` instantiated by AES–MMO in 2PC on the OT
+//! tower ([`dpf_common::aes_tower::OtTower`]): every AND of the S-boxes from
+//! Ferret COTs.
 //!
-//! Unlike the Floram line, neither party ever expands a tree in Gen: both keep
-//! only XOR shares of the on-path state `st_{ℓ,0}` (and `st_{ℓ,1} = st_{ℓ,0} ⊕
-//! Δ`), so Gen is `O(n)` in local work and communication. Per level ℓ:
+//! The semi-honest Gen ([`semi_honest::gen`]) is the paper's Figure
+//! "DPF.Gen": one public AES key K (`F = H_K`, `F^pay = H_K(· ∥ 0)`); for the
+//! top ν levels each party expands its own tree locally and the words
+//! `CW_ℓ` follow from frontier sums; a switch turns the level-ν frontier into
+//! a sharing of the on-path state; below ν the on-path states `U_ℓ` are
+//! sampled in preprocessing and joined to the tree by one public word `M_ℓ`
+//! per level, so all AES–MMO calls in 2PC run in the same 40 rounds,
+//! concurrently with the top phase. Evaluation is the half-tree walk `L =
+//! H_K(st)`, `R = st ⊕ L`, `st' = child ⊕ t·CW`, followed by `st' ⊕= M_ℓ`
+//! for `ℓ ≥ ν` ([`children_masked`]).
 //!
-//! * A: `⟨L_b⟩ = F(⟨st_{ℓ−1,b}⟩)` for `b ∈ {0, 1}`, two AES–MMO calls in 2PC
-//!   (5,760 ANDs, 2,880 COTs and 40 rounds each, run in parallel);
-//! * B: `CW_ℓ = L_0 ⊕ L_1 ⊕ Δ ⊕ α_ℓ·Δ` is opened (`⟨α_ℓ·Δ⟩` preprocessed);
-//! * C: `st_{ℓ,0} = L_0 ⊕ α_ℓ·st_{ℓ−1,0} ⊕ t_{ℓ−1,0}·CW_ℓ`, one bit-times-block
-//!   product, whose opening rides with B.
+//! * [`semi_honest`]: payload in `G = F_p` ([`field`]) with a public β, the
+//!   leaf indexed by tag ([`leaf::tag_leaf`]: B2A by daBits, no product).
+//! * [`semi_honest::bin`]: the same Gen with a binary payload, no B2A.
+//! * [`malicious`]: payload in `{0,1}^ℓ ⊂ GF(2^128)` with the paper's
+//!   payload-MAC word under a persistent key δ and Π_Verify on the outputs.
+//! * [`malicious_arith`]: the same for an arithmetic payload in F_p.
 //!
-//! Preprocessing is the paper's, per Gen and input-independent
-//! (`semi_honest::gen::precompute`): a random `⟨α⟩`, a fresh `⟨Δ⟩ = (Δ_0,
-//! Δ_1)` with `lsb(Δ_b) = b` (so lsb(Δ) = 1), the AES keys K (state), K'
-//! (payload) and, in the malicious variants, K'' (MAC), and `⟨α_ℓ·Δ⟩` by 𝓕_COT
-//! with the chosen offsets `Δ_b`, from Ferret random COTs; Δ is independent
-//! of Ferret's own key Γ, which only the OT extension and the OT tower use.
-//! The keys are expanded on shares by Π_KeyExp alongside the level-1 calls and
-//! opened with the last message of Gen. The key of party b is its root
-//! `st_{0,b} = Δ_b` and the public part: K, K' (K''), the words; evaluation
-//! is a local half-tree walk with `L = H_K(st)`, `R = st ⊕ L`, `st' = child ⊕
-//! t·CW`. The payload is read at the leaf through `F^pay(s) = H_{K'}(s ∥ 0)`.
-//!
-//! * [`semi_honest`]: payload in `G = F_p` ([`field`]), the paper's leaf
-//!   ([`leaf`]: B2A by daBits, the sign by a daBit and one Beaver triple).
-//! * [`malicious`]: the semi-honest Gen on the same preprocessing, plus the
-//!   paper's payload-MAC word `W^MAC_CW` under a persistent key δ and
-//!   Π_Verify on the outputs; payload in `{0,1}^ℓ ⊂ GF(2^128)`.
-//! * [`malicious_arith`]: the same for an arithmetic payload in F_p, on the
-//!   leaf of [`leaf`] (`δ·β` by one more Beaver product).
-//! * [`semi_honest::bin`]: the semi-honest Gen with a binary payload, no B2A.
+//! The malicious variants still run the level-by-level Gen under XOR-shared
+//! keys K, K', K'' ([`level_walk`]): the paper's §malicious is yet to be
+//! revised to the public K.
 
 pub mod field;
 pub mod leaf;
+pub mod level_walk;
 pub mod malicious;
 pub mod malicious_arith;
 pub mod semi_honest;
 
-use dpf_common::aes_tower::{bits_of, Mmo, SharedKey, ANDS_PER_CALL, ANDS_PER_KEY};
+use dpf_common::aes_tower::{bits_of, Mmo, SharedKey, ANDS_PER_CALL};
 use dpf_common::block::Block;
 use rand::{CryptoRng, RngCore};
 
-/// AES keys of the semi-honest variants: `K` (the state expansion `F = H_K`)
-/// and `K'` (the payload mask `F^pay = H_{K'}(· ∥ 0)`).
-pub const SH_KEYS: usize = 2;
 /// AES keys of the malicious variants: `K`, `K'` and `K''` (the MAC mask
 /// `F^mac = H_{K''}(· ∥ 0)`).
 pub const MAL_KEYS: usize = 3;
@@ -81,6 +70,12 @@ pub fn child(f: &Mmo, st: Block, cw: Block, bit: bool) -> Block {
 /// [`child`] for a whole batch: appends both corrected children of every
 /// parent to `out`, interleaved `[L(p0), R(p0), L(p1), …]`.
 pub fn children(f: &Mmo, parents: &[Block], cw: Block, out: &mut Vec<Block>) {
+    children_masked(f, parents, cw, Block::ZERO, out)
+}
+
+/// [`children`] with the level word `m` XORed onto every child (`M_ℓ` of the
+/// semi-honest Gen, zero above the switch level).
+pub fn children_masked(f: &Mmo, parents: &[Block], cw: Block, m: Block, out: &mut Vec<Block>) {
     let (start, k) = (out.len(), parents.len());
     out.resize(start + 2 * k, Block::ZERO);
     let kids = &mut out[start..];
@@ -89,8 +84,8 @@ pub fn children(f: &Mmo, parents: &[Block], cw: Block, out: &mut Vec<Block>) {
     f.h_many(parents, &mut kids[k..]);
     for (i, &st) in parents.iter().enumerate() {
         let lv = kids[k + i] ^ cw.and_bit(st.lsb());
-        kids[2 * i] = lv;
-        kids[2 * i + 1] = st ^ lv;
+        kids[2 * i] = lv ^ m;
+        kids[2 * i + 1] = st ^ lv ^ m;
     }
 }
 
@@ -112,6 +107,36 @@ pub(crate) fn deal_walk(f: &Mmo, roots: [Block; 2], n: usize, alpha: u64) -> (Ve
     (cws, st)
 }
 
+/// The cleartext walk of the semi-honest Gen with switch level ν: the n
+/// level words and the words `M_ν, …, M_n` for roots `st` (`st_0 ⊕ st_1 =
+/// Δ`), α and the on-path states `us = [U_ν, …, U_n]` of party 0, and the
+/// two leaf states (`U_n`, `U_n ⊕ Δ`).
+pub(crate) fn deal_walk_nu(f: &Mmo, roots: [Block; 2], n: usize, nu: usize, alpha: u64, us: &[Block]) -> (Vec<Block>, Vec<Block>, [Block; 2]) {
+    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
+    assert!(n >= 64 || alpha >> n == 0, "α ∈ {{0,1}}^n");
+    assert!(nu <= n && us.len() == n - nu + 1, "U_ν, …, U_n");
+    let delta = roots[0] ^ roots[1];
+    let mut st = roots;
+    let (mut cws, mut ms) = (Vec::with_capacity(n), Vec::with_capacity(us.len()));
+    let mut join = |l: usize, st: &mut [Block; 2]| {
+        if l >= nu {
+            let m = st[0] ^ us[l - nu];
+            ms.push(m);
+            *st = [st[0] ^ m, st[1] ^ m];
+        }
+    };
+    join(0, &mut st);
+    for i in 0..n {
+        let a = (alpha >> (n - 1 - i)) & 1 == 1;
+        let cw = f.h(st[0]) ^ f.h(st[1]) ^ delta.and_bit(!a);
+        st = [child(f, st[0], cw, a), child(f, st[1], cw, a)];
+        cws.push(cw);
+        join(i + 1, &mut st);
+    }
+    debug_assert_eq!(st[0] ^ st[1], delta);
+    (cws, ms, st)
+}
+
 /// The leaf input of the payload hashes: the seed with its control bit cleared.
 #[inline]
 pub fn leaf_seed(st: Block) -> Block {
@@ -126,13 +151,18 @@ pub fn mask_tweak(j: usize) -> Block {
     Block((j as u128) << 120)
 }
 
-/// AES–MMO calls in one semi-honest Gen of depth n: two per level, two at the
-/// leaf.
-pub fn sh_calls(n: usize) -> usize {
-    2 * n + 2
+/// The default switch level: ν = 20 (the paper's), at most n − 1.
+pub fn default_nu(n: usize) -> usize {
+    20.min(n.saturating_sub(1))
 }
 
-/// ANDs in one semi-honest Gen of depth n: the calls and Π_KeyExp of K, K'.
-pub fn sh_ands(n: usize) -> usize {
-    sh_calls(n) * ANDS_PER_CALL + SH_KEYS * ANDS_PER_KEY
+/// AES–MMO calls in 2PC in one semi-honest Gen of depth n with switch level
+/// ν: two per level below ν, two at the leaf.
+pub fn sh_calls(n: usize, nu: usize) -> usize {
+    2 * (n - nu + 1)
+}
+
+/// ANDs of the OT tower in one semi-honest Gen (K is public: no Π_KeyExp).
+pub fn sh_ands(n: usize, nu: usize) -> usize {
+    sh_calls(n, nu) * ANDS_PER_CALL
 }

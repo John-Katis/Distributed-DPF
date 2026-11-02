@@ -29,7 +29,7 @@
 
 use crate::field::{ole, Ext, Field};
 use dpf_common::block::Block;
-use dpf_common::net::Channel;
+use dpf_common::net::{Channel, Lane};
 use dpf_common::ot::CotPair;
 use rand::{CryptoRng, Rng, RngCore};
 
@@ -268,4 +268,33 @@ pub fn arith_leaf<F: Field, E: Ext<F>>(
         })
         .collect();
     (ws, their_tail)
+}
+
+/// The leaf of the semi-honest Gen (Figure "DPF.Gen"), indexed by tag: for
+/// the XOR-shared mask blocks `h = [h^(0), h^(1)]` of the on-path leaf states
+/// with tags 0 and 1, this party's share `t` of `t_{n,0}` and the public β,
+/// `W_CW = W^(0) − W^(1) − (1 − 2σ)·β` with `W^(c)` the integer of the low κ
+/// bits of `h^(c)` and `σ = t_{n,0}` over F, which is linear in the B2A
+/// outputs. On `lane`, two rounds: the masked bits `c = h ⊕ r` of the 2κ + 1
+/// daBits ([`leaf_dabits`]`(&[1])`), then the shares of `W_CW`.
+pub fn tag_leaf<F: Field>(ch: &mut Channel, lane: &mut Lane, h: [Block; 2], t: bool, dabits: &[(bool, F)], beta: F) -> F {
+    let b = ch.party();
+    let kappa = F::KAPPA;
+    let nbits = 2 * kappa + 1;
+    assert_eq!(dabits.len(), nbits, "2κ + 1 daBits");
+    let bits: Vec<bool> = h.iter().flat_map(|w| (0..kappa).map(move |k| w.bit(k))).chain([t]).collect();
+    let c_mine: Vec<bool> = bits.iter().zip(dabits).map(|(&x, &(r, _))| x ^ r).collect();
+    let theirs = ch.exchange_on(lane, dpf_common::block::pack_bits(&c_mine));
+    let c = dpf_common::block::unpack_bits(&theirs, nbits);
+    let one = if b == 0 { F::ONE } else { F::ZERO };
+    // B2A: ⟦x⟧ = c + ⟦r⟧ − 2c⟦r⟧.
+    let b2a = |i: usize| if c_mine[i] ^ c[i] { one.sub(dabits[i].1) } else { dabits[i].1 };
+    let word = |off: usize| (0..kappa).fold(F::ZERO, |a, k| a.add(F::pow2(k).mul(b2a(off + k))));
+    let sigma = b2a(2 * kappa);
+    let share = word(0).sub(word(kappa)).sub(one.sub(sigma.add(sigma)).mul(beta));
+    let mut msg = Vec::with_capacity(F::BYTES);
+    share.put(&mut msg);
+    let theirs = ch.exchange_on(lane, msg);
+    assert_eq!(theirs.len(), F::BYTES, "malformed leaf message");
+    share.add(F::get(&theirs))
 }
