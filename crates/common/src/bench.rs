@@ -98,6 +98,9 @@ pub struct Opts {
     pub batch_log: u32,
     /// In-bits from which the streaming tree is used even without `--stream`.
     pub stream_from: u32,
+    /// `--nu ν`: the switch level of a protocol with a local top phase
+    /// (ht-aes `sh`, `sh-bin`); `None` is the protocol's default.
+    pub nu: Option<usize>,
 }
 
 impl Opts {
@@ -119,6 +122,7 @@ impl Opts {
             stream: false,
             batch_log: 16,
             stream_from: u32::MAX,
+            nu: None,
         };
         let args: Vec<String> = std::env::args().skip(1).collect();
         let mut i = 0;
@@ -144,8 +148,9 @@ impl Opts {
                 "--stream" => o.stream = true,
                 "--batch-log" => { o.batch_log = val(i).parse().unwrap(); i += 1; }
                 "--stream-from" => { o.stream_from = in_bits(val(i)); i += 1; }
+                "--nu" => { o.nu = Some(val(i).parse().unwrap()); i += 1; }
                 "-h" | "--help" => {
-                    eprintln!("usage: bench <gen|eval|full|all> [--variant {}] [--in-bits n | --size N] [--out-bits m] [--reps R] [--points P] [--sweep [--max-in-bits n] [--out-list a,b]] [--lan ms,mbps] [--wan ms,mbps] [--stream] [--stream-from n] [--batch-log b]", variants.join("|"));
+                    eprintln!("usage: bench <gen|eval|full|all> [--variant {}] [--in-bits n | --size N] [--out-bits m] [--reps R] [--points P] [--sweep [--max-in-bits n] [--out-list a,b]] [--lan ms,mbps] [--wan ms,mbps] [--stream] [--stream-from n] [--batch-log b] [--nu v]", variants.join("|"));
                     std::process::exit(0);
                 }
                 other => panic!("unknown argument {other}"),
@@ -168,11 +173,14 @@ impl Opts {
 
     /// The variant as printed in the CSV: `+stream` marks the streaming tree.
     pub fn label(&self) -> String {
-        if self.stream {
-            format!("{}+stream", self.variant)
-        } else {
-            self.variant.clone()
+        let mut l = self.variant.clone();
+        if let Some(nu) = self.nu {
+            l += &format!("+nu{nu}");
         }
+        if self.stream {
+            l += "+stream";
+        }
+        l
     }
 
     /// Calls `f` once, or for every (in-bits, out-bits) pair of the sweep.

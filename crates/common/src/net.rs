@@ -75,6 +75,12 @@ pub fn net_time(rounds: usize, bytes: usize, latency: Duration, bits_per_sec: f6
 /// A message and its round stamp.
 type Msg = (usize, Vec<u8>);
 
+/// The clock of a concurrent branch of a protocol ([`Channel::lane`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Lane {
+    clock: usize,
+}
+
 /// One party's end of the two-party link.
 ///
 /// The receiver and the counters sit behind (uncontended) locks so that a
@@ -140,6 +146,39 @@ impl Channel {
         st.rounds = st.rounds.max(stamp);
         st.bytes_recv += msg.len();
         Some(msg)
+    }
+
+    /// A concurrent branch of the protocol, starting from everything this
+    /// party has received so far. Its messages go over the same channel, in
+    /// the same order at both parties, but are stamped on the lane's own
+    /// clock and do not advance the channel's: what the main line sends
+    /// afterwards does not depend on them, so the two share their rounds.
+    pub fn lane(&self) -> Lane {
+        Lane { clock: self.clock.load(Ordering::Relaxed) }
+    }
+
+    /// Sends and receives one message each on `lane` (one round of it).
+    pub fn exchange_on(&mut self, lane: &mut Lane, msg: Vec<u8>) -> Vec<u8> {
+        let stamp = lane.clock + 1;
+        let len = msg.len();
+        assert!(self.tx.send((stamp, msg)).is_ok(), "peer hung up");
+        {
+            let mut st = self.stats.lock().unwrap();
+            st.rounds = st.rounds.max(stamp);
+            st.bytes_sent += len;
+            st.messages_sent += 1;
+        }
+        let (stamp, theirs) = self.rx.lock().unwrap().recv().expect("peer hung up");
+        lane.clock = lane.clock.max(stamp);
+        let mut st = self.stats.lock().unwrap();
+        st.rounds = st.rounds.max(stamp);
+        st.bytes_recv += theirs.len();
+        theirs
+    }
+
+    /// Ends a lane: what the main line sends from now on may depend on it.
+    pub fn join(&mut self, lane: Lane) {
+        self.clock.fetch_max(lane.clock, Ordering::Relaxed);
     }
 
     /// A round trip (party 1 → party 0 → party 1) after which both parties
@@ -392,5 +431,26 @@ mod tests {
             c.stats().rounds
         };
         assert_eq!(run_two_party(exchange, exchange), (3, 3));
+    }
+
+    #[test]
+    fn lanes_share_rounds_until_joined() {
+        let body = |c: &mut Channel| {
+            let mut lane = c.lane();
+            for i in 0..5u8 {
+                assert_eq!(c.exchange_on(&mut lane, vec![i]), vec![i]);
+            }
+            // The main line runs concurrently with the lane's five rounds.
+            for i in 0..3u8 {
+                c.send(vec![i]);
+                assert_eq!(c.recv(), vec![i]);
+            }
+            let before = c.stats().rounds;
+            c.join(lane);
+            c.send(vec![9]);
+            assert_eq!(c.recv(), vec![9]);
+            (before, c.stats().rounds)
+        };
+        assert_eq!(run_two_party(body, body), ((5, 6), (5, 6)));
     }
 }
