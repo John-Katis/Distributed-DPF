@@ -70,7 +70,7 @@ pub struct ArithMalSession<F: Field, E: Ext<F>> {
 impl<F: Field, E: Ext<F>> ArithMalSession<F, E> {
     /// The semi-honest setup (base OTs, Ferret) and δ_b.
     pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Self {
-        let mut s = setup(ch, seed, ferret);
+        let mut s = setup(ch, seed, ferret, false);
         let delta_mac = E::random(&mut s.rng);
         ArithMalSession { s, delta_mac, _f: std::marker::PhantomData }
     }
@@ -83,7 +83,7 @@ impl<F: Field, E: Ext<F>> ArithMalSession<F, E> {
     pub fn precompute(&mut self, ch: &mut Channel, n: usize) -> (Pre, FpPre<F, E>) {
         let s = &mut self.s;
         let (dabits, triples) = leaf_counts::<F, E>();
-        let pre = precompute(ch, &mut s.cot, n, 0, arith_mal_calls::<F, E>(n), true, 2, 0, fp_pre_cots::<F, E>(dabits, triples), &mut s.rng);
+        let pre = precompute(ch, s, n, 0, arith_mal_calls::<F, E>(n), true, 2, 0, fp_pre_cots::<F, E>(dabits, triples));
         let fpre = fp_pre(ch, &mut s.cot, dabits, triples, &[self.delta_mac], &mut s.rng);
         (pre, fpre)
     }
@@ -136,7 +136,7 @@ impl<F: Field, E: Ext<F>> ArithMalSession<F, E> {
         let (w_cw, wm_cw) = (words[0].coord(0), words[1]);
         let prf = pre.level_keys();
         let (pay, mac) = (pre.keys[kp].clone(), pre.keys[km].clone());
-        let key = ArithMalKey { party: b, n_size, prf, pay, mac, root: pre.delta, nu: 0, cws, ms, w_cw, wm_cw };
+        let key = ArithMalKey { party: b, n_size, prf, pay, mac, root: pre.root(), nu: 0, cws, ms, w_cw, wm_cw };
         (key, pre.be.ands, VerifyMask { r, dr }, pre.alpha_share)
     }
 }

@@ -10,7 +10,7 @@
 //! Rounds: `max(ν + 3, 42)` for ν < n, `max(n + 3, 41)` for ν = n.
 //! Preprocessing: as the arithmetic variant's, without the leaf's daBits.
 
-use super::gen::{drive, tag_leaf_jobs, walk, GenOutput, Walk};
+use super::gen::{drive, tag_leaf_jobs, walk, GenOutput, Session, Walk};
 use super::key::level_word;
 use crate::malicious::low;
 use crate::{child, children_masked, deal_walk_nu, default_nu, leaf_seed};
@@ -113,31 +113,38 @@ impl BinKey {
     }
 }
 
-/// Setup, preprocessing and generation for one party: XOR shares of α and of
-/// `β ∈ F_2^ℓ`, switch level `nu` ([`default_nu`] if `None`).
+impl Session {
+    /// Preprocessing and generation of a key with a binary payload: XOR
+    /// shares of α (random) and of `β ∈ F_2^ℓ`, switch level `nu`
+    /// ([`default_nu`] if `None`).
+    pub fn gen_bin(&mut self, ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_share: Block) -> GenOutput<BinKey> {
+        assert!((1..=128).contains(&bits));
+        let n = depth_for(n_size);
+        drive(
+            ch,
+            &mut self.s,
+            n,
+            nu.unwrap_or(default_nu(n)),
+            0,
+            |_, _, _| (),
+            |mut pre, (), ch| {
+                let b = ch.party();
+                let jobs = tag_leaf_jobs(&pre, 0);
+                let Walk { cws, ms, leaf, mut leaf_lane } = walk(&mut pre, ch, &jobs, None);
+                let w_share = low(leaf[0] ^ leaf[1], bits) ^ low(beta_share, bits);
+                let theirs = ch.exchange_on(&mut leaf_lane, w_share.to_bytes().to_vec());
+                assert_eq!(theirs.len(), 16, "malformed payload share");
+                ch.join(leaf_lane);
+                let w_cw = w_share ^ Block::from_bytes(&theirs);
+                (BinKey { party: b, n_size, bits, prf: pre.keys.swap_remove(0), root: pre.root(), nu: pre.nu, cws, ms, w_cw }, pre.be.ands)
+            },
+        )
+    }
+}
+
+/// [`Session::setup`] and one [`Session::gen_bin`].
 pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_share: Block, seed: [u8; 32], ferret: Option<FerretConfig>) -> GenOutput<BinKey> {
-    assert!((1..=128).contains(&bits));
-    let n = depth_for(n_size);
-    drive(
-        ch,
-        seed,
-        ferret,
-        n,
-        nu.unwrap_or(default_nu(n)),
-        0,
-        |_, _, _| (),
-        |mut pre, (), ch| {
-            let b = ch.party();
-            let jobs = tag_leaf_jobs(&pre, 0);
-            let Walk { cws, ms, leaf, mut leaf_lane } = walk(&mut pre, ch, &jobs, None);
-            let w_share = low(leaf[0] ^ leaf[1], bits) ^ low(beta_share, bits);
-            let theirs = ch.exchange_on(&mut leaf_lane, w_share.to_bytes().to_vec());
-            assert_eq!(theirs.len(), 16, "malformed payload share");
-            ch.join(leaf_lane);
-            let w_cw = w_share ^ Block::from_bytes(&theirs);
-            (BinKey { party: b, n_size, bits, prf: pre.keys.swap_remove(0), root: pre.delta, nu: pre.nu, cws, ms, w_cw }, pre.be.ands)
-        },
-    )
+    Session::setup(ch, seed, ferret).gen_bin(ch, n_size, nu, bits, beta_share)
 }
 
 /// Trusted-dealer generation for given roots (`lsb(root_b) = b`), AES key K,

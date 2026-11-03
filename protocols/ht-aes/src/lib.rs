@@ -4,7 +4,10 @@
 //! Ferret COTs.
 //!
 //! The semi-honest Gen ([`semi_honest::gen`]) is the paper's Figure
-//! "DPF.Gen": one public AES key K (`F = H_K`, `F^pay = H_K(· ∥ 0)`); for the
+//! "DPF.Gen" in a [`semi_honest::Session`]: one public AES key K (`F = H_K`,
+//! `F^pay = H_K(· ∥ 0)`) and one secret-shared Δ for all Gens of the session,
+//! the roots `k_b = Δ_b ⊕ W` re-randomised per Gen by a public W, and `Δ_b`
+//! doubling as party b's Ferret key, so `⟨α_ℓ·Δ⟩` costs a bit per COT; for the
 //! top ν levels each party expands its own tree locally and the words
 //! `CW_ℓ` follow from frontier sums; a switch turns the level-ν frontier into
 //! a sharing of the on-path state; below ν the on-path states `U_ℓ` are

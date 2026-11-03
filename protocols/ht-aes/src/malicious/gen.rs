@@ -28,7 +28,7 @@
 
 use super::key::{low, MalKey};
 use crate::malicious_arith::VerifyMask;
-use crate::semi_honest::gen::{bit_times_block, precompute, setup, walk, walk_strings, Pre, Setup, Walk};
+use crate::semi_honest::gen::{bit_times_block, precompute, setup, walk, Pre, Setup, Walk};
 use crate::{deal_walk_nu, default_nu, leaf_seed};
 use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
@@ -78,7 +78,7 @@ pub struct MalSession {
 impl MalSession {
     /// The semi-honest setup (base OTs, Ferret) and δ_b.
     pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Self {
-        let mut s = setup(ch, seed, ferret);
+        let mut s = setup(ch, seed, ferret, false);
         let delta_mac = Block::random(&mut s.rng);
         MalSession { s, delta_mac }
     }
@@ -90,7 +90,7 @@ impl MalSession {
     /// 128 triples, one round.
     pub fn precompute(&mut self, ch: &mut Channel, n: usize, nu: usize, bits: usize) -> MalPre {
         let s = &mut self.s;
-        let mut pre = precompute(ch, &mut s.cot, n, nu, mal_calls(n, nu), true, 2, bits + 128, 0, &mut s.rng);
+        let mut pre = precompute(ch, s, n, nu, mal_calls(n, nu), true, 2, bits + 128, 0);
         let at = pre.string_triples.len() - 128;
         let mut mt = pre.string_triples.split_off(at);
         let r = Block::random(&mut s.rng);
@@ -113,7 +113,7 @@ impl MalSession {
         };
         let MalPre { mut pre, mask } = pre;
         assert_eq!(pre.alpha_delta.len(), n, "preprocessing for depth n");
-        let mut dm = pre.string_triples.split_off(walk_strings(n, pre.nu));
+        let mut dm = pre.string_triples.split_off(pre.walk_strings());
 
         // 3. ⟨δβ⟩, on its own lane.
         let sel: Vec<(bool, Block)> = (0..bits).map(|i| (beta_share.bit(i), gf128::mul(Block(1 << i), self.delta_mac))).collect();
@@ -143,7 +143,7 @@ impl MalSession {
         let wm_cw = wm_share ^ Block::from_bytes(&theirs[16..]);
         let prf = pre.level_keys();
         let (pay, mac) = (pre.keys[kp].clone(), pre.keys[km].clone());
-        let key = MalKey { party: b, n_size, bits, prf, pay, mac, root: pre.delta, nu: pre.nu, cws, ms, w_cw: low(w_cw, bits), wm_cw };
+        let key = MalKey { party: b, n_size, bits, prf, pay, mac, root: pre.root(), nu: pre.nu, cws, ms, w_cw: low(w_cw, bits), wm_cw };
         (key, pre.be.ands, mask, pre.alpha_share)
     }
 }

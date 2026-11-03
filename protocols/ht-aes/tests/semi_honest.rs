@@ -4,7 +4,7 @@
 use dpf_common::block::Block;
 use dpf_common::net::run_two_party;
 use ht_aes::field::{BabyBear, Field, Gold, M127};
-use ht_aes::semi_honest::{deal, gen, ShKey};
+use ht_aes::semi_honest::{deal, gen, Session, ShKey};
 use ht_aes::{sh_ands, sh_calls};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -40,7 +40,7 @@ fn run<F: Field>(n: u64, nu: Option<usize>, beta: F, seed: u64) -> ([ShKey<F>; 2
     // The top phase and the switch (ν + 3 rounds) run concurrently with the
     // AES–MMO calls (40), Step B and M_ℓ (or the leaf's two openings).
     assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), (nu + 3).max(42), "n={depth} ν={nu}");
-    // The root shares are ⟨Δ⟩, lsb(Δ_b) = b.
+    // The roots are k_b = Δ_b ⊕ W, lsb(Δ_b) = b and lsb(W) = 0.
     assert!(!o0.key.root.lsb() && o1.key.root.lsb());
     let alpha = o0.alpha_share ^ o1.alpha_share;
     assert!(alpha < 1 << depth);
@@ -104,4 +104,46 @@ fn gen_at_domain_2_pow_63() {
         let y = keys[0].eval_point(x).add(keys[1].eval_point(x));
         assert_eq!(y, if x == alpha { beta } else { Gold::ZERO }, "x={x}");
     }
+}
+
+/// Several Gens on one session: one global Δ (also the Ferret keys Γ_b = Δ_b)
+/// and one public K for all of them, roots re-randomised by a fresh public W
+/// per Gen, fresh α and on-path states.
+#[test]
+fn gens_in_one_session_share_delta_and_key() {
+    session_gens(None);
+}
+
+/// The same on Ferret, whose keys are then Γ_b = Δ_b (party 0's with lsb 0).
+#[test]
+fn gens_in_one_session_on_ferret() {
+    session_gens(Some(dpf_common::ot::FerretConfig::TOY));
+}
+
+fn session_gens(ferret: Option<dpf_common::ot::FerretConfig>) {
+    let mut rng = ChaCha20Rng::seed_from_u64(9);
+    let n = 1u64 << 9;
+    let betas: [M127; 3] = [M127::random(&mut rng), M127::random(&mut rng), M127::random(&mut rng)];
+    let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
+    let party = |b: usize| {
+        move |c: &mut dpf_common::net::Channel| {
+            let mut s = Session::setup(c, seeds[b], ferret);
+            [(Some(4), betas[0]), (Some(0), betas[1]), (None, betas[2])].map(|(nu, beta)| s.gen(c, n, nu, beta))
+        }
+    };
+    let (o0, o1) = run_two_party(party(0), party(1));
+    let delta = o0[0].key.root ^ o1[0].key.root;
+    for (g, (a, b)) in o0.iter().zip(&o1).enumerate() {
+        let alpha = a.alpha_share ^ b.alpha_share;
+        let us: Vec<Block> = a.onpath_share.iter().zip(&b.onpath_share).map(|(&x, &y)| x ^ y).collect();
+        let keys = [a.key.clone(), b.key.clone()];
+        check(&keys, n, alpha, betas[g]);
+        assert_eq!(deal([keys[0].root, keys[1].root], keys[0].prf.key(), n, keys[0].nu, alpha, betas[g], &us), keys);
+        assert_eq!(keys[0].root ^ keys[1].root, delta, "one Δ for the session");
+        assert_eq!(keys[0].prf, o0[0].key.prf, "one K for the session");
+        assert!(!keys[0].root.lsb() && keys[1].root.lsb());
+        assert_eq!(a.gen_stats.rounds.max(b.gen_stats.rounds), (keys[0].nu + 3).max(42));
+    }
+    assert_ne!(o0[0].key.root, o0[1].key.root, "W re-randomises the roots per Gen");
+    assert_ne!(o0[1].key.root, o0[2].key.root);
 }
