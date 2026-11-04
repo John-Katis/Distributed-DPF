@@ -29,7 +29,7 @@ use crate::field::{mask_blocks, mask_value, Ext, Field};
 use crate::leaf::{fp_pre, fp_pre_cots, glue_residual, leaf_dabits, mal_leaf, FpPre, RESIDUAL_DABITS};
 use crate::malicious::Fault;
 use crate::semi_honest::gen::{precompute, setup, walk, Pre, Setup, Shape, Walk};
-use crate::{deal_walk_nu, default_nu, leaf_seed};
+use crate::{deal_walk_nu, default_nu_mal_arith, leaf_seed};
 use dpf_common::aes_tower::{Mmo, ANDS_PER_CALL};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::net::{Channel, CommStats};
@@ -163,7 +163,7 @@ pub struct ArithMalRun<F: Field, E: Ext<F>> {
 }
 
 /// Setup, preprocessing and generation for one party, glue level `nu ≥ 1`
-/// ([`default_nu`] if `None`), public β.
+/// ([`default_nu_mal_arith`] if `None`), public β.
 #[allow(clippy::too_many_arguments)]
 pub fn run_mal_arith<F: Field, E: Ext<F>>(
     ch: &mut Channel,
@@ -179,7 +179,7 @@ pub fn run_mal_arith<F: Field, E: Ext<F>>(
     let cots_before = s.s.cot.produced;
     let n = depth_for(n_size);
     let t_pre = Instant::now();
-    let pre = s.precompute(ch, n, nu.unwrap_or(default_nu(n)));
+    let pre = s.precompute(ch, n, nu.unwrap_or(default_nu_mal_arith(n)));
     let onpath_share = pre.0.us.clone();
     let pre_stats = ch.stats().since(&setup_stats);
     let pre_time = t_pre.elapsed();
@@ -250,12 +250,12 @@ pub fn deal_mask<E: Field, R: RngCore + CryptoRng>(delta_mac: E, rng: &mut R) ->
     [VerifyMask { r: r0, dr: d0 }, VerifyMask { r: r.sub(r0), dr: dr.sub(d0) }]
 }
 
-/// Dealer keys from a seed, glue level [`default_nu`], with the δ shares.
+/// Dealer keys from a seed, glue level [`default_nu_mal_arith`], with the δ shares.
 pub fn gen_reference<F: Field, E: Ext<F>>(n_size: u64, alpha: u64, beta: F, seed: [u8; 32]) -> ([ArithMalKey<F, E>; 2], [E; 2]) {
     assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::from_seed(seed);
     let n = depth_for(n_size);
-    let nu = default_nu(n);
+    let nu = default_nu_mal_arith(n);
     let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
     let key = Block::random(&mut rng).to_bytes();
     let mac: Vec<[u8; 16]> = (0..mask_blocks::<F, E>()).map(|_| Block::random(&mut rng).to_bytes()).collect();

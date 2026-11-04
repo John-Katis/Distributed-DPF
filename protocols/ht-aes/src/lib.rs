@@ -110,7 +110,22 @@ pub const BEST_NU: usize = 17;
 /// [`BEST_NU`], at most n − 1 and at least 1 (the paper's `1 ≤ ν < n`; ν = n
 /// only for n = 1).
 pub fn default_nu(n: usize) -> usize {
-    BEST_NU.min(n.saturating_sub(1)).max(1)
+    clamp_nu(BEST_NU, n)
+}
+
+/// The default glue level of `mal-arith`: ν = 15, lower than [`BEST_NU`]
+/// because the glue residual evaluates ψ_r on all 2^ν frontier nodes. Scan
+/// 2026-11-04, 64-bit payload: ν = 15 is fastest or within noise of it at
+/// every n ≥ 20 (n = 32: 15.7 ms vs 16.2 ms at ν = 17 and 19.4 ms at ν = 18).
+pub const BEST_NU_MAL_ARITH: usize = 15;
+
+/// [`BEST_NU_MAL_ARITH`], at most n − 1 and at least 1.
+pub fn default_nu_mal_arith(n: usize) -> usize {
+    clamp_nu(BEST_NU_MAL_ARITH, n)
+}
+
+fn clamp_nu(nu: usize, n: usize) -> usize {
+    nu.min(n.saturating_sub(1)).max(1)
 }
 
 /// AES–MMO calls in 2PC in one semi-honest Gen of depth n with glue level
