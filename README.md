@@ -23,12 +23,13 @@ protocols/
                      LPN-PRG evaluated in 2PC
   duoram/            the DPF part of Duoram (Vadapalli et al., USENIX Sec'23):
                      preprocessing at a random target, online shift; 2P and 3P
-  ht-aes/            ours: dealer-free half-tree DPF, local top phase of ν
+  ht-aes/            ours: dealer-free half-tree DPF, local top phase of ν ≥ 1
                      levels, level-independent lower levels (M_ℓ),
                      F_PRF = AES-MMO under public keys in 2PC, every AND
                      of the F4-tower S-box from COTs (the OT tower);
-                     semi-honest, and malicious with abort on the same
-                     preprocessing (payload MAC, Π_Verify, one-bit leakage)
+                     semi-honest, and malicious with abort on the same Gen
+                     (payload MAC, one product per bottom level, glue
+                     residual, Π_Verify, one-bit leakage)
 scripts/
   bench_all.sh       runs all benchmarks into results-gen/ or results-eval/
 REFERENCES.md        papers and techniques this code implements
@@ -41,10 +42,10 @@ REFERENCES.md        papers and techniques this code implements
 | `half-tree` (`malicious`) | malicious, one-bit leakage | BDOZ-authenticated bits | `GF(2^128)^bm` + SPDZ MACs | as above, plus a batch MAC check |
 | `floram-arith` | semi-honest | additive shares mod 2^n (BitDec from bit triples) | `Z_2^ℓ`, ℓ ≤ 64 | COT-based block MUX per level, CCMP + arithmetic MUX for the last word |
 | `fssnn` (`bin`, `arith`) | semi-honest | XOR shares | `F_2^ℓ` (`bin`) or `Z_2^ℓ` (`arith`), ℓ ≤ 256 | both trees' seeds XOR-shared, LPN-PRG (DGH+21) in 2PC per level, COT MUX; correlations from IKNP + KK13 OT |
-| `ht-aes` (`sh`) | semi-honest | XOR shares | `F_p`: Babybear (the paper's) for ℓ ≤ 31, Goldilocks for ℓ ≤ 64, `2^127 − 1` above | public β; per session (`semi_honest::Session`) one public K (`F = H_K`, `F^pay = H_K(· ∥ 0)`) and one shared Δ, which is also the Ferret keys `Γ_b = Δ_b`; per Gen a public W re-randomises the roots `k_b = Δ_b ⊕ W`; top phase: each party expands its own tree to level ν (`--nu`, default min(17, n − 1)), `CW_ℓ` from frontier sums, one opening per level; switch: tag sums mod 4, one AND, one bit-times-Δ product (one COT per direction under `Γ_b = Δ_b`), open `M_ν`; lower levels on pre-sampled `U_ℓ`: all 2(n − ν + 1) AES-MMO calls in 2PC in one batch of 40 rounds (every S-box AND from Ferret COTs, the OT tower), concurrent with the top phase, then `CW_ℓ` and `M_ℓ` opened; leaf indexed by tag: `W_CW = W^(0) − W^(1) − (1 − 2σ)β` by daBits, no product; rounds max(ν + 3, 42) |
-| `ht-aes` (`sh-bin`) | semi-honest | XOR shares | `F_2^ℓ`, ℓ ≤ 128 | as `sh` with XOR-shared β; the leaf opens `W_0 ⊕ W_1 ⊕ β` (no B2A, no sign) |
-| `ht-aes` (`mal`) | malicious with abort, one-bit selective-failure leakage (the paper's §malicious) | XOR shares | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | the `sh` Gen (top phase with `--nu`) with a fresh ⟨Δ⟩ per Gen (Ferret's Γ random and unrelated), fresh public keys per Gen and per level `K_1, …, K_n` and separate `K_pay`, `K_mac` (one public K would let a malicious party make one hash mask two CWs), `δ·β` and the Π_Verify mask `(r, δr)` from ℓ + 128 string triples, the payload-MAC word under a persistent δ; Π_Verify on shared outputs (opens only `z = Σχy + r` and σ), then the outputs opened and checked against their MACs (`verify_and_open`) |
-| `ht-aes` (`mal-arith`) | malicious with abort, as `mal` | XOR shares | Babybear + MAC in `F_{q^4}` (the paper's) for ℓ ≤ 31; payload and MAC in Goldilocks for ℓ ≤ 64, in `2^127 − 1` above | the `mal` Gen with ν = 0 (no top phase: a malicious switch could swap the parties' roles and negate output and MAC together); at the leaf `F^pay`, `F^mac` (3 MMO blocks per seed for `F_{q^4}`) on `U_n`, `U_n ⊕ Δ`, B2A by daBits, the sign by a daBit and one Beaver triple per word, `δ·β` by one more Beaver product over the MAC field (three rounds, concurrent with `CW_ℓ`, `M_ℓ`); Π_Verify over the MAC field |
+| `ht-aes` (`sh`) | semi-honest | XOR shares | `F_p`: Babybear (the paper's) for ℓ ≤ 31, Goldilocks for ℓ ≤ 64, `2^127 − 1` above | public β; per session (`semi_honest::Session`) one public K (`F = H_K`, `F^pay = H_K(· ∥ 0)`) and one shared Δ, which is also the Ferret keys `Γ_b = Δ_b`; per Gen a public W re-randomises the roots `k_b = Δ_b ⊕ W`; 𝓕_COT in Gen: ⟨α_ℓ·Δ⟩ and ⟨Y⟩ = ⟨u_n⟩ ⊕ ⟨t_{n,0}·Δ⟩ (t_{n,0} = lsb(u_n)) from random COTs under `Γ_b = Δ_b`, one bit per COT per direction, one round; top phase: each party expands its own tree to level ν ≥ 1 (`--nu`, default max(1, min(17, n − 1))), `CW_ℓ` from frontier sums, one opening per level; glue: tag sums mod 4, one AND, one bit-times-Δ COT, open `M_ν`; lower levels on pre-sampled `u_ℓ`: all 2(n − ν + 1) AES-MMO calls in 2PC in one batch of 40 rounds (every S-box AND from Ferret COTs, the OT tower), concurrent with the top phase, then `CW_ℓ` and `M_ℓ` opened; leaf indexed by tag: `W_CW = W^(0) − W^(1) − (1 − 2σ)β` by daBits, no product; rounds max(ν + 4, 43) |
+| `ht-aes` (`sh-bin`) | semi-honest | XOR shares | `F_2^ℓ`, ℓ ≤ 128 | as `sh` with XOR-shared β; the leaf hashes `u_n`, `u_n ⊕ Δ` (no Y: in characteristic 2 the tag order does not matter, so the AES–MMO calls do not wait for 𝓕_COT) and opens `W_0 ⊕ W_1 ⊕ β` (no B2A, no sign); rounds max(ν + 4, 42) |
+| `ht-aes` (`mal`) | malicious with abort, one-bit selective-failure leakage (the paper's §malicious, ported to characteristic 2) | XOR shares | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | the `sh-bin` Gen in its session (one K, one ⟨Δ⟩, W per Gen, `--nu`) with public β and the paper's additions: (A) a public `K^mac` and the payload-MAC word `W^MAC_CW = h̃_0 ⊕ h̃_1 ⊕ β·δ` under a persistent δ, (B) `(⟨α_ℓ·Δ⟩, ⟨P_ℓ⟩)` from one bit-times-2-block product per bottom level (no zeroing); no glue residual (C), since a swap does not change `y_0 ⊕ y_1` (tested); the Π_Verify mask `(r, δr)` from 128 string triples; Π_Verify on shared outputs (opens only `z = Σχy + r` and σ), then the outputs opened and checked against their MACs (`verify_and_open`); rounds max(ν + 4, 42) |
+| `ht-aes` (`mal-arith`) | malicious with abort, as `mal` | XOR shares | Babybear + MAC in `F_{q^4}` (the paper's) for ℓ ≤ 31; payload and MAC in Goldilocks for ℓ ≤ 64, in `2^127 − 1` above | the `sh` Gen in its session (`--nu`) with public β and the paper's additions: (A) public `K^mac_1, …, K^mac_c` (c = 3 for `F_{q^4}`), `F^mac` on `u_n`, `u_n ⊕ Δ` (indexed by server), `W^MAC_CW = 𝓕_mul(1 − 2σ, W̃_0 − W̃_1 − β·δ)` (one Beaver triple, three rounds with the payload word); (B) one product per bottom level; (C) the glue residual ω = (G_0 − G_1) − v² + v'² with ψ_r quadratic, `r` coin-tossed after 256 B2As, two Beaver squares, kept with the key (three rounds on the top phase's lane); Π_Verify over the MAC field also checks Σχ'ω; rounds max(ν + 7, 44) |
 | `duoram` (`2p`, `3p`) | semi-honest | additive shares mod 2^n (online shift) | `Z_2^ℓ`, ℓ ≤ 64 | Du–Atallah product per level at a random target; triples from helper P2 (`3p`) or IKNP OT (`2p`); one-round online phase |
 
 ## Shared library: `dpf-common`
@@ -129,7 +130,7 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh --in-bi
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-arith --in-bits 16 --out-bits 31
-cargo run --release -p ht-aes --example bench-ht-aes -- gen --variant sh --in-bits 32 --out-bits 31 --nu 16   # switch level ν (sh, sh-bin, mal)
+cargo run --release -p ht-aes --example bench-ht-aes -- gen --variant sh --in-bits 32 --out-bits 31 --nu 16   # glue level ν ≥ 1 (every variant)
 scripts/bench_all.sh                          # Gen, n = 12..42 (others measured to 36, estimated above), out-bits 64 and 128, one CSV per protocol in results-gen/
 scripts/bench_all.sh full                     # full-domain eval, same sweep, into results-eval/
 ```
@@ -185,10 +186,10 @@ bit (one round), as Ferret does:
 | fssnn | PRG correlations for 2n (+2) calls, 2n bit triples, 3n (+2ℓ+1 for `arith`) Ferret COTs per direction |
 | duoram (`2p`) | n AND triples from COTs, n + 2·w random COTs for the Gilboa products |
 | duoram (`3p`) | P2's one message to each party (n AND triples, n + 2 product triples) |
-| ht-aes (`sh`) | setup (once per session): ⟨Δ⟩ with `Γ_b = Δ_b` and the public K (one exchange); per Gen the paper's ⟨α⟩, the public W (one exchange), ⟨U_ν⟩, …, ⟨U_{n−1}⟩, ⟨Y⟩, ⟨t_{n,0}⟩, ⟨α_ℓ·Δ⟩ and ⟨t_{n,0}·Δ⟩ from n + 1 chosen-choice Ferret COTs per direction under `Γ_b = Δ_b` (one bit each, one round, with the switch's random COT); the OT tower's random Ferret COTs (2(n − ν + 1)·3,040), n − ν + 1 bit-times-block triples from Ferret random OTs (Step C, the switch's AND), 2κ + 1 daBits over F_p from COT OLEs (κ = ⌈log p⌉ + 40, at most 128) |
-| ht-aes (`mal`) | as `sh`, but per Gen a fresh ⟨Δ⟩ (no W), n + 2 public keys and ⟨α_ℓ·Δ⟩, ⟨t_{n,0}·Δ⟩ by chosen-offset COTs from 2(n + 1) Ferret random COTs, the OT tower's COTs for 2(n − ν) + 4 calls, n − ν + 2 + ℓ + 128 bit-times-block triples (Step C, the switch's AND and product, δ·β, and the Π_Verify mask `(r, δr)` computed here, one round) |
-| ht-aes (`sh-bin`) | as `sh` without the leaf's daBits |
-| ht-aes (`mal-arith`) | as `mal` with ν = 0, the OT tower's COTs for 2n + 2 + 2·⌈E-degree·κ/128⌉ calls (2n + 8 for `F_{q^4}`), n string triples, 2(1 + E-degree)κ + 1 daBits over F and four Beaver triples over the MAC field (two signs, δ·β, the Π_Verify mask) from COT OLEs |
+| ht-aes (`sh`) | setup (once per session): ⟨Δ⟩ with `Γ_b = Δ_b` and the public K (one exchange); per Gen the paper's ⟨α⟩, the public W (one exchange), ⟨u_ν⟩, …, ⟨u_n⟩, and n + 2 random Ferret COTs per direction under `Γ_b = Δ_b` for 𝓕_COT (⟨α_ℓ·Δ⟩, ⟨t_{n,0}·Δ⟩ and the glue's product; derandomised in Gen); the OT tower's random Ferret COTs (2(n − ν + 1)·3,040), n − ν + 1 bit-times-block triples from Ferret random OTs (Step C, the glue's AND), 2κ + 1 daBits over F_p from COT OLEs (κ = ⌈log p⌉ + 40, at most 128) |
+| ht-aes (`mal`) | as `sh-bin` (one K, one Δ per session, plus `K^mac`), but 𝓕_COT only for the ν top levels and the glue, n − ν bit-times-2-block triples for (B) instead of Step C's, the OT tower's COTs for 2(n − ν) + 4 calls, 1 + 128 bit-times-block triples (the glue's AND, and the Π_Verify mask `(r, δr)` computed here, one round) |
+| ht-aes (`sh-bin`) | as `sh` without the leaf's daBits and without ⟨t_{n,0}·Δ⟩ |
+| ht-aes (`mal-arith`) | as `mal` with ⟨t_{n,0}·Δ⟩ and c = ⌈E-degree·κ/128⌉ keys `K^mac_j`, the OT tower's COTs for 2(n − ν) + 2 + 2c calls (c = 3 for `F_{q^4}`), 2(1 + E-degree)κ + 1 + 256 daBits over F and four Beaver triples over the MAC field (the MAC word's sign, the glue residual's two squares, the Π_Verify mask) from COT OLEs |
 
 For Duoram, generation proper is its own preprocessing (the DPF at a random
 target) plus the one-round online phase, which the bench also prints as a
