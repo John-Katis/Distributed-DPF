@@ -1,7 +1,7 @@
 //! The arithmetic malicious key: AES keys, root, level words, payload word
 //! `W_CW ∈ F` and payload-MAC word `W^MAC_CW ∈ E`; evaluation returns
 //! additive shares of the output (in F) and of its MAC (in E), and [`verify`]
-//! is Π_Verify over E.
+//! is Π_Verify over E, with the keys' glue residuals.
 
 use super::gen::mac_mask;
 use crate::field::{Ext, Field};
@@ -15,7 +15,7 @@ use dpf_common::net::Channel;
 use dpf_common::stream::walk;
 use rand::{CryptoRng, RngCore};
 
-/// This party's shares of a Π_Verify mask `(r, δ·r)`, r uniform in E; one per
+/// This party's shares of a Π_Verify mask `(ρ, δ·ρ)`, ρ uniform in E; one per
 /// Π_Verify call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VerifyMask<E> {
@@ -27,14 +27,13 @@ pub struct VerifyMask<E> {
 pub struct ArithMalKey<F: Field, E: Ext<F>> {
     pub party: usize,
     pub n_size: u64,
-    /// `K_1, …, K_n`: level ℓ is expanded by `H_{K_ℓ}`.
-    pub prf: Vec<Mmo>,
-    /// `F^pay = H_{K_pay}(· ∥ 0)`.
-    pub pay: Mmo,
-    /// `F^mac`: [`crate::field::mask_blocks`] blocks of `H_{K_mac}(· ∥ 0 ⊕ tweak(j))`.
-    pub mac: Mmo,
+    /// `F = H_K` and `F^pay = H_K(· ∥ 0)`, K public (the session's).
+    pub prf: Mmo,
+    /// `F^mac`: `H_{K^mac_1}(· ∥ 0) ∥ … ∥ H_{K^mac_c}(· ∥ 0)`, c =
+    /// [`crate::field::mask_blocks`].
+    pub mac: Vec<Mmo>,
     pub root: Block,
-    /// The switch level ν (0: the Gen has no top phase).
+    /// The glue level ν ≥ 1.
     pub nu: usize,
     pub cws: Vec<Block>,
     /// `M_ν, …, M_n`.
@@ -50,12 +49,13 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
         depth_for(self.n_size)
     }
 
-    /// n + 2 keys, root, n + (n − ν + 1) words, `W_CW` and `W^MAC_CW`.
+    /// K and the c keys `K^mac_j`, root, n + (n − ν + 1) words, `W_CW` and
+    /// `W^MAC_CW`.
     pub fn size_bytes(&self) -> usize {
-        16 * (self.prf.len() + 2) + 16 + 16 * (self.cws.len() + self.ms.len()) + F::BYTES + E::BYTES
+        16 * (1 + self.mac.len()) + 16 + 16 * (self.cws.len() + self.ms.len()) + F::BYTES + E::BYTES
     }
 
-    /// `M_ℓ`, zero above the switch level.
+    /// `M_ℓ`, zero above the glue level.
     #[inline]
     pub fn m(&self, level: usize) -> Block {
         level_word(self.nu, &self.ms, level)
@@ -83,10 +83,10 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
         let n = self.depth();
         let mut st = self.root ^ self.m(0);
         for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(&self.prf[i], st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
+            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
         }
         let s = leaf_seed(st);
-        self.output(st, self.pay.h(s), mac_mask::<F, E>(&self.mac, s))
+        self.output(st, self.prf.h(s), mac_mask::<F, E>(&self.mac, s))
     }
 
     /// Shares `(y, m)` at x = 0, …, N − 1: all 2^n leaves, one level at a time.
@@ -94,7 +94,7 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
         let mut nodes = vec![self.root ^ self.m(0)];
         for (i, &cw) in self.cws.iter().enumerate() {
             let mut next = Vec::new();
-            children_masked(&self.prf[i], &nodes, cw, self.m(i + 1), &mut next);
+            children_masked(&self.prf, &nodes, cw, self.m(i + 1), &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -112,7 +112,7 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
             self.root ^ self.m(0),
             self.cws.len(),
             batch,
-            |l, parents, out| children_masked(&self.prf[l - 1], parents, self.cws[l - 1], self.m(l), out),
+            |l, parents, out| children_masked(&self.prf, parents, self.cws[l - 1], self.m(l), out),
             |x0, leaves| {
                 if x0 < self.n_size {
                     self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut outs);
@@ -129,30 +129,33 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
         buf.extend(leaves.iter().map(|&s| leaf_seed(s)));
         buf.resize(2 * k, Block::ZERO);
         let (seeds, w) = buf.split_at_mut(k);
-        self.pay.h_many(seeds, w);
+        self.prf.h_many(seeds, w);
         outs.clear();
         outs.extend(leaves.iter().zip(seeds.iter().zip(&*w)).map(|(&st, (&s, &wv))| self.output(st, wv, mac_mask::<F, E>(&self.mac, s))));
     }
 }
 
 /// Π_Verify (Figure "Π_Verify") over E for a batch of evaluation outputs
-/// `(⟦y_i⟧, ⟦m_i⟧)`, which stay shared: with coin-tossed `χ_i` and this
-/// key's mask `(⟦r⟧, ⟦δr⟧)`, open `z = Σ χ_i y_i + r`, then commit to and
-/// open `σ_b = Σ χ_i m_{i,b} + (δr)_b − δ_b·z` and accept iff `σ_0 + σ_1 =
-/// 0`. Only z, uniform through r, and σ are opened.
+/// `(⟦y_i⟧, ⟦m_i⟧)`, which stay shared, and the glue residuals `⟦ω_j⟧` of
+/// the keys in the batch: with coin-tossed `χ_i`, `χ'_j` (after the outputs
+/// are fixed) and the mask `(⟦ρ⟧, ⟦δρ⟧)`, open `z = Σ χ_i y_i + ρ`, then commit
+/// to and open `μ_b = Σ χ_i m_{i,b} + (δρ)_b − δ_b·z + Σ χ'_j ω_{j,b}` and
+/// accept iff `μ_0 + μ_1 = 0`. Only z, uniform through ρ, and μ are opened.
 pub fn verify<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(
     ch: &mut Channel,
     outs: &[(F, E)],
+    omegas: &[E],
     delta_share: E,
     mask: VerifyMask<E>,
     rng: &mut R,
 ) -> Result<(), Abort> {
-    let chi: Vec<E> = CtrPrg::new(coin_block(ch, rng)?).next_words(outs.len()).into_iter().map(|c| E::from_seed(Block(c))).collect();
+    let chi: Vec<E> = CtrPrg::new(coin_block(ch, rng)?).next_words(outs.len() + omegas.len()).into_iter().map(|c| E::from_seed(Block(c))).collect();
     let (mut y, mut m) = (mask.r, mask.dr);
     for (o, &c) in outs.iter().zip(&chi) {
         y = y.add(c.mul(E::embed(o.0)));
         m = m.add(c.mul(o.1));
     }
+    let residual = omegas.iter().zip(&chi[outs.len()..]).fold(E::ZERO, |a, (&w, &c)| a.add(c.mul(w)));
     let mut msg = Vec::with_capacity(E::BYTES);
     y.put(&mut msg);
     ch.send(msg);
@@ -161,7 +164,7 @@ pub fn verify<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(
         return Err(Abort("malformed verify message"));
     }
     let z = y.add(E::get(&theirs));
-    let sigma = m.sub(delta_share.mul(z));
+    let sigma = m.sub(delta_share.mul(z)).add(residual);
     let other = commit_and_open_blocks(ch, &[Block(sigma.to_u128())], rng)?[0];
     if E::from_u128(other.0).add(sigma) != E::ZERO {
         return Err(Abort("output MAC check failed"));
@@ -197,15 +200,16 @@ pub fn open_checked<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(
     Ok(ys)
 }
 
-/// The full output pipeline: [`verify`] on the shared outputs, then
-/// [`open_checked`]. Returns the outputs, or aborts.
+/// The full output pipeline: [`verify`] on the shared outputs and the keys'
+/// glue residuals, then [`open_checked`]. Returns the outputs, or aborts.
 pub fn verify_and_open<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(
     ch: &mut Channel,
     outs: &[(F, E)],
+    omegas: &[E],
     delta_share: E,
     mask: VerifyMask<E>,
     rng: &mut R,
 ) -> Result<Vec<F>, Abort> {
-    verify(ch, outs, delta_share, mask, rng)?;
+    verify(ch, outs, omegas, delta_share, mask, rng)?;
     open_checked(ch, outs, delta_share, rng)
 }

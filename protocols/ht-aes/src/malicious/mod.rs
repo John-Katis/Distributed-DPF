@@ -1,9 +1,9 @@
-//! Malicious variant (the paper's "Full protocols in the malicious setting"):
-//! the semi-honest Gen (top phase, level-independent lower levels) with fresh
-//! public keys per Gen and per level, on the same preprocessing (the OT
-//! tower's Ferret COTs, string triples), plus the persistent payload-MAC key `⟨δ⟩`, the
-//! MAC mask `F^mac`, the payload-MAC word `W^MAC_CW` and Π_Verify on the
-//! outputs. Payload in `{0,1}^ℓ ⊂ GF(2^128)`.
+//! Malicious variant with a binary payload (the paper's "Full protocols in
+//! the malicious setting", ported to characteristic 2): the semi-honest Gen
+//! in its session (one K, one ⟨Δ⟩), with the additions (A) the payload-MAC
+//! word under the persistent `⟨δ⟩` and `K^mac`, and (B) one product per bottom
+//! level, and Π_Verify on the outputs. No glue residual (C): a swap does not
+//! change a binary output. Payload in `{0,1}^ℓ ⊂ GF(2^128)`.
 
 pub mod gen;
 pub mod key;

@@ -131,14 +131,15 @@ fn main() {
     let mut rng = ChaCha20Rng::seed_from_u64(1);
 
     // The whole ht-aes Gen (sh-bin, ℓ = 64) on the OtTower, for the non-AES part.
-    // ν = 0 (no local top phase) is the closest to the level-by-level Gen this
-    // experiment was written for; the Gen no longer expands keys in 2PC.
+    // ν = 1 (the smallest local top phase; ν ≥ 1 since the glue) is the closest
+    // to the level-by-level Gen this experiment was written for; the Gen no
+    // longer expands keys in 2PC.
     let (mut g, mut p) = (vec![], vec![]);
     let mut last = None;
     for _ in 0..reps {
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
         let (b0, b1) = (Block::random(&mut rng), Block::random(&mut rng));
-        let party = |b: usize, beta: Block| move |ch: &mut Channel| ht_aes::semi_honest::bin::gen(ch, 1u64 << n, Some(0), 64, beta, seeds[b], Some(FerretConfig::B13));
+        let party = |b: usize, beta: Block| move |ch: &mut Channel| ht_aes::semi_honest::bin::gen(ch, 1u64 << n, Some(1), 64, beta, seeds[b], Some(FerretConfig::B13));
         let (o0, o1) = run_two_party(party(0, b0), party(1, b1));
         g.push(o0.gen_time.max(o1.gen_time));
         p.push(o0.pre_time.max(o1.pre_time));
@@ -148,7 +149,7 @@ fn main() {
     let gen_bytes = o0.gen_stats.bytes_sent + o1.gen_stats.bytes_sent;
     let gen_rounds = o0.gen_stats.rounds.max(o1.gen_stats.rounds);
     let (gen_ms, pre_ms) = (ms(median(g)), ms(median(p)));
-    let tower_pool = (2 * n + 2) * 160 * 18 + 2 * 40 * 18;
+    let tower_pool = ht_aes::sh_calls(n, 1) * 160 * 18 + 2 * 40 * 18;
     // Party 0 counts the COTs of both directions; all but the tower's are symmetric.
     let rest_per_dir = (o0.cots - tower_pool) / 2;
 

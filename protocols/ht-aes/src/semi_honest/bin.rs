@@ -2,15 +2,16 @@
 //! XOR shares (ℓ ≤ 128).
 //!
 //! Gen is the arithmetic one ([`super::gen`]) up to the leaf. In a group of
-//! characteristic 2 the sign `(−1)^{t_{n,0}}` is 1 and the payload needs no
-//! B2A, so the leaf opens `W_CW = h^(0) ⊕ h^(1) ⊕ β` (low ℓ bits) right after
-//! the AES–MMO calls, concurrently with Step B. Evaluation outputs
-//! `F^pay(s) ⊕ t·W_CW`.
+//! characteristic 2 the sign `(−1)^{t_{n,0}}` is 1, so the order of the two
+//! leaf states does not matter and the payload needs no B2A: the leaf hashes
+//! `u_n`, `u_n ⊕ Δ` directly (no `Y`, no 𝓕_COT for `t_{n,0}`) and opens `W_CW =
+//! h_0 ⊕ h_1 ⊕ β` (low ℓ bits) right after the AES–MMO calls, concurrently
+//! with Step B. Evaluation outputs `F^pay(s) ⊕ t·W_CW`.
 //!
-//! Rounds: `max(ν + 3, 42)` for ν < n, `max(n + 3, 41)` for ν = n.
+//! Rounds: `max(ν + 4, 42)` for ν < n, `max(n + 4, 41)` for ν = n.
 //! Preprocessing: as the arithmetic variant's, without the leaf's daBits.
 
-use super::gen::{drive, tag_leaf_jobs, walk, GenOutput, Session, Walk};
+use super::gen::{drive, walk, Deviation, GenOutput, Pre, Session, Shape, Walk};
 use super::key::level_word;
 use crate::malicious::low;
 use crate::{child, children_masked, deal_walk_nu, default_nu, leaf_seed};
@@ -31,7 +32,7 @@ pub struct BinKey {
     /// `F = H_K` and `F^pay = H_K(· ∥ 0)`, K public.
     pub prf: Mmo,
     pub root: Block,
-    /// The switch level ν.
+    /// The glue level ν ≥ 1.
     pub nu: usize,
     pub cws: Vec<Block>,
     /// `M_ν, …, M_n`.
@@ -50,7 +51,7 @@ impl BinKey {
         16 + 16 + 16 * (self.cws.len() + self.ms.len()) + self.bits.div_ceil(8)
     }
 
-    /// `M_ℓ`, zero above the switch level.
+    /// `M_ℓ`, zero above the glue level.
     #[inline]
     pub fn m(&self, level: usize) -> Block {
         level_word(self.nu, &self.ms, level)
@@ -115,7 +116,7 @@ impl BinKey {
 
 impl Session {
     /// Preprocessing and generation of a key with a binary payload: XOR
-    /// shares of α (random) and of `β ∈ F_2^ℓ`, switch level `nu`
+    /// shares of α (random) and of `β ∈ F_2^ℓ`, glue level `nu ≥ 1`
     /// ([`default_nu`] if `None`).
     pub fn gen_bin(&mut self, ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_share: Block) -> GenOutput<BinKey> {
         assert!((1..=128).contains(&bits));
@@ -124,22 +125,27 @@ impl Session {
             ch,
             &mut self.s,
             n,
-            nu.unwrap_or(default_nu(n)),
+            Shape::sh(nu.unwrap_or(default_nu(n)), false),
             0,
             |_, _, _| (),
             |mut pre, (), ch| {
                 let b = ch.party();
-                let jobs = tag_leaf_jobs(&pre, 0);
-                let Walk { cws, ms, leaf, mut leaf_lane } = walk(&mut pre, ch, &jobs, None);
+                let Walk { cws, ms, leaf, mut leaf_lane, top_lane, .. } = walk(&mut pre, ch, onpath_leaf_jobs, Deviation::default(), false);
                 let w_share = low(leaf[0] ^ leaf[1], bits) ^ low(beta_share, bits);
                 let theirs = ch.exchange_on(&mut leaf_lane, w_share.to_bytes().to_vec());
                 assert_eq!(theirs.len(), 16, "malformed payload share");
                 ch.join(leaf_lane);
+                ch.join(top_lane);
                 let w_cw = w_share ^ Block::from_bytes(&theirs);
-                (BinKey { party: b, n_size, bits, prf: pre.keys.swap_remove(0), root: pre.root(), nu: pre.nu, cws, ms, w_cw }, pre.be.ands)
+                (BinKey { party: b, n_size, bits, prf: pre.keys.swap_remove(0), root: pre.root(), nu: pre.shape.nu, cws, ms, w_cw }, pre.be.ands)
             },
         )
     }
+}
+
+/// Leaf jobs for a binary payload: `H_K(seed(u_n ⊕ c·Δ))`, `c = 0, 1`.
+pub(crate) fn onpath_leaf_jobs(pre: &Pre) -> Vec<(usize, Block)> {
+    vec![(0, leaf_seed(pre.un())), (0, leaf_seed(pre.un() ^ pre.delta))]
 }
 
 /// [`Session::setup`] and one [`Session::gen_bin`].
@@ -148,19 +154,19 @@ pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_s
 }
 
 /// Trusted-dealer generation for given roots (`lsb(root_b) = b`), AES key K,
-/// switch level ν and on-path states `us = [U_ν, …, U_n]` of party 0: the
+/// glue level ν ≥ 1 and on-path states `us = [u_ν, …, u_n]` of party 0: the
 /// cleartext Gen, and the bit-exact oracle of [`gen`].
 #[allow(clippy::too_many_arguments)]
 pub fn deal(roots: [Block; 2], key: [u8; 16], n_size: u64, nu: usize, bits: usize, alpha: u64, beta: Block, us: &[Block]) -> [BinKey; 2] {
     assert_eq!(beta, low(beta, bits), "β must fit in the output width");
     let prf = Mmo::new(key);
-    let (cws, ms, st) = deal_walk_nu(std::slice::from_ref(&prf), roots, depth_for(n_size), nu, alpha, us);
+    let (cws, ms, st) = deal_walk_nu(&prf, roots, depth_for(n_size), nu, alpha, us);
     let w_cw = low(prf.h(leaf_seed(st[0])) ^ prf.h(leaf_seed(st[1])), bits) ^ beta;
     let mk = |party: usize| BinKey { party, n_size, bits, prf: prf.clone(), root: roots[party], nu, cws: cws.clone(), ms: ms.clone(), w_cw };
     [mk(0), mk(1)]
 }
 
-/// Trusted-dealer generation from a seed, switch level [`default_nu`].
+/// Trusted-dealer generation from a seed, glue level [`default_nu`].
 pub fn gen_reference(n_size: u64, bits: usize, alpha: u64, beta: Block, seed: [u8; 32]) -> [BinKey; 2] {
     assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::from_seed(seed);

@@ -20,14 +20,12 @@ pub struct MalKey {
     pub n_size: u64,
     /// ℓ ≤ 128: outputs live in `{0,1}^ℓ ⊂ GF(2^128)`.
     pub bits: usize,
-    /// `K_1, …, K_n`: level ℓ is expanded by `H_{K_ℓ}`.
-    pub prf: Vec<Mmo>,
-    /// `F^pay = H_{K_pay}(· ∥ 0)`.
-    pub pay: Mmo,
-    /// `F^mac = H_{K_mac}(· ∥ 0)`.
+    /// `F = H_K` and `F^pay = H_K(· ∥ 0)`, K public (the session's).
+    pub prf: Mmo,
+    /// `F^mac = H_{K^mac}(· ∥ 0)`.
     pub mac: Mmo,
     pub root: Block,
-    /// The switch level ν.
+    /// The glue level ν ≥ 1.
     pub nu: usize,
     pub cws: Vec<Block>,
     /// `M_ν, …, M_n`.
@@ -53,17 +51,17 @@ impl MalKey {
         depth_for(self.n_size)
     }
 
-    /// n + 2 keys, root, n + (n − ν + 1) words, ⌈ℓ/8⌉ bytes of `W_CW`, 16
+    /// K, `K^mac`, root, n + (n − ν + 1) words, ⌈ℓ/8⌉ bytes of `W_CW`, 16
     /// bytes of `W^MAC_CW`.
     pub fn size_bytes(&self) -> usize {
-        16 * (self.prf.len() + 2) + 16 + 16 * (self.cws.len() + self.ms.len()) + self.bits.div_ceil(8) + 16
+        16 * 2 + 16 + 16 * (self.cws.len() + self.ms.len()) + self.bits.div_ceil(8) + 16
     }
 
     pub fn public_part(&self) -> (&[Block], &[Block], Block, Block) {
         (&self.cws, &self.ms, self.w_cw, self.wm_cw)
     }
 
-    /// `M_ℓ`, zero above the switch level.
+    /// `M_ℓ`, zero above the glue level.
     #[inline]
     pub fn m(&self, level: usize) -> Block {
         level_word(self.nu, &self.ms, level)
@@ -75,11 +73,11 @@ impl MalKey {
         let n = self.depth();
         let mut st = self.root ^ self.m(0);
         for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(&self.prf[i], st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
+            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
         }
         let s = leaf_seed(st);
         let t = st.lsb();
-        (low(self.pay.h(s), self.bits) ^ self.w_cw.and_bit(t), self.mac.h(s) ^ self.wm_cw.and_bit(t))
+        (low(self.prf.h(s), self.bits) ^ self.w_cw.and_bit(t), self.mac.h(s) ^ self.wm_cw.and_bit(t))
     }
 
     /// Shares `(y, m)` at x = 0, …, N − 1: all 2^n leaves, one level at a time.
@@ -87,7 +85,7 @@ impl MalKey {
         let mut nodes = vec![self.root ^ self.m(0)];
         for (i, &cw) in self.cws.iter().enumerate() {
             let mut next = Vec::new();
-            children_masked(&self.prf[i], &nodes, cw, self.m(i + 1), &mut next);
+            children_masked(&self.prf, &nodes, cw, self.m(i + 1), &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -105,7 +103,7 @@ impl MalKey {
             self.root ^ self.m(0),
             self.cws.len(),
             batch,
-            |l, parents, out| children_masked(&self.prf[l - 1], parents, self.cws[l - 1], self.m(l), out),
+            |l, parents, out| children_masked(&self.prf, parents, self.cws[l - 1], self.m(l), out),
             |x0, leaves| {
                 if x0 < self.n_size {
                     self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut outs);
@@ -123,7 +121,7 @@ impl MalKey {
         buf.resize(3 * k, Block::ZERO);
         let (seeds, rest) = buf.split_at_mut(k);
         let (w, wm) = rest.split_at_mut(k);
-        self.pay.h_many(seeds, w);
+        self.prf.h_many(seeds, w);
         self.mac.h_many(seeds, wm);
         let (wc, mc) = (self.w_cw, self.wm_cw);
         outs.clear();

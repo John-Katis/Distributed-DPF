@@ -6,16 +6,17 @@
 //!
 //! * `sh`: semi-honest, public payload in a prime field by `--out-bits`:
 //!   Babybear (the paper's) for ≤ 31, Goldilocks for ≤ 64, `2^127 − 1`
-//!   above; public K, a local top phase of ν levels (`--nu`, default
-//!   `min(17, n − 1)`; the label gets `+nu<ν>` when it is given), the lower
+//!   above; public K, a local top phase of ν ≥ 1 levels (`--nu`, default
+//!   `max(1, min(17, n − 1))`; the label gets `+nu<ν>` when it is given), the lower
 //!   levels' AES–MMO calls on the OT tower (every AND from Ferret COTs) all
 //!   in one batch, and the leaf indexed by tag (daBits, no product).
 //! * `sh-bin`: as `sh` with an XOR-shared payload in F_2^ℓ (no B2A at the
 //!   leaf).
-//! * `mal`: malicious, the `sh` Gen with fresh public keys per level (`--nu`
-//!   as for `sh`), payload in
-//!   `{0,1}^ℓ ⊂ GF(2^128)` with a payload MAC and Π_Verify.
-//! * `mal-arith`: malicious, as `mal` with ν = 0 (no top phase): payload in Babybear
+//! * `mal`: malicious, the `sh-bin` Gen with one product per bottom level
+//!   (`--nu` as for `sh`), public payload in `{0,1}^ℓ ⊂ GF(2^128)` with a
+//!   payload MAC and Π_Verify.
+//! * `mal-arith`: malicious, the `sh` Gen with one product per bottom level
+//!   and the glue residual (`--nu` as for `sh`): public payload in Babybear
 //!   with MACs in `F_{q^4}` (the paper's) for `--out-bits` ≤ 31, payload and
 //!   MAC in Goldilocks for ≤ 64, in `2^127 − 1` above.
 //!
@@ -118,18 +119,17 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
     let bits = o.out_bits;
     for _ in 0..o.reps {
         drop(last.take());
-        let b0 = low(dpf_common::block::Block::random(rng), bits);
-        let b1 = low(dpf_common::block::Block::random(rng), bits) ^ b0;
+        let beta = low(dpf_common::block::Block::random(rng), bits);
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
         let (n, nu) = (o.size, o.nu);
-        let timed = |party: usize, b: dpf_common::block::Block| {
+        let timed = |party: usize| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = run_mal(c, n, nu, bits, b, seeds[party], Some(FerretConfig::B13), None);
+                let out = run_mal(c, n, nu, bits, beta, seeds[party], Some(FerretConfig::B13), None);
                 (out, t.elapsed())
             }
         };
-        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, b0), timed(1, b1));
+        let ((r0, t0), (r1, t1)) = run_two_party(timed(0), timed(1));
         setup.push(r0.setup_time.max(r1.setup_time));
         pre.push(r0.pre_time.max(r1.pre_time));
         g0.push(r0.gen_time);
@@ -273,17 +273,17 @@ fn gen_mal_arith<F: Field, E: Ext<F>>(o: &Opts, rng: &mut ChaCha20Rng) {
     let mut last = None;
     for _ in 0..o.reps {
         drop(last.take());
-        let (b0, beta) = (F::random(rng), F::random(rng));
+        let beta = F::random(rng);
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-        let n = o.size;
-        let timed = |party: usize, b: F| {
+        let (n, nu) = (o.size, o.nu);
+        let timed = |party: usize| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = run_mal_arith::<F, E>(c, n, b, seeds[party], Some(FerretConfig::B13), None);
+                let out = run_mal_arith::<F, E>(c, n, nu, beta, seeds[party], Some(FerretConfig::B13), None);
                 (out, t.elapsed())
             }
         };
-        let ((r0, t0), (r1, t1)) = run_two_party(timed(0, b0), timed(1, beta.sub(b0)));
+        let ((r0, t0), (r1, t1)) = run_two_party(timed(0), timed(1));
         setup.push(r0.setup_time.max(r1.setup_time));
         pre.push(r0.pre_time.max(r1.pre_time));
         g0.push(r0.gen_time);
@@ -347,7 +347,7 @@ fn main() {
     let mut rng = ChaCha20Rng::from_entropy();
     opts.for_each(|o| {
         assert!(!(o.stream && o.runs("gen")), "ht-aes Gen has no streaming tree: it follows only the path to α");
-        assert!(o.nu.is_none() || o.variant != "mal-arith", "mal-arith has no top phase (ν = 0)");
+        assert!(o.nu.is_none_or(|nu| nu >= 1), "the glue level is ν ≥ 1");
         let (bb, wide) = (o.out_bits <= 31, o.out_bits > 64);
         match o.variant.as_str() {
             "sh" => {

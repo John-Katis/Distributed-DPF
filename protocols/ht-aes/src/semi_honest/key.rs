@@ -15,7 +15,7 @@ pub struct ShKey<T: Field> {
     pub prf: Mmo,
     /// `st_{0,b}`, with `st_{0,0} ⊕ st_{0,1} = Δ`.
     pub root: Block,
-    /// The switch level ν.
+    /// The glue level ν ≥ 1.
     pub nu: usize,
     pub cws: Vec<Block>,
     /// `M_ν, …, M_n`, XORed onto every node of levels ν..=n.
@@ -39,7 +39,7 @@ impl<T: Field> ShKey<T> {
         (&self.cws, &self.ms, self.w_cw)
     }
 
-    /// `M_ℓ`, zero above the switch level.
+    /// `M_ℓ`, zero above the glue level.
     #[inline]
     pub fn m(&self, level: usize) -> Block {
         level_word(self.nu, &self.ms, level)

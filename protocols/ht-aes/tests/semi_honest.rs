@@ -1,5 +1,5 @@
 //! The semi-honest Gen (payload in F_p, public β) against the cleartext point
-//! function and the dealer, for switch levels ν from 0 to n.
+//! function and the dealer, for glue levels ν from 1 to n.
 
 use dpf_common::block::Block;
 use dpf_common::net::run_two_party;
@@ -37,9 +37,11 @@ fn run<F: Field>(n: u64, nu: Option<usize>, beta: F, seed: u64) -> ([ShKey<F>; 2
     let (depth, nu) = (o0.key.depth(), o0.key.nu);
     assert_eq!(o0.ands, sh_ands(depth, nu));
     assert_eq!(o0.ands, sh_calls(depth, nu) * dpf_common::aes_tower::ANDS_PER_CALL);
-    // The top phase and the switch (ν + 3 rounds) run concurrently with the
+    // 𝓕_COT (one round, which ⟨Y⟩ needs before the leaf's AES–MMO calls),
+    // then the top phase and the glue (ν + 3 rounds) concurrently with the
     // AES–MMO calls (40), Step B and M_ℓ (or the leaf's two openings).
-    assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), (nu + 3).max(42), "n={depth} ν={nu}");
+    assert!(nu >= 1);
+    assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), (nu + 4).max(43), "n={depth} ν={nu}");
     // The roots are k_b = Δ_b ⊕ W, lsb(Δ_b) = b and lsb(W) = 0.
     assert!(!o0.key.root.lsb() && o1.key.root.lsb());
     let alpha = o0.alpha_share ^ o1.alpha_share;
@@ -52,7 +54,7 @@ fn run<F: Field>(n: u64, nu: Option<usize>, beta: F, seed: u64) -> ([ShKey<F>; 2
 fn gen_matches_point_function_and_dealer<F: Field>(seed: u64) {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let mut s = seed;
-    for (n, nus) in [(8u64, vec![None, Some(0), Some(3)]), (16, vec![Some(1), Some(2)]), (13, vec![None]), (1 << 9, vec![Some(4), Some(9)])] {
+    for (n, nus) in [(2u64, vec![None]), (8, vec![None, Some(1), Some(3)]), (16, vec![Some(2), Some(4)]), (13, vec![None]), (1 << 9, vec![Some(4), Some(9)])] {
         for nu in nus {
             s += 1;
             let beta = F::random(&mut rng);
@@ -86,7 +88,7 @@ fn dealer_keys_are_point_functions() {
         let beta = M127::random(&mut rng);
         let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
         let depth = dpf_common::block::depth_for(n);
-        for nu in [0, depth / 2, depth] {
+        for nu in [1, (depth / 2).max(1), depth] {
             let us: Vec<Block> = (nu..=depth).map(|_| Block::random(&mut rng)).collect();
             check(&deal(roots, rng.gen(), n, nu, alpha, beta, &us), n, alpha, beta);
         }
@@ -128,7 +130,7 @@ fn session_gens(ferret: Option<dpf_common::ot::FerretConfig>) {
     let party = |b: usize| {
         move |c: &mut dpf_common::net::Channel| {
             let mut s = Session::setup(c, seeds[b], ferret);
-            [(Some(4), betas[0]), (Some(0), betas[1]), (None, betas[2])].map(|(nu, beta)| s.gen(c, n, nu, beta))
+            [(Some(4), betas[0]), (Some(1), betas[1]), (None, betas[2])].map(|(nu, beta)| s.gen(c, n, nu, beta))
         }
     };
     let (o0, o1) = run_two_party(party(0), party(1));
@@ -142,7 +144,7 @@ fn session_gens(ferret: Option<dpf_common::ot::FerretConfig>) {
         assert_eq!(keys[0].root ^ keys[1].root, delta, "one Δ for the session");
         assert_eq!(keys[0].prf, o0[0].key.prf, "one K for the session");
         assert!(!keys[0].root.lsb() && keys[1].root.lsb());
-        assert_eq!(a.gen_stats.rounds.max(b.gen_stats.rounds), (keys[0].nu + 3).max(42));
+        assert_eq!(a.gen_stats.rounds.max(b.gen_stats.rounds), (keys[0].nu + 4).max(43));
     }
     assert_ne!(o0[0].key.root, o0[1].key.root, "W re-randomises the roots per Gen");
     assert_ne!(o0[1].key.root, o0[2].key.root);
