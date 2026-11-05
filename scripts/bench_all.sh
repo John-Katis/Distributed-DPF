@@ -3,7 +3,7 @@
 # FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal}) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen) or results-eval/ (eval, full, all).
 #
-#   [OUT_LIST=a,b,..] [SKIP_OURS=1] [ONLY="name .."] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--max-in-bits-path n] [--append] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
+#   [OUT_LIST=a,b,..] [SKIP_OURS=1] [ONLY="name .."] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--max-in-bits-path n] [--max-in-bits-fssnn-full n] [--append] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
 #
 # SKIP_OURS=1 runs only the other papers' protocols and leaves the ht-aes
 # CSVs as they are. ONLY="fssnn-bin ht-aes-sh .." runs only the protocols
@@ -18,7 +18,11 @@
 # measured up to 36 and its CSV gets estimated rows (variant `+est`) above its
 # last measured width up to 42, by scripts/estimate_gen.py (computation x2 per
 # bit, setup constant, communication, rounds and network time linear in n).
-# So after a gen sweep every CSV has rows for in-bits 12..=42. --append adds
+# So after a gen sweep every CSV has rows for in-bits 12..=42. Likewise in full
+# mode, FssNN's full-domain evaluation (constant ns per point from n ~ 13 on,
+# ~2 days for 8..=32) is measured up to in-bits 28 (--max-in-bits-fssnn-full)
+# and gets estimated rows (`+est`) up to --max-in-bits by
+# scripts/estimate_full.py (time x2 per bit, ns per point constant). --append adds
 # the rows to the existing CSVs instead of starting them afresh, e.g. --append
 # --min-in-bits 37 runs only FssNN and ours on 37..=42. --reps-from n R (gen default: 33 2) runs each point from in-bits n on
 # as R separate 1-rep processes, one CSV row each, so the rows can be
@@ -47,7 +51,7 @@ cd "$(dirname "$0")/.."
 
 MODE=gen
 OUT_LIST=${OUT_LIST:-64,128}
-MIN_IN= MAX_IN= MAX_PATH= REPS_FROM= SPLIT= APPEND=0
+MIN_IN= MAX_IN= MAX_PATH= REPS_FROM= SPLIT= APPEND=0 MAX_FSSNN_FULL=28
 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --min-in-bits) MIN_IN="$2"; shift 2 ;;
     --max-in-bits) MAX_IN="$2"; shift 2 ;;
     --max-in-bits-path) MAX_PATH="$2"; shift 2 ;;
+    --max-in-bits-fssnn-full) MAX_FSSNN_FULL="$2"; shift 2 ;;
     --append) APPEND=1; shift ;;
     --reps-from) REPS_FROM="$2" SPLIT="$3"; shift 3 ;;
     --reps|--points|--batch-log) ARGS+=("$1" "$2"); shift 2 ;;
@@ -96,6 +101,7 @@ run() {
   shift
   [[ -n ${ONLY:-} && " $ONLY " != *" $name "* ]] && return
   case $name in fssnn-*|ht-aes-*) max=$MAX_PATH ;; esac
+  [[ $MODE == full && $name == fssnn-* ]] && ((MAX_FSSNN_FULL < max)) && max=$MAX_FSSNN_FULL
   echo "$name"
   if ((APPEND)); then first=0; else : > "$csv"; fi
   for ((n = MIN_IN; n <= max; n++)); do
@@ -118,6 +124,9 @@ run() {
   done
   if [[ $MODE == gen ]] && ((max < MAX_PATH)); then
     python3 -I scripts/estimate_gen.py "$csv" "$MAX_PATH"
+  fi
+  if [[ $MODE == full ]] && ((max < MAX_PATH)); then
+    python3 -I scripts/estimate_full.py "$csv" "$MAX_PATH"
   fi
 }
 run floram        "$BIN/bench"              "$MODE" "${S[@]}" --stream-from 29
