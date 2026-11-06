@@ -20,7 +20,7 @@
 //! The key is generic over the word type of Z_2^w ([`Lanes`]): `u64` for
 //! w ≤ 64 (the reference's `value_t`), `u128` up to w = 128.
 
-use crate::tree::{correct, expand_many, expand_one, lanes, CorrectionWord, Lanes, StreamTree};
+use crate::tree::{correct, expand_into, expand_many, lanes, CorrectionWord, Lanes, StreamTree};
 use dpf_common::arith::mask;
 use dpf_common::block::{depth_for, Block};
 
@@ -95,7 +95,11 @@ impl<R: Lanes> DuoramKey<R> {
         let mut node = self.root;
         for (i, cw) in self.cws.iter().enumerate() {
             let side = (xp >> (n - 1 - i)) & 1 == 1;
-            node = correct(expand_one(node, side), node.lsb(), cw, side);
+            // Both children, as the reference's `traverse` (`dpfgen.h`)
+            // computes them; then the one that `x'` selects.
+            let mut kids = [Block::ZERO; 2];
+            expand_into(&[node], &mut kids);
+            node = correct(kids[side as usize], node.lsb(), cw, side);
         }
         node
     }
