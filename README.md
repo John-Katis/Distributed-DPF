@@ -30,8 +30,14 @@ protocols/
                      semi-honest, and malicious with abort on the same Gen
                      (payload MAC, one product per bottom level, glue
                      residual, Π_Verify, one-bit leakage)
+  ggm-lpn/           ours on a full GGM tree with the DGH+21 LPN-PRG: local
+                     top phase of ν ≥ 0 levels with two side seed words per
+                     level, glue, pre-sampled bottom levels (M_ℓ), all 2PC
+                     LPN-PRG calls in one batch; semi-honest, binary payload
 scripts/
   bench_all.sh       runs all benchmarks into results-gen/ or results-eval/
+  bench_prf.sh       AES half-tree vs LPN-PRG GGM instance of ours at several ν,
+                     with Floram and Half-Tree, into results-PRF/{gen,full}/
 REFERENCES.md        papers and techniques this code implements
 ```
 
@@ -46,6 +52,7 @@ REFERENCES.md        papers and techniques this code implements
 | `ht-aes` (`sh-bin`) | semi-honest | XOR shares | `F_2^ℓ`, ℓ ≤ 128 | as `sh` with XOR-shared β; the leaf hashes `u_n`, `u_n ⊕ Δ` (no Y: in characteristic 2 the tag order does not matter, so the AES–MMO calls do not wait for 𝓕_COT) and opens `W_0 ⊕ W_1 ⊕ β` (no B2A, no sign); rounds max(ν + 4, 42) |
 | `ht-aes` (`mal`) | malicious with abort, one-bit selective-failure leakage (the paper's §malicious, ported to characteristic 2) | XOR shares | `{0,1}^ℓ ⊂ GF(2^128)` + payload MAC | the `sh-bin` Gen in its session (one K, one ⟨Δ⟩, W per Gen, `--nu`) with public β and the paper's additions: (A) a public `K^mac` and the payload-MAC word `W^MAC_CW = h̃_0 ⊕ h̃_1 ⊕ β·δ` under a persistent δ, (B) `(⟨α_ℓ·Δ⟩, ⟨P_ℓ⟩)` from one bit-times-2-block product per bottom level (no zeroing); no glue residual (C), since a swap does not change `y_0 ⊕ y_1` (tested); the Π_Verify mask `(r, δr)` from 128 string triples; Π_Verify on shared outputs (opens only `z = Σχy + r` and σ), then the outputs opened and checked against their MACs (`verify_and_open`); rounds max(ν + 4, 42) |
 | `ht-aes` (`mal-arith`) | malicious with abort, as `mal` | XOR shares | Babybear + MAC in `F_{q^4}` (the paper's) for ℓ ≤ 31; payload and MAC in Goldilocks for ℓ ≤ 64, in `2^127 − 1` above | the `sh` Gen in its session (`--nu`) with public β and the paper's additions: (A) public `K^mac_1, …, K^mac_c` (c = 3 for `F_{q^4}`), `F^mac` on `u_n`, `u_n ⊕ Δ` (indexed by server), `W^MAC_CW = 𝓕_mul(1 − 2σ, W̃_0 − W̃_1 − β·δ)` (one Beaver triple, three rounds with the payload word); (B) one product per bottom level; (C) the glue residual ω = (G_0 − G_1) − v² + v'² with ψ_r quadratic, `r` coin-tossed after 256 B2As, two Beaver squares, kept with the key (three rounds on the top phase's lane); default ν = max(1, min(15, n − 1)), since ψ_r runs on all 2^ν frontier nodes; Π_Verify over the MAC field also checks Σχ'ω; rounds max(ν + 7, 44) |
+| `ggm-lpn` (`bin`) | semi-honest | XOR shares | `F_2^ℓ`, ℓ ≤ 256 | our template on BGI's GGM tree (node `s ∥ t`, λ = 127) with the DGH+21 LPN-PRG (`fssnn::sec_prg`, correlations from Ferret); every level ℓ has a secret offset `V_ℓ = seed(U_ℓ) ∥ 1` and two side seed words `s^L = D_L ⊕ ¬α_ℓ·U_ℓ`, `s^R = D_R ⊕ α_ℓ·U_ℓ` plus BGI's tag words, so the Keep children differ by `V_ℓ`; α, `U_ℓ`, `α_ℓ·U_ℓ`, `u_{ℓ−1,0}`, `t_{ℓ−1,0}·α_ℓ` and each level's MUX triple from one bit-times-3-block triple per level (one random COT per direction); top phase: each party expands its own tree to level ν ≥ 0 (`--nu`, default min(1, n)), one opening per level; glue: tag sums mod 4, one AND, `⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ ¬⟨t_{ν,0}⟩·⟨V_ν⟩`, open `M_ν`; bottom: all 2(n − ν) 2PC LPN-PRG calls on pre-sampled `u_{ℓ−1,0}`, `u_{ℓ−1,0} ⊕ V_{ℓ−1}` in one batch (2 rounds), then the side words with one MUX block (`st^Keep_0`), then `M_ℓ`; leaf `W_CW = Conv(V_n) ⊕ β`; rounds max(ν + 3, 4). The side words below ν follow the research note "Our Framework Applied to FssNN"; those above ν are our extension, privacy not yet argued |
 | `duoram` (`2p`, `3p`) | semi-honest | additive shares mod 2^n (online shift) | `Z_2^ℓ`, ℓ ≤ 64 | Du–Atallah product per level at a random target; triples from helper P2 (`3p`) or IKNP OT (`2p`); one-round online phase |
 
 ## Shared library: `dpf-common`
@@ -131,6 +138,9 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --i
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal --in-bits 16 --out-bits 64
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-arith --in-bits 16 --out-bits 31
 cargo run --release -p ht-aes --example bench-ht-aes -- gen --variant sh --in-bits 32 --out-bits 31 --nu 16   # glue level ν ≥ 1 (every variant)
+cargo run --release -p ggm-lpn --example bench-ggm-lpn -- all --variant bin --in-bits 16 --out-bits 64 --nu 5   # glue level ν ≥ 0
+scripts/bench_prf.sh                          # ours with AES (ht-aes sh-bin) and with the LPN-PRG (ggm-lpn), ν ∈ {1, 5, 17}, Floram and Half-Tree, Gen n = 8..42, into results-PRF/gen/
+scripts/bench_prf.sh full                     # full-domain eval, n = 8..32 (ours at ν = 5), into results-PRF/full/
 scripts/bench_all.sh                          # Gen, n = 12..42 (others measured to 36, estimated above), out-bits 64 and 128, one CSV per protocol in results-gen/
 scripts/bench_all.sh full                     # full-domain eval, same sweep, into results-eval/
 ```
