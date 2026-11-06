@@ -191,6 +191,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ggm-lpn"
+version = "0.1.0"
+dependencies = [
+ "dpf-common",
+ "fssnn",
+ "rand",
+ "rand_chacha",
+]
+
+[[package]]
 name = "half-tree"
 version = "0.1.0"
 dependencies = [

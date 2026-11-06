@@ -1,0 +1,15 @@
+[package]
+name = "ggm-lpn"
+description = "Our template on a full GGM tree with the DGH+21 LPN-PRG: local top phase with two side seed words per level, glue, pre-sampled bottom levels joined by M_l, all 2PC PRG calls in one batch; semi-honest, binary payload."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+fssnn = { path = "../fssnn" }
+rand.workspace = true
+rand_chacha.workspace = true
+
+[[example]]
+name = "bench-ggm-lpn"
+path = "examples/bench.rs"
