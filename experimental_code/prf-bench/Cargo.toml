@@ -1,0 +1,16 @@
+[package]
+name = "exp-prf-bench"
+description = "Experiment: PRF microbenchmarks, AES–MMO (half-tree) against the DGH+21 LPN-PRG (full GGM), in the clear and in 2PC, on one host."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dpf-common.workspace = true
+fssnn = { path = "../../protocols/fssnn" }
+exp-bp-sbox = { path = "../bp-sbox" }
+rand.workspace = true
+rand_chacha.workspace = true
+
+[[example]]
+name = "bench-prf"
+path = "examples/bench.rs"

@@ -129,6 +129,7 @@ name = "exp-prf-bench"
 version = "0.1.0"
 dependencies = [
  "dpf-common",
+ "exp-bp-sbox",
  "fssnn",
  "rand",
  "rand_chacha",
