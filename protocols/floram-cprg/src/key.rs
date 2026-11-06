@@ -61,7 +61,11 @@ impl DpfKey {
         let mut t = self.root.lsb();
         for (j, cw) in self.cws.iter().enumerate() {
             let right = (x >> (depth - 1 - j)) & 1 == 1;
-            let raw = self.prg.child(s, right);
+            // Fig. 1 Eval, line 19: `s^{j,0} ∥ s^{j,1} := Prg(s)`, both children,
+            // then line 20 keeps the one that `x_j` selects.
+            let mut kids = [Block::ZERO; 2];
+            self.prg.expand_many(&[s], &mut kids);
+            let raw = kids[right as usize];
             let tau = if right { cw.tau_r } else { cw.tau_l };
             let t_next = raw.lsb() ^ (t & tau);
             s = (raw ^ cw.z.and_bit(t)).with_lsb(t_next);
