@@ -27,11 +27,15 @@ cargo run --release -p exp-prf-bench --example bench-prf -- ferret
     - `lpn_prg_dgh21`: FssNN's 2PC LPN-PRG (`fssnn::semi_honest::sec_prg`), with its preprocessing.
 - `ferret`: the time and traffic of one Ferret COT, refills included.
 
-## Results (2026-11-06, i7-12700K, `2pc`, kbit per call)
+## Results (2026-11-06, i7-12700K, `2pc`, per call, mean of 50 runs)
 
-| Row | Batch | Online | Corr. (measured + COTs) | Total | bit/out | Rounds |
-|---|---|---|---|---|---|---|
-| OT tower | 1, 32 | 13.92 | 0 + 1.35 (3,040 COTs) | 15.27 | 119.3 | 40 |
-| AND triples | 1, 32 | 21.76 | 0 + 4.82 (10,880 COTs) | 26.58 | 207.7 | 40 |
-| LPN-PRG (FssNN) | 64 | 1.90 | 3.97 + 0.71 (1,598 COTs) | 6.58 | 25.7 | 2 |
-| LPN-PRG (FssNN) | 1 | 1.90 | 4.18 + 0.85 (1,919 COTs) | 6.94 | 27.1 | 2 |
+Comm. in kbit. Times in µs of the slower party, measured; the paper's Corr. time adds 23.3 ns per COT (Ferret, refills included).
+
+| Row | Batch | Online | Corr. (measured + COTs) | Total | bit/out | Rounds | Online µs | Corr. µs (measured) |
+|---|---|---|---|---|---|---|---|---|
+| OT tower | 32 | 13.92 | 0 + 1.35 (3,040 COTs) | 15.27 | 119.3 | 40 | 385.3 | 3.7 |
+| OT tower | 1 | 13.92 | 0 + 1.35 (3,040 COTs) | 15.27 | 119.3 | 40 | 713.7 | 3.3 |
+| AND triples | 32 | 21.76 | 0 + 4.82 (10,880 COTs) | 26.58 | 207.7 | 40 | 88.8 | 205.7 |
+| AND triples | 1 | 21.76 | 0 + 4.82 (10,880 COTs) | 26.58 | 207.7 | 40 | 507.7 | 219.5 |
+| LPN-PRG (FssNN) | 64 | 1.90 | 3.97 + 0.71 (1,598 COTs) | 6.58 | 25.7 | 2 | 24.0 | 73.1 |
+| LPN-PRG (FssNN) | 1 | 1.90 | 4.18 + 0.85 (1,919 COTs) | 6.94 | 27.1 | 2 | 41.5 | 380.8 |
