@@ -7,7 +7,6 @@
 //! does since). Both rebuild the public matrices from the same seed, and the
 //! tests check both against `fssnn::lpn_prg` bit for bit.
 
-pub mod maestro;
 pub mod triples;
 
 use dpf_common::block::Block;
@@ -107,12 +106,6 @@ impl RowLpn {
         [self.parity(&self.b[..128], &w), self.parity(&self.b[128..], &w)]
     }
 
-    /// One half of `G(x)`, as in point evaluation.
-    #[inline]
-    pub fn eval_side(&self, x: u128, side: usize) -> u128 {
-        self.parity(&self.b[128 * side..128 * (side + 1)], &self.mid(x))
-    }
-
     fn mid(&self, x: u128) -> [u128; MW] {
         #[cfg(target_arch = "x86_64")]
         if std::is_x86_feature_detected!("popcnt") {
@@ -186,9 +179,6 @@ mod tests {
         for _ in 0..200 {
             let x: u128 = rng.gen();
             assert_eq!(c.eval(x), r.eval(x));
-            for side in 0..2 {
-                assert_eq!(c.eval_side(x, side), r.eval_side(x, side));
-            }
         }
     }
 
@@ -203,7 +193,6 @@ mod tests {
 
 #[cfg(test)]
 mod sbox_tests {
-    use crate::maestro::{self, Maestro};
     use crate::triples::{self, TripleCircuit};
     use dpf_common::aes_tower::{sbox, TowerBackend};
     use dpf_common::block::Block;
@@ -218,13 +207,6 @@ mod sbox_tests {
 
     fn to_u8(b: &[bool; 8]) -> u8 {
         b.iter().enumerate().fold(0, |a, (i, &x)| a | (x as u8) << i)
-    }
-
-    #[test]
-    fn maestro_tower_in_the_clear() {
-        for a in 0..=255u8 {
-            assert_eq!(maestro::sbox_clear(a), sbox(a), "S-box({a})");
-        }
     }
 
     #[test]
@@ -258,16 +240,6 @@ mod sbox_tests {
         for a in 0..256 {
             assert_eq!(y0[a] ^ y1[a], sbox(a as u8), "S-box({a})");
         }
-    }
-
-    #[test]
-    fn maestro_2pc_all_inputs() {
-        check(|ch, cot, r| {
-            let cots = cot.random_cots(ch, 0, 256 * maestro::COTS_PER_SBOX, r).unwrap();
-            let mut m = Maestro::new(ch.party(), cots, cot.delta());
-            m.preprocess(ch, 256, r);
-            m
-        });
     }
 
     #[test]

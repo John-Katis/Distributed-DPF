@@ -11,16 +11,15 @@
 //!   calls of one n = 32 key pair (32 joint AES–MMO calls at ν = 17, 64
 //!   LPN-PRG calls), median of 5 runs, outputs checked against the clear.
 //!   Correlations come from Ferret (B13), bootstrapped once and not counted.
-//!   Also the two other S-box realizations of Tab. prf-2pc: the MAESTRO-style
-//!   F_16 tower (`maestro`) and the Boyar–Peralta circuit with AND triples
-//!   (`triples`), both on the same Ferret COTs and the same `mmo_shared`.
+//!   Also the other S-box realization of Tab. prf-2pc: the Boyar–Peralta
+//!   circuit with AND triples (`triples`), on the same Ferret COTs and the
+//!   same `mmo_shared`.
 //! * `ferret`: cost of one Ferret COT (time and bytes, refills included).
 
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, OtTower, Shared128, SharedKey, COTS_PER_CALL};
 use dpf_common::block::Block;
 use dpf_common::net::{run_two_party, Channel, CommStats};
 use dpf_common::ot::{CotPair, FerretConfig};
-use exp_prf_bench::maestro::{self, Maestro};
 use exp_prf_bench::triples::{self, TripleCircuit};
 use exp_prf_bench::{ColLpn, RowLpn};
 use fssnn::lpn_prg::lpn_prg;
@@ -91,26 +90,11 @@ fn local() {
         }
         black_box(x);
     });
-    let lside = ns_per_call(reps, n_lpn, |k| {
-        // Point Eval (tree::child): one side of G, 128 of the 256 B rows.
-        let mut x = x0.0;
-        for i in 0..k {
-            x = row.eval_side(x, i & 1);
-        }
-        black_box(x);
-    });
     let lfss = ns_per_call(reps, n_lpn, |k| {
         let mut x = x0.0;
         for _ in 0..k {
             let y = fss.eval(x);
             x = y[0] ^ (y[1] & 1);
-        }
-        black_box(x);
-    });
-    let lfss_side = ns_per_call(reps, n_lpn, |k| {
-        let mut x = x0.0;
-        for i in 0..k {
-            x = fss.eval_side(x, i & 1);
         }
         black_box(x);
     });
@@ -126,9 +110,7 @@ fn local() {
     println!("aes_mmo_h,{h:.2}");
     println!("aes_mmo_ggm_node_2calls,{ggm:.2}");
     println!("lpn_prg_rowwise_B,{lrow:.1}");
-    println!("lpn_prg_rowwise_B_one_side,{lside:.1}");
     println!("lpn_prg_fssnn_current,{lfss:.1}");
-    println!("lpn_prg_fssnn_current_one_side(point_eval),{lfss_side:.1}");
     println!("lpn_prg_colxor_B,{lcol:.1}");
 
     println!("# local throughput (independent inputs), ns/call, median of {reps}");
@@ -217,13 +199,6 @@ where
     }
 }
 
-fn make_maestro(ch: &mut Channel, cot: &mut CotPair, r: &mut ChaCha20Rng, sboxes: usize) -> Maestro {
-    let cots = cot.random_cots(ch, 0, sboxes * maestro::COTS_PER_SBOX, r).unwrap();
-    let mut m = Maestro::new(ch.party(), cots, cot.delta());
-    m.preprocess(ch, sboxes, r);
-    m
-}
-
 fn make_triples(ch: &mut Channel, cot: &mut CotPair, r: &mut ChaCha20Rng, sboxes: usize) -> TripleCircuit {
     let k = sboxes * triples::ANDS_PER_SBOX;
     let me = ch.party();
@@ -291,12 +266,6 @@ fn twopc() {
             }
         };
         let s0: Vec<Vec<Block>> = (0..reps).map(|_| (0..batch).map(|_| Block::random(&mut rng)).collect()).collect();
-        let ((r0, y0), (r1, y1)) = run_two_party(
-            mmo_with(0, batch, reps, xs.clone(), s0.clone(), make_maestro),
-            mmo_with(1, batch, reps, xs.clone(), s0.clone(), make_maestro),
-        );
-        check(&y0, &y1, "MAESTRO-style AES–MMO output");
-        report("aes_mmo_maestro_style", batch, 128, &r0, &r1);
         let ((r0, y0), (r1, y1)) = run_two_party(
             mmo_with(0, batch, reps, xs.clone(), s0.clone(), make_triples),
             mmo_with(1, batch, reps, xs.clone(), s0, make_triples),
