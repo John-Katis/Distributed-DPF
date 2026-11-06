@@ -94,16 +94,6 @@ impl LpnPrg {
         }
         eval_generic(self, x)
     }
-
-    /// One half of `G(x)` (bits 128·side..128·side + 128), for point evaluation.
-    pub fn eval_side(&self, x: u128, side: usize) -> u128 {
-        #[cfg(target_arch = "x86_64")]
-        if has_popcnt() {
-            // SAFETY: the CPU supports POPCNT.
-            return unsafe { eval_side_popcnt(self, x, side) };
-        }
-        eval_side_generic(self, x, side)
-    }
 }
 
 // The local evaluation is popcount-bound. The workspace builds for baseline
@@ -129,21 +119,10 @@ fn eval_generic(p: &LpnPrg, x: u128) -> [u128; 2] {
     y
 }
 
-#[inline(always)]
-fn eval_side_generic(p: &LpnPrg, x: u128, side: usize) -> u128 {
-    p.a.iter().zip(&p.b_cols).fold(0, |y, (row, col)| y ^ (col[side] & w_mask(*row, x)))
-}
-
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "popcnt")]
 unsafe fn eval_popcnt(p: &LpnPrg, x: u128) -> [u128; 2] {
     eval_generic(p, x)
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "popcnt")]
-unsafe fn eval_side_popcnt(p: &LpnPrg, x: u128, side: usize) -> u128 {
-    eval_side_generic(p, x, side)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -186,7 +165,6 @@ mod tests {
             let x: u128 = rng.gen();
             let want = reference(x);
             assert_eq!(p.eval(x), want);
-            assert_eq!([p.eval_side(x, 0), p.eval_side(x, 1)], want);
             // lin2_b on an arbitrary w (in 2PC, w is a share).
             let w: [u128; MW] = std::array::from_fn(|_| rng.gen());
             let wb: Vec<u32> = (0..M_MID).map(|i| (w[i / 128] >> (i % 128) & 1) as u32).collect();

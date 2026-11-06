@@ -384,7 +384,6 @@ mod tests {
         for k in 0..x.len() {
             let want = lpn_prg().eval(x[k]);
             assert_eq!([y0[k][0] ^ y1[k][0], y0[k][1] ^ y1[k][1]], want, "call {k}");
-            assert_eq!([lpn_prg().eval_side(x[k], 0), lpn_prg().eval_side(x[k], 1)], want, "eval_side {k}");
         }
     }
 }

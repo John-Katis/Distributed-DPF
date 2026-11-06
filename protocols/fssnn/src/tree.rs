@@ -74,14 +74,18 @@ pub fn expand(node: Block) -> [Block; 2] {
     [Block(y[0]), Block(y[1])]
 }
 
-/// The child on side `right` of `node`, after its level's correction.
+/// The child on side `right` of `node`, after its level's correction, as in
+/// FssNN's Alg. 4 Eval, steps 4–11: compute all of `G(s)`, correct both
+/// children, `τ = G(s) ⊕ t·(s_CW ∥ t^L_CW ∥ s_CW ∥ t^R_CW)`, and keep the one
+/// that `x_i` selects.
 pub fn child(node: Block, cw: &CorrectionWord, right: bool) -> Block {
-    let c = Block(lpn_prg().eval_side(node.0 & !1, right as usize));
-    if node.lsb() {
-        c ^ cw.s ^ Block(cw.t[right as usize] as u128)
+    let [l, r] = expand(node);
+    let tau = if node.lsb() {
+        [l ^ cw.s ^ Block(cw.t[0] as u128), r ^ cw.s ^ Block(cw.t[1] as u128)]
     } else {
-        c
-    }
+        [l, r]
+    };
+    tau[right as usize]
 }
 
 /// `Conv`: the ℓ = `bits` output bits of a leaf: seed bits 1..=ℓ for
