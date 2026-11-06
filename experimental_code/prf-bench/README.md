@@ -12,12 +12,12 @@ cargo run --release -p exp-prf-bench --example bench-prf -- 2pc
 cargo run --release -p exp-prf-bench --example bench-prf -- ferret
 ```
 
-`all` runs the three modes in order. `2pc` takes about a minute and `local` a few.
+`all` runs the three modes in order. `2pc` runs 50 reps per row (about ten times its former minute) and `local` takes a few minutes.
 
 ## What each mode measures
 
 - `local` (Tab. prf-local): the latency of one plaintext call, each call on the previous output, median of 7 runs. It covers the AES-128 block, AES–MMO `H_K`, a GGM node (2 calls), and the DGH+21 LPN-PRG with `B` row-wise, and column-XOR. It also gives the throughput on independent inputs (full-domain style).
-- `2pc` (Tab. prf-2pc): one call of F_prf on an XOR-shared input, in batches of 1 and of one n = 32 key pair, median of 5 runs. Every output is checked against the clear.
+- `2pc` (Tab. prf-2pc): one call of F_prf on an XOR-shared input, in batches of 1 and of one n = 32 key pair, mean of 50 runs. Every output is checked against the clear.
   - All correlations come from Ferret (B13), bootstrapped once and not counted.
   - Columns: `online_kbit` is the input-dependent traffic. `corr_kbit` is the measured preprocessing traffic, and `cots` the COTs consumed, charged at 0.443 bit each in `cot_kbit`.
   - The table's Corr. is `corr_kbit + cot_kbit`.

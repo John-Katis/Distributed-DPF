@@ -9,7 +9,7 @@
 //!   inputs (full-domain style).
 //! * `2pc`: one call of F_prf on XOR-shared input, batches of 1 and of the
 //!   calls of one n = 32 key pair (32 joint AES–MMO calls at ν = 17, 64
-//!   LPN-PRG calls), median of 5 runs, outputs checked against the clear.
+//!   LPN-PRG calls), mean of 50 runs, outputs checked against the clear.
 //!   Correlations come from Ferret (B13), bootstrapped once and not counted.
 //!   Also the other S-box realization of Tab. prf-2pc: the Boyar–Peralta
 //!   circuit with AND triples (`triples`), on the same Ferret COTs and the
@@ -30,10 +30,16 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 const COT_BITS: f64 = 0.443;
+/// Runs averaged per row in `2pc`.
+const REPS_2PC: usize = 50;
 
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     v[v.len() / 2]
+}
+
+fn mean(v: Vec<f64>) -> f64 {
+    v.iter().sum::<f64>() / v.len() as f64
 }
 
 /// Median ns per call of `f` over `reps` runs of `calls` calls.
@@ -226,7 +232,7 @@ fn lpn_party(b: usize, batch: usize, reps: usize, xs: Vec<Vec<u128>>, s0: Vec<Ve
 }
 
 fn report(name: &str, batch: usize, out_bits: usize, r0: &[Run], r1: &[Run]) {
-    let per = |f: &dyn Fn(&Run, &Run) -> f64| median(r0.iter().zip(r1).map(|(a, b)| f(a, b)).collect()) / batch as f64;
+    let per = |f: &dyn Fn(&Run, &Run) -> f64| mean(r0.iter().zip(r1).map(|(a, b)| f(a, b)).collect()) / batch as f64;
     let kbit = |s0: &CommStats, s1: &CommStats| 8.0 * (s0.bytes_sent + s1.bytes_sent) as f64 / 1000.0;
     let online = per(&|a, b| kbit(&a.3, &b.3));
     let corr = per(&|a, b| kbit(&a.2, &b.2));
@@ -234,7 +240,7 @@ fn report(name: &str, batch: usize, out_bits: usize, r0: &[Run], r1: &[Run]) {
     let cots = per(&|a, _b| a.4 as f64);
     let cot_kbit = cots * COT_BITS / 1000.0;
     let total = online + corr + cot_kbit;
-    let rounds = median(r0.iter().map(|a| a.3.rounds as f64).collect());
+    let rounds = mean(r0.iter().map(|a| a.3.rounds as f64).collect());
     let t_on = per(&|a, b| a.1.max(b.1).as_secs_f64() * 1e6);
     let t_corr = per(&|a, b| a.0.max(b.0).as_secs_f64() * 1e6);
     println!(
@@ -244,8 +250,8 @@ fn report(name: &str, batch: usize, out_bits: usize, r0: &[Run], r1: &[Run]) {
 }
 
 fn twopc() {
-    println!("# 2PC, per call: name,batch,out_bits,online_kbit,corr_kbit(measured),cots,cot_kbit(@{COT_BITS}),total_kbit,bit_per_out,rounds(per batch),online_us,corr_us");
-    let reps = 5;
+    println!("# 2PC, per call, mean of {REPS_2PC} runs: name,batch,out_bits,online_kbit,corr_kbit(measured),cots,cot_kbit(@{COT_BITS}),total_kbit,bit_per_out,rounds(per batch),online_us,corr_us");
+    let reps = REPS_2PC;
     let mut rng = ChaCha20Rng::seed_from_u64(9);
     for batch in [1usize, 32] {
         let xs: Vec<Vec<Block>> = (0..reps).map(|_| (0..batch).map(|_| Block::random(&mut rng)).collect()).collect();
