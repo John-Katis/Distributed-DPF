@@ -125,6 +125,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "exp-prf-bench"
+version = "0.1.0"
+dependencies = [
+ "dpf-common",
+ "fssnn",
+ "rand",
+ "rand_chacha",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
