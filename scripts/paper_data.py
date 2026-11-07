@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Regenerates the pgfplots tables of paper-eval/8-dpf-data.tex from the
+"""Regenerates the pgfplots tables of paper-eval/6-dpf-data.tex from the
 CSVs in results-gen/, results-eval/ and results-template/.
 
-    python3 -I scripts/paper_data.py [paper-eval/8-dpf-data.tex]
+    python3 -I scripts/paper_data.py [paper-eval/6-dpf-data.tex]
 
 Rewrites every \\pgfplotstableread{...}\\T<name> block in place and leaves the
 rest of the file (macros, colours, styles) as it is. Several rows for the same
@@ -182,7 +182,7 @@ def keys_per_pool(csvs):
 
 
 def main():
-    tex = sys.argv[1] if len(sys.argv) > 1 else 'paper-eval/8-dpf-data.tex'
+    tex = sys.argv[1] if len(sys.argv) > 1 else 'paper-eval/6-dpf-data.tex'
     tables = {}
     gen = {}
     for mode, d, cols, tag in [('gen', 'results-gen', 'clwb', ''),

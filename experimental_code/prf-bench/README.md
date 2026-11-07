@@ -1,6 +1,6 @@
 # exp-prf-bench (experiment, not part of ours)
 
-PRF microbenchmarks for §8b of the paper (Tab. prf-2pc and Tab. prf-local).
+PRF microbenchmarks for §6b of the paper (Tab. prf-2pc and Tab. prf-local).
 `crates/` and `protocols/` are unchanged; the PRF code is taken from them.
 
 ## Running

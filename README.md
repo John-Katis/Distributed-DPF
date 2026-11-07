@@ -40,7 +40,7 @@ scripts/
                      results-eval/ (full-domain eval)
   bench_template.sh  AES half-tree vs LPN-PRG GGM instance of ours at several ν,
                      with Floram and Half-Tree, into results-template/{gen,full}/
-  paper_data.py      the paper's plot tables (paper-eval/8-dpf-data.tex) from
+  paper_data.py      the paper's plot tables (paper-eval/6-dpf-data.tex) from
                      results-gen/, results-eval/, results-template/; Gen amortized
   estimate_{gen,eval,full}.py  rows `+est` above the last measured input width
 REFERENCES.md        papers and techniques this code implements
@@ -108,16 +108,16 @@ its output folder if it is missing (all of them are git-ignored). The
 
 | paper section | command | output |
 |---|---|---|
-| §8a DPF: Gen (Fig. eval-gen, Gen columns of Tab. eval-comm-rounds) | `scripts/bench_all.sh` | `results-gen/<protocol>.csv` |
-| §8a DPF: full-domain Eval (Fig. eval-full, Eval columns of Tab. eval-comm-rounds) | `scripts/bench_all.sh full` | `results-eval/<protocol>.csv` |
-| §8a/§8d: evaluation at single points | `scripts/bench_all.sh eval` | `results-single-point/<protocol>.csv` |
-| §8b PRF microbenchmarks, Tab. prf-local | `cargo run --release -p exp-prf-bench --example bench-prf -- local` | `results-prf/local.csv` |
-| §8b PRF microbenchmarks, Tab. prf-2pc | `cargo run --release -p exp-prf-bench --example bench-prf -- 2pc` | `results-prf/2pc.csv` |
-| §8b/§8a: cost of one Ferret COT (the 23.3 ns charged when amortizing) | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` | `results-prf/ferret.csv` |
-| §8c our template (AES vs LPN-PRG), Gen (Fig. eval-template) | `scripts/bench_template.sh` | `results-template/gen/<protocol>[-nuν].csv` |
-| §8c our template, full-domain Eval (Fig. eval-template) | `scripts/bench_template.sh full` | `results-template/full/<protocol>[-nuν].csv` |
-| plot data of §8a and §8c | `python3 -I scripts/paper_data.py` (after the sweeps above) | rewrites the tables in `paper-eval/8-dpf-data.tex`; prints crossovers and keys per Ferret pool |
-| §8d Applications (Tab. eval-apps) | none of its own: extrapolated by hand from the rates above | per joint level from `results-gen/`, per node from `results-prf/local.csv` (checked against `results-single-point/`), per point from `results-eval/` |
+| §6a DPF: Gen (Fig. eval-gen, Gen columns of Tab. eval-comm-rounds) | `scripts/bench_all.sh` | `results-gen/<protocol>.csv` |
+| §6a DPF: full-domain Eval (Fig. eval-full, Eval columns of Tab. eval-comm-rounds) | `scripts/bench_all.sh full` | `results-eval/<protocol>.csv` |
+| §6a/§6d: evaluation at single points | `scripts/bench_all.sh eval` | `results-single-point/<protocol>.csv` |
+| §6b PRF microbenchmarks, Tab. prf-local | `cargo run --release -p exp-prf-bench --example bench-prf -- local` | `results-prf/local.csv` |
+| §6b PRF microbenchmarks, Tab. prf-2pc | `cargo run --release -p exp-prf-bench --example bench-prf -- 2pc` | `results-prf/2pc.csv` |
+| §6b/§6a: cost of one Ferret COT (the 23.3 ns charged when amortizing) | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` | `results-prf/ferret.csv` |
+| §6c our template (AES vs LPN-PRG), Gen (Fig. eval-template) | `scripts/bench_template.sh` | `results-template/gen/<protocol>[-nuν].csv` |
+| §6c our template, full-domain Eval (Fig. eval-template) | `scripts/bench_template.sh full` | `results-template/full/<protocol>[-nuν].csv` |
+| plot data of §6a and §6c | `python3 -I scripts/paper_data.py` (after the sweeps above) | rewrites the tables in `paper-eval/6-dpf-data.tex`; prints crossovers and keys per Ferret pool |
+| §6d Applications (Tab. eval-apps) | none of its own: extrapolated by hand from the rates above | per joint level from `results-gen/`, per node from `results-prf/local.csv` (checked against `results-single-point/`), per point from `results-eval/` |
 
 Tab. eval-comm-rounds reports the n = 32, ℓ = 64 rows of `results-gen/` and
 `results-eval/` at full cost, setup included. The Gen graphs are amortized by
@@ -176,7 +176,7 @@ scripts/bench_all.sh                          # Gen, n = 12..42 (FssNN and ours 
 scripts/bench_all.sh eval                     # evaluation at single points, n = 8..42 (FssNN and ours measured throughout, the others to 28–29 and estimated above), into results-single-point/
 scripts/bench_all.sh full                     # full-domain eval, n = 8..32 (measured to 27–29, estimated above), into results-eval/
 cargo run --release -p exp-prf-bench --example bench-prf -- local   # PRF microbenchmarks (also 2pc, ferret, all), each mode also into results-prf/<mode>.csv
-python3 -I scripts/paper_data.py              # rewrite the plot tables of paper-eval/8-dpf-data.tex (Gen amortized, see below); prints crossovers and keys per Ferret pool
+python3 -I scripts/paper_data.py              # rewrite the plot tables of paper-eval/6-dpf-data.tex (Gen amortized, see below); prints crossovers and keys per Ferret pool
 ```
 
 All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`); the
