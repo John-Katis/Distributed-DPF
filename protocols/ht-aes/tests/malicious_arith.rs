@@ -79,8 +79,8 @@ fn gen_matches_dealer_and_verifies<F: Field, E: Ext<F>>(seed: u64) {
         let (depth, nu) = (r0.key.depth(), r0.key.nu);
         assert!(nu >= 1);
         // 𝓕_COT (one round), the AES–MMO calls (40), the leaf (3); the top
-        // phase, the glue and the glue residual (ν + 7) concurrently.
-        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), (nu + 7).max(44), "n={depth} ν={nu}");
+        // phase, the glue and the glue residual (ν + 6) concurrently.
+        assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), (nu + 6).max(44), "n={depth} ν={nu}");
         assert_eq!(r0.ands, arith_mal_ands::<F, E>(depth, nu));
         let delta = r0.delta_share.add(r1.delta_share);
         let us: Vec<Block> = r0.onpath_share.iter().zip(&r1.onpath_share).map(|(&a, &b)| a ^ b).collect();

@@ -61,7 +61,7 @@ fn mal_gen_matches_dealer_and_verifies() {
         let [r0, r1] = run(n, nu, bits, beta, i as u64, [None, None]);
         let alpha = r0.alpha_share ^ r1.alpha_share;
         let (depth, nu) = (r0.key.depth(), r0.key.nu);
-        let rounds = (nu + 4).max(if nu < depth { 42 } else { 41 });
+        let rounds = (nu + 3).max(if nu < depth { 42 } else { 41 });
         assert_eq!(r0.gen_stats.rounds.max(r1.gen_stats.rounds), rounds, "case {i}");
         assert_eq!(r0.ands, mal_ands(depth, nu));
         let delta = r0.delta_share ^ r1.delta_share;

@@ -38,10 +38,10 @@ fn run<F: Field>(n: u64, nu: Option<usize>, beta: F, seed: u64) -> ([ShKey<F>; 2
     assert_eq!(o0.ands, sh_ands(depth, nu));
     assert_eq!(o0.ands, sh_calls(depth, nu) * dpf_common::aes_tower::ANDS_PER_CALL);
     // 𝓕_COT (one round, which ⟨Y⟩ needs before the leaf's AES–MMO calls),
-    // then the top phase and the glue (ν + 3 rounds) concurrently with the
+    // then the top phase and the glue (ν + 2 rounds) concurrently with the
     // AES–MMO calls (40), Step B and M_ℓ (or the leaf's two openings).
     assert!(nu >= 1);
-    assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), (nu + 4).max(43), "n={depth} ν={nu}");
+    assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), (nu + 3).max(43), "n={depth} ν={nu}");
     // The roots are k_b = Δ_b ⊕ W, lsb(Δ_b) = b and lsb(W) = 0.
     assert!(!o0.key.root.lsb() && o1.key.root.lsb());
     let alpha = o0.alpha_share ^ o1.alpha_share;
@@ -144,7 +144,7 @@ fn session_gens(ferret: Option<dpf_common::ot::FerretConfig>) {
         assert_eq!(keys[0].root ^ keys[1].root, delta, "one Δ for the session");
         assert_eq!(keys[0].prf, o0[0].key.prf, "one K for the session");
         assert!(!keys[0].root.lsb() && keys[1].root.lsb());
-        assert_eq!(a.gen_stats.rounds.max(b.gen_stats.rounds), (keys[0].nu + 4).max(43));
+        assert_eq!(a.gen_stats.rounds.max(b.gen_stats.rounds), (keys[0].nu + 3).max(43));
     }
     assert_ne!(o0[0].key.root, o0[1].key.root, "W re-randomises the roots per Gen");
     assert_ne!(o0[1].key.root, o0[2].key.root);

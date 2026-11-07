@@ -8,7 +8,7 @@
 //! h_0 ⊕ h_1 ⊕ β` (low ℓ bits) right after the AES–MMO calls, concurrently
 //! with Step B. Evaluation outputs `F^pay(s) ⊕ t·W_CW`.
 //!
-//! Rounds: `max(ν + 4, 42)` for ν < n, `max(n + 4, 41)` for ν = n.
+//! Rounds: `max(ν + 3, 42)` for ν < n, `max(n + 3, 41)` for ν = n.
 //! Preprocessing: as the arithmetic variant's, without the leaf's daBits.
 
 use super::gen::{drive, walk, Deviation, GenOutput, Pre, Session, Shape, Walk};

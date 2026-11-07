@@ -22,7 +22,7 @@
 //! ([`super::verify`]) checks after evaluation, up to the one-bit
 //! selective-failure leak of the paper's paragraph "Selective failure".
 //!
-//! Rounds: `max(ν + 7, 44)`.
+//! Rounds: `max(ν + 6, 44)`.
 
 use super::key::{ArithMalKey, VerifyMask};
 use crate::field::{mask_blocks, mask_value, Ext, Field};

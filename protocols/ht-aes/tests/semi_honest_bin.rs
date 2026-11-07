@@ -37,9 +37,9 @@ fn gen_matches_point_function_and_dealer() {
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
         let (o0, o1) = run_two_party(move |c| gen(c, n, nu, bits, b0, seeds[0], None), move |c| gen(c, n, nu, bits, beta ^ b0, seeds[1], None));
         let (depth, nu) = (o0.key.depth(), o0.key.nu);
-        // 𝓕_COT and the top phase on one lane (ν + 4), the AES–MMO calls from
+        // 𝓕_COT and the top phase on one lane (ν + 3), the AES–MMO calls from
         // round 1 (no ⟨Y⟩ with a binary payload), then Step B and M_ℓ.
-        let rounds = (nu + 4).max(if nu < depth { 42 } else { 41 });
+        let rounds = (nu + 3).max(if nu < depth { 42 } else { 41 });
         assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), rounds, "case {i}");
         let alpha = o0.alpha_share ^ o1.alpha_share;
         let us: Vec<Block> = o0.onpath_share.iter().zip(&o1.onpath_share).map(|(&a, &b)| a ^ b).collect();

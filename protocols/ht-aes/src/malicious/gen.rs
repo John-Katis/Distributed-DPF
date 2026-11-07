@@ -20,7 +20,7 @@
 //! `Y`, no sign product). The Π_Verify mask `(⟨r⟩, ⟨δr⟩)` for a fresh random
 //! r is 128 string triples in preprocessing.
 //!
-//! Rounds: `max(ν + 4, 42)` for ν < n, `max(n + 4, 41)` for ν = n.
+//! Rounds: `max(ν + 3, 42)` for ν < n, `max(n + 3, 41)` for ν = n.
 
 use super::key::{low, MalKey};
 use crate::malicious_arith::VerifyMask;

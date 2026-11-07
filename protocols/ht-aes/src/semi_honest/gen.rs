@@ -16,8 +16,7 @@
 //! paper's `⟨α⟩`, `⟨u_ℓ⟩` for `ν ≤ ℓ ≤ n` and the public `W` with `lsb(W) =
 //! 0` (roots `k_b = Δ_b ⊕ W`); and the correlations its functionalities
 //! consume: the OT tower's random COTs ([`COTS_PER_CALL`] per AES–MMO call),
-//! the bit-times-block triples ([`rot_string_triples`]: Step C and the glue's
-//! AND), random COTs under `Γ_b = Δ_b` for the products with `⟨Δ⟩` (𝓕_COT),
+//! the bit-times-block triples of Step C ([`rot_string_triples`]), random COTs under `Γ_b = Δ_b` for the products with `⟨Δ⟩` (𝓕_COT),
 //! and the leaf's daBits ([`crate::leaf`]).
 //!
 //! **Generation**, after preprocessing:
@@ -29,8 +28,9 @@
 //!    `k_b`; `Z_{ℓ,b} = ⊕_x H_K(st_b(x))` over level ℓ − 1, and `CW_ℓ =
 //!    Z_{ℓ,0} ⊕ Z_{ℓ,1} ⊕ ¬α_ℓ·Δ` is opened (one round per level), 2^ν − 1
 //!    local calls. Glue: `E_b = ⊕_x t_b(x)·st_b(x)`, `A_b = Σ_x t_b(x) mod 4`
-//!    over level ν; `⟨t_{ν,0}⟩ = ¬a_1 ⊕ e_1 ⊕ a_0e_0` for `a = A_0`, `e =
-//!    −A_1 mod 4` (one AND), `⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ ¬⟨t_{ν,0}⟩·⟨Δ⟩` (one COT),
+//!    over level ν; `⟨t_{ν,0}⟩ = (¬a_1, e_1)` locally for `a = A_0 mod 4`,
+//!    `e = −A_1 mod 4` (Lemma "Glue": `a_0·e_0 = 0`, since `a + e` is odd),
+//!    `⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ ¬⟨t_{ν,0}⟩·⟨Δ⟩` (one COT),
 //!    and `M_ν = st_{ν,0} ⊕ u_ν` is opened.
 //! 2. `Π_bottom`, `ν < ℓ ≤ n`, and the leaf, all in one batch of AES–MMO
 //!    calls (40 rounds): Step A `⟨L_{ℓ,c}⟩ = H_K(⟨u_{ℓ−1}⟩ ⊕ c·⟨Δ⟩)` and the
@@ -39,7 +39,7 @@
 //!    leaf opens its B2A bits and `W_CW` ([`tag_leaf`]).
 //! 3. Step C, `⟨P_ℓ⟩ = ⟨α_ℓ·u_{ℓ−1}⟩` by Beaver, one round, concurrent.
 //!
-//! Rounds: `max(ν + 4, 43)`. The output is the key, `⟨α⟩` and the shares of
+//! Rounds: `max(ν + 3, 43)`. The output is the key, `⟨α⟩` and the shares of
 //! `u_ν, …, u_n`.
 
 use super::key::ShKey;
@@ -136,8 +136,8 @@ pub struct Pre {
     pub keys: Vec<Mmo>,
     /// The OT tower, on its random COTs.
     pub be: OtTower,
-    /// `(a, B, a·B)`: Step C's n − ν (none with (B)), the glue's AND, then the
-    /// caller's extra ones, which [`walk`] leaves here.
+    /// `(a, B, a·B)`: Step C's n − ν (none with (B)), then the caller's extra
+    /// ones, which [`walk`] leaves here.
     pub string_triples: Vec<(bool, Block, Block)>,
     /// (B)'s n − ν bit-times-2-block triples.
     pub wide_triples: Vec<WideTriple>,
@@ -146,12 +146,12 @@ pub struct Pre {
     pub delta_cots: Vec<DeltaCot>,
 }
 
-/// Bit-times-block triples [`walk`] consumes: Step C's and the glue's AND.
+/// Bit-times-block triples [`walk`] consumes: Step C's (none with (B)).
 pub fn walk_strings(n: usize, shape: Shape) -> usize {
     if shape.one_product {
-        1
+        0
     } else {
-        n - shape.nu + 1
+        n - shape.nu
     }
 }
 
@@ -355,7 +355,7 @@ impl Deviation {
 /// The top phase and the glue (Figure "DPF.Gen", Π_top and lines 6–11) on
 /// `lane`: returns `CW_1, …, CW_ν`, `M_ν`, this party's share of `st_{ν,0}`
 /// and, if `keep`, its level-ν frontier.
-fn top(pre: &mut Pre, ch: &mut Channel, lane: &mut Lane, and_triple: &mut std::vec::Drain<(bool, Block, Block)>, dev: Deviation, keep: bool) -> (Vec<Block>, Block, Block, Vec<Block>) {
+fn top(pre: &mut Pre, ch: &mut Channel, lane: &mut Lane, dev: Deviation, keep: bool) -> (Vec<Block>, Block, Block, Vec<Block>) {
     let b = ch.party();
     let (n, delta) = (pre.alpha_delta.len(), pre.delta);
     let mut nodes = vec![pre.root()];
@@ -379,12 +379,11 @@ fn top(pre: &mut Pre, ch: &mut Channel, lane: &mut Lane, and_triple: &mut std::v
     }
     // Glue: E_b and A_b over level ν.
     let (e_b, a_b) = nodes.iter().filter(|s| s.lsb()).fold((Block::ZERO, 0u64), |(e, c), &s| (e ^ s, c + 1));
-    // Party 0 holds a = A_0 mod 4, party 1 e = −A_1 mod 4; ⟨a_0⟩ = (a_0, 0), ⟨e_0⟩ = (0, e_0).
+    // Party 0 holds a = A_0 mod 4, party 1 e = −A_1 mod 4. a + e ≡ A_0 − A_1 = ±1
+    // is odd, so a_0·e_0 = 0 and ¬t_{ν,0} = a_1 ⊕ e_1: each party's share is its
+    // high bit (Lemma "Glue"). Then ⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ 𝓕_COT(¬⟨t_{ν,0}⟩, ⟨Δ⟩).
     let v = if b == 0 { a_b % 4 } else { (4 - a_b % 4) % 4 };
-    let (x, y) = if b == 0 { (v & 1 == 1, false) } else { (false, v & 1 == 1) };
-    let g = bit_times_block(ch, lane, &[(x, Block::ZERO.with_lsb(y))], and_triple)[0].lsb();
-    // ¬t_{ν,0} = a_1 ⊕ e_1 ⊕ a_0e_0, then ⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ 𝓕_COT(¬⟨t_{ν,0}⟩, ⟨Δ⟩).
-    let not_t = ((v >> 1) & 1 == 1) ^ g ^ dev.flip_switch;
+    let not_t = ((v >> 1) & 1 == 1) ^ dev.flip_switch;
     let cot = pre.delta_cots.pop().expect("the glue's COT");
     let st = e_b ^ delta_products(ch, lane, &[not_t], &[cot], delta)[0];
     let share = st ^ pre.us[0] ^ dev.at(n);
@@ -427,8 +426,8 @@ pub(crate) fn walk(pre: &mut Pre, ch: &mut Channel, leaf_jobs: impl FnOnce(&Pre)
     let mut triples = mine.drain(..);
     let k = n - nu;
     let step_c: Vec<(bool, Block, Block)> = if shape.one_product { vec![] } else { triples.by_ref().take(k).collect() };
-    let (mut cws, m_nu, glue, frontier) = top(pre, ch, &mut lane, &mut triples, dev, keep_frontier);
     drop(triples);
+    let (mut cws, m_nu, glue, frontier) = top(pre, ch, &mut lane, dev, keep_frontier);
     let mut ms = vec![m_nu];
     // Step C, ⟨P_ℓ⟩ = ⟨α_ℓ·u_{ℓ−1}⟩, or (B), (⟨α_ℓ·Δ⟩, ⟨P_ℓ⟩) from one product.
     let mut c_lane = ch.lane();
