@@ -35,11 +35,14 @@ protocols/
                      level, glue, pre-sampled bottom levels (M_ℓ), all 2PC
                      LPN-PRG calls in one batch; semi-honest, binary payload
 scripts/
-  bench_all.sh       runs all benchmarks into results-gen/ or results-eval/
-  bench_prf.sh       AES half-tree vs LPN-PRG GGM instance of ours at several ν,
-                     with Floram and Half-Tree, into results-PRF/{gen,full}/
+  bench_all.sh       runs all benchmarks into results-gen/ (Gen),
+                     results-single-point/ (eval at single points) or
+                     results-eval/ (full-domain eval)
+  bench_template.sh  AES half-tree vs LPN-PRG GGM instance of ours at several ν,
+                     with Floram and Half-Tree, into results-template/{gen,full}/
   paper_data.py      the paper's plot tables (paper-eval/8-dpf-data.tex) from
-                     results-gen/, results-eval/, results-PRF/; Gen amortized
+                     results-gen/, results-eval/, results-template/; Gen amortized
+  estimate_{gen,eval,full}.py  rows `+est` above the last measured input width
 REFERENCES.md        papers and techniques this code implements
 ```
 
@@ -141,10 +144,12 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal --in-b
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-arith --in-bits 16 --out-bits 31
 cargo run --release -p ht-aes --example bench-ht-aes -- gen --variant sh --in-bits 32 --out-bits 31 --nu 16   # glue level ν ≥ 1 (every variant)
 cargo run --release -p ggm-lpn --example bench-ggm-lpn -- all --variant bin --in-bits 16 --out-bits 64 --nu 5   # glue level ν ≥ 0
-scripts/bench_prf.sh                          # ours with AES (ht-aes sh-bin) and with the LPN-PRG (ggm-lpn), ν ∈ {1, 5, 17}, Floram and Half-Tree (measured to 29, estimated above), Gen n = 8..42, 10 reps, into results-PRF/gen/
-scripts/bench_prf.sh full                     # full-domain eval, n = 8..32 (ours at ν = 5; measured to 28–29, estimated above), into results-PRF/full/
+scripts/bench_template.sh                     # ours with AES (ht-aes sh-bin) and with the LPN-PRG (ggm-lpn), ν ∈ {1, 5, 17}, Floram and Half-Tree (measured to 29, estimated above), Gen n = 8..42, 10 reps, into results-template/gen/
+scripts/bench_template.sh full                # full-domain eval, n = 8..32 (ours at ν = 5; measured to 28–29, estimated above), into results-template/full/
 scripts/bench_all.sh                          # Gen, n = 12..42 (FssNN and ours measured throughout, the others to 26–29 and estimated above), out-bits 64 and 128, 10 reps, one CSV per protocol in results-gen/
+scripts/bench_all.sh eval                     # evaluation at single points, n = 8..42 (FssNN and ours measured throughout, the others to 28–29 and estimated above), into results-single-point/
 scripts/bench_all.sh full                     # full-domain eval, n = 8..32 (measured to 27–29, estimated above), into results-eval/
+cargo run --release -p exp-prf-bench --example bench-prf -- local   # PRF microbenchmarks (also 2pc, ferret, all), each mode also into results-prf/<mode>.csv
 python3 -I scripts/paper_data.py              # rewrite the plot tables of paper-eval/8-dpf-data.tex (Gen amortized, see below); prints crossovers and keys per Ferret pool
 ```
 
@@ -187,7 +192,7 @@ row then breaks Gen down into three phases:
 **Full and amortized cost.** The CSVs, and the tables of the paper, hold the
 full cost of one key pair: `comp_ms`, `comm_total`, `rounds` and the totals
 include the setup. The paper's Gen graphs (`scripts/paper_data.py`, for
-results-gen/ and results-PRF/) show the cost amortized over the keys of a
+results-gen/ and results-template/) show the cost amortized over the keys of a
 session, which is what every further key pair costs:
 
 * the setup is removed from every protocol: `setup_ms` from the computation,
@@ -206,7 +211,7 @@ Why this is the fair comparison: setup is paid once per session for any
 number of keys. The base OTs of IKNP extend to arbitrarily many OTs, and one
 Ferret B13 setup (≈ 0.8 s, 3 MB, 16 rounds) leaves 1.0·10⁷ COTs per direction,
 enough for about 110 (n = 42) to 1,600 (n = 12) key pairs of ours in
-results-gen/, 78 to 5,500 of the two template instances in results-PRF/
+results-gen/, 78 to 5,500 of the two template instances in results-template/
 (fewer at larger n and smaller ν), 150 to 510 of FssNN and 34,000 to 37,000
 of Zhang et al. (the script prints these ranges, assuming the COTs of a key
 pair split evenly between the two directions); after that, every further
@@ -263,26 +268,31 @@ path, so for those two only the full-domain eval streams.
 - The variant column reads `<variant>+stream`.
 - `--stream-from n` keeps the stored tree below 2^n and streams from 2^n on.
 
-The sweep scripts (`scripts/bench_all.sh`, `scripts/bench_prf.sh`) do not use
+The sweep scripts (`scripts/bench_all.sh`, `scripts/bench_template.sh`) do not use
 streaming. Every protocol runs with its stored tree up to the largest input
 width that fits in memory and is estimated above it (rows `<variant>+est`,
 reps 0). The cut-offs come from peak RSS at ℓ = 128, which doubles per input
 bit, kept below ~18 GB of the 27 GB free:
 
-| protocol | Gen measured to | full-domain eval measured to |
-|---|---|---|
-| floram-cprg, half-tree (`ht`), floram-arith | 29 (17.6 GB) | 29 (17.3 GB) |
-| half-tree (`mal-ferret`) | 26 (11.3 GB) | 27 |
-| duoram (`2p`, `3p`) | 29 (16.5 GB) | 28 |
-| fssnn (`bin`, `arith`) | 42 (path to α only) | 28 |
-| ht-aes (`sh`, `sh-bin`) | 42 (path to α only) | 28 |
-| ht-aes (`mal`, `mal-arith`) | 42 (path to α only) | 27 |
-| ggm-lpn (`bench_prf.sh`) | 42 (path to α only) | 28 |
+| protocol | Gen measured to | single-point eval measured to | full-domain eval measured to |
+|---|---|---|---|
+| floram-cprg, half-tree (`ht`), floram-arith | 29 (17.6 GB) | 29 (17.3 GB) | 29 (17.3 GB) |
+| half-tree (`mal-ferret`) | 26 (11.3 GB) | 28 | 27 (10.0 GB) |
+| duoram (`2p`, `3p`) | 29 (16.5 GB) | 29 | 28 (12.0 GB) |
+| fssnn (`bin`, `arith`) | 42 (path to α only) | 42 (path to α only) | 28 (12.0 GB) |
+| ht-aes (`sh`, `sh-bin`) | 42 (path to α only) | 42 (path to α only) | 28 (16.0 GB) |
+| ht-aes (`mal`, `mal-arith`) | 42 (path to α only) | 42 (path to α only) | 27 (12.0 GB) |
+| ggm-lpn (`bench_template.sh`) | 42 (path to α only) | – | 28 (12.0 GB) |
 
-`scripts/estimate_gen.py` doubles the computation per bit, keeps the setup and
-continues bytes, rounds and network time linearly; `scripts/estimate_full.py`
-doubles the time per bit at a constant ns per point. Both replace the `+est`
-rows of an earlier run. Streaming would instead measure these widths at about
+Single-point eval uses keys from the trusted dealer, which builds the whole
+tree for the tree-based protocols.
+
+`scripts/estimate_gen.py` doubles the generation time per bit, keeps the setup
+and continues preprocessing, bytes, rounds and network time linearly;
+`scripts/estimate_eval.py` grows the time of a single-point evaluation
+linearly in n (one PRG call per level); `scripts/estimate_full.py` doubles the
+time per bit at a constant ns per point. All three replace the `+est` rows of
+an earlier run. Streaming would instead measure these widths at about
 2× the Gen PRG work of the stored tree the papers describe.
 
 The stored code paths are unchanged and remain the default. In code, the
