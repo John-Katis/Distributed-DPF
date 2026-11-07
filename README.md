@@ -97,6 +97,32 @@ REFERENCES.md        papers and techniques this code implements
    `examples/bench.rs`.
 4. Code that more than one protocol needs goes into `crates/common`.
 
+## Paper results: what produces each section
+
+Run from the repository root, one command at a time. Each runner creates
+its output folder if it is missing (all of them are git-ignored). The
+`bench_*` scripts write one CSV per protocol (and per ν in
+`results-template/`), named after the protocol, e.g.
+`results-single-point/ht-aes-sh.csv`. Rows ending in `+est` are estimated
+(see [Streaming tree mode](#streaming-tree-mode---stream)).
+
+| paper section | command | output |
+|---|---|---|
+| §8a DPF: Gen (Fig. eval-gen, Gen columns of Tab. eval-comm-rounds) | `scripts/bench_all.sh` | `results-gen/<protocol>.csv` |
+| §8a DPF: full-domain Eval (Fig. eval-full, Eval columns of Tab. eval-comm-rounds) | `scripts/bench_all.sh full` | `results-eval/<protocol>.csv` |
+| §8a/§8d: evaluation at single points | `scripts/bench_all.sh eval` | `results-single-point/<protocol>.csv` |
+| §8b PRF microbenchmarks, Tab. prf-local | `cargo run --release -p exp-prf-bench --example bench-prf -- local` | `results-prf/local.csv` |
+| §8b PRF microbenchmarks, Tab. prf-2pc | `cargo run --release -p exp-prf-bench --example bench-prf -- 2pc` | `results-prf/2pc.csv` |
+| §8b/§8a: cost of one Ferret COT (the 23.3 ns charged when amortizing) | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` | `results-prf/ferret.csv` |
+| §8c our template (AES vs LPN-PRG), Gen (Fig. eval-template) | `scripts/bench_template.sh` | `results-template/gen/<protocol>[-nuν].csv` |
+| §8c our template, full-domain Eval (Fig. eval-template) | `scripts/bench_template.sh full` | `results-template/full/<protocol>[-nuν].csv` |
+| plot data of §8a and §8c | `python3 -I scripts/paper_data.py` (after the sweeps above) | rewrites the tables in `paper-eval/8-dpf-data.tex`; prints crossovers and keys per Ferret pool |
+| §8d Applications (Tab. eval-apps) | none of its own: extrapolated by hand from the rates above | per joint level from `results-gen/`, per node from `results-prf/local.csv` (checked against `results-single-point/`), per point from `results-eval/` |
+
+Tab. eval-comm-rounds reports the n = 32, ℓ = 64 rows of `results-gen/` and
+`results-eval/` at full cost, setup included. The Gen graphs are amortized by
+`paper_data.py`.
+
 ## Commands
 
 The OT libraries (emp-tool, emp-ot, libOTe, EzPC/SCI) are git submodules in
