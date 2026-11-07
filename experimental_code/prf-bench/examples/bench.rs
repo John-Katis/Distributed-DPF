@@ -5,7 +5,7 @@
 //! ```
 //!
 //! * `local`: latency of one plaintext call, each call on the previous
-//!   output (a descent), mean of 7 runs; and throughput on independent
+//!   output (a descent), mean of 10 runs; and throughput on independent
 //!   inputs (full-domain style).
 //! * `2pc`: one call of F_prf on XOR-shared input, batches of 1 and of the
 //!   calls of one n = 32 key pair (32 joint AES–MMO calls at ν = 17, 64
@@ -55,7 +55,7 @@ fn local() {
     let m = Mmo::new(*b"prf-bench/key-01");
     let m2 = Mmo::new(*b"prf-bench/key-02");
     let (row, col, fss) = (RowLpn::new(), ColLpn::new(), lpn_prg());
-    let (reps, n_aes, n_lpn) = (7, 3_000_000, 300_000);
+    let (reps, n_aes, n_lpn) = (10, 3_000_000, 300_000);
     let x0 = Block(0x0123_4567_89ab_cdef_fedc_ba98_7654_3210);
 
     println!("# local latency (chained), ns/call, mean of {reps}");
