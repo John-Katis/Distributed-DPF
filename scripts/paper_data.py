@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Regenerates the pgfplots tables of paper-eval/8-dpf-data.tex from the
-CSVs in results-gen/, results-eval/ and results-PRF/.
+CSVs in results-gen/, results-eval/ and results-template/.
 
     python3 -I scripts/paper_data.py [paper-eval/8-dpf-data.tex]
 
@@ -14,7 +14,7 @@ last measured row plus the `+est` rows into \\T<p>XA/XB. Full-domain Eval
 tables: n, comp, LAN, WAN (s); measured rows into \\T<p>EA/EB, the last
 measured row plus `+est` rows into \\T<p>XEA/XEB. \\TOenv* is the maximum over
 our four variants. \\TP* are the tables of our template's section
-(results-PRF/): Floram, Half-Tree, and ours with AES--MMO (\\TPAes<ν>) and
+(results-template/): Floram, Half-Tree, and ours with AES--MMO (\\TPAes<ν>) and
 with the LPN-PRG (\\TPLpn<ν>), ν spelled out (one, five, seventeen).
 
 Also prints, for the prose: the smallest n from which every one of our four
@@ -35,7 +35,7 @@ PROTOS = {  # table prefix -> CSV name
 OURS = ['ht-aes-sh-bin', 'ht-aes-sh', 'ht-aes-mal', 'ht-aes-mal-arith']
 WIDTH = {64: 'A', 128: 'B'}
 NU = {1: 'one', 5: 'five', 17: 'seventeen'}
-PRF = {'PFl': 'floram', 'PHT': 'ht',  # results-PRF/{gen,full}/ CSV names
+PRF = {'PFl': 'floram', 'PHT': 'ht',  # results-template/{gen,full}/ CSV names
        **{f'PAes{w}': f'ht-aes-sh-bin-nu{v}' for v, w in NU.items()},
        **{f'PLpn{w}': f'ggm-lpn-bin-nu{v}' for v, w in NU.items()}}
 PRF_FULL_NU = 5
@@ -203,15 +203,15 @@ def main():
     for p, name in PRF.items():
         # n ≥ 8 as for the baselines (ours runs from n = ν + 1)
         prf[p] = {k: {n: v for n, v in d.items() if n >= 8}
-                  for k, d in load(f'results-PRF/gen/{name}.csv', 'gen', name).items()}
+                  for k, d in load(f'results-template/gen/{name}.csv', 'gen', name).items()}
         add(tables, p, '', 'clwb', prf[p])
         if name in ('floram', 'ht') or name.endswith(f'-nu{PRF_FULL_NU}'):
-            add(tables, p, 'E', 'clw', load(f'results-PRF/full/{name}.csv', 'full', name))
+            add(tables, p, 'E', 'clw', load(f'results-template/full/{name}.csv', 'full', name))
 
     report(gen, ours_gen)
     report_prf(prf)
     keys_per_pool([(n, f'results-gen/{n}.csv') for n in ['ht-mal-ferret', 'fssnn-bin', 'fssnn-arith', *OURS]]
-                  + [(f'{n}-nu{v}', f'results-PRF/gen/{n}-nu{v}.csv') for n in ['ht-aes-sh-bin', 'ggm-lpn-bin'] for v in NU])
+                  + [(f'{n}-nu{v}', f'results-template/gen/{n}-nu{v}.csv') for n in ['ht-aes-sh-bin', 'ggm-lpn-bin'] for v in NU])
 
     src = open(tex).read()
     block = re.compile(r'\\pgfplotstableread\{n [^\n]*\n.*?\n\}\\(T\w+)\n', re.S)

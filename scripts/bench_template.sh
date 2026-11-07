@@ -3,11 +3,11 @@
 # sh-bin) against the full GGM tree with the DGH+21 LPN-PRG (ggm-lpn bin),
 # each at several glue levels ν, and the two binary semi-honest baselines of
 # the Floram line, Floram and Half-Tree. Separate from bench_all.sh: writes
-# one CSV per protocol and ν into results-PRF/gen/ (mode gen) or
-# results-PRF/full/ (mode full), and leaves results-gen/ and results-eval/
+# one CSV per protocol and ν into results-template/gen/ (mode gen) or
+# results-template/full/ (mode full), and leaves results-gen/ and results-eval/
 # as they are.
 #
-#   [OUT_LIST=a,b,..] [NU_LIST="1 5 17"] [NU_FULL=5] [REPS=10] [ONLY="name .."] scripts/bench_prf.sh [gen|full|all]
+#   [OUT_LIST=a,b,..] [NU_LIST="1 5 17"] [NU_FULL=5] [REPS=10] [ONLY="name .."] scripts/bench_template.sh [gen|full|all]
 #
 # As in bench_all.sh, every protocol keeps its tree in memory (no streaming
 # tree) and is measured only up to the largest in-bits that fits, then
@@ -37,14 +37,14 @@ BIN=target/release/examples
 FAILED=()
 trap 'exit 130' INT
 
-# run MODE NAME MIN MAX EST BIN ARGS..: sweeps one CSV, results-PRF/MODE/NAME.csv,
+# run MODE NAME MIN MAX EST BIN ARGS..: sweeps one CSV, results-template/MODE/NAME.csv,
 # over in-bits MIN..=MAX and OUT_LIST, then estimates up to EST if EST > MAX
 # (from the last point that did not crash).
 run() {
-  local mode=$1 name=$2 lo=$3 hi=$4 est=$5 csv="results-PRF/$1/$2.csv" n m first=1 code
+  local mode=$1 name=$2 lo=$3 hi=$4 est=$5 csv="results-template/$1/$2.csv" n m first=1 code
   shift 5
   [[ -n ${ONLY:-} && " $ONLY " != *" $name "* ]] && return
-  mkdir -p "results-PRF/$mode"
+  mkdir -p "results-template/$mode"
   echo "$mode $name"
   : > "$csv"
   for ((n = lo; n <= hi; n++)); do
