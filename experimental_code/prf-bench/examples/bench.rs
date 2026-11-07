@@ -15,6 +15,9 @@
 //!   circuit with AND triples (`triples`), on the same Ferret COTs and the
 //!   same `mmo_shared`.
 //! * `ferret`: cost of one Ferret COT (time and bytes, refills included).
+//!
+//! Each mode prints its rows and writes them to `results-prf/<mode>.csv` at
+//! the repository root (git-ignored), replacing that file.
 
 use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, OtTower, Shared128, SharedKey, COTS_PER_CALL};
 use dpf_common::block::Block;
@@ -26,8 +29,33 @@ use fssnn::lpn_prg::lpn_prg;
 use fssnn::semi_honest::sec_prg;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+use std::fs::File;
 use std::hint::black_box;
+use std::io::Write;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// Where each mode's rows go, besides stdout: results-prf/<mode>.csv at the
+/// repository root (git-ignored), written afresh by every run of that mode.
+const OUT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../results-prf");
+static OUT: Mutex<Option<File>> = Mutex::new(None);
+
+/// `println!` that also appends the line to the current mode's CSV.
+macro_rules! out {
+    ($($t:tt)*) => {{
+        let s = format!($($t)*);
+        println!("{s}");
+        if let Some(f) = OUT.lock().unwrap().as_mut() {
+            writeln!(f, "{s}").unwrap();
+        }
+    }};
+}
+
+/// Starts results-prf/<mode>.csv for the rows that follow.
+fn to_file(mode: &str) {
+    std::fs::create_dir_all(OUT_DIR).unwrap();
+    *OUT.lock().unwrap() = Some(File::create(format!("{OUT_DIR}/{mode}.csv")).unwrap());
+}
 
 const COT_BITS: f64 = 0.443;
 /// Runs averaged per row in `2pc`.
@@ -58,7 +86,7 @@ fn local() {
     let (reps, n_aes, n_lpn) = (10, 3_000_000, 300_000);
     let x0 = Block(0x0123_4567_89ab_cdef_fedc_ba98_7654_3210);
 
-    println!("# local latency (chained), ns/call, mean of {reps}");
+    out!("# local latency (chained), ns/call, mean of {reps}");
     let pi = ns_per_call(reps, n_aes, |k| {
         let mut x = x0;
         for _ in 0..k {
@@ -107,14 +135,14 @@ fn local() {
         }
         black_box(x);
     });
-    println!("aes_block_pi,{pi:.2}");
-    println!("aes_mmo_h,{h:.2}");
-    println!("aes_mmo_ggm_node_2calls,{ggm:.2}");
-    println!("lpn_prg_rowwise_B,{lrow:.1}");
-    println!("lpn_prg_fssnn_current,{lfss:.1}");
-    println!("lpn_prg_colxor_B,{lcol:.1}");
+    out!("aes_block_pi,{pi:.2}");
+    out!("aes_mmo_h,{h:.2}");
+    out!("aes_mmo_ggm_node_2calls,{ggm:.2}");
+    out!("lpn_prg_rowwise_B,{lrow:.1}");
+    out!("lpn_prg_fssnn_current,{lfss:.1}");
+    out!("lpn_prg_colxor_B,{lcol:.1}");
 
-    println!("# local throughput (independent inputs), ns/call, mean of {reps}");
+    out!("# local throughput (independent inputs), ns/call, mean of {reps}");
     const BUF: usize = 1024;
     let xs: Vec<Block> = (0..BUF).map(|i| Block(i as u128 * 0x9e37_79b9_7f4a_7c15)).collect();
     let mut out = vec![Block::ZERO; BUF];
@@ -134,9 +162,9 @@ fn local() {
             black_box(row.eval(xs[i % BUF].0));
         }
     });
-    println!("aes_mmo_h_many,{ht:.2}");
-    println!("lpn_prg_rowwise_B_indep,{lrt:.1}");
-    println!("lpn_prg_colxor_B_indep,{lt:.1}");
+    out!("aes_mmo_h_many,{ht:.2}");
+    out!("lpn_prg_rowwise_B_indep,{lrt:.1}");
+    out!("lpn_prg_colxor_B_indep,{lt:.1}");
 }
 
 /// Per run: corr time, online time, corr stats, online stats, COTs used.
@@ -238,14 +266,14 @@ fn report(name: &str, batch: usize, out_bits: usize, r0: &[Run], r1: &[Run]) {
     let rounds = mean(r0.iter().map(|a| a.3.rounds as f64).collect());
     let t_on = per(&|a, b| a.1.max(b.1).as_secs_f64() * 1e6);
     let t_corr = per(&|a, b| a.0.max(b.0).as_secs_f64() * 1e6);
-    println!(
+    out!(
         "{name},{batch},{out_bits},{online:.2},{corr:.2},{cots:.0},{cot_kbit:.2},{total:.2},{:.1},{rounds},{t_on:.1},{t_corr:.1}",
         1000.0 * total / out_bits as f64
     );
 }
 
 fn twopc() {
-    println!("# 2PC, per call, mean of {REPS_2PC} runs: name,batch,out_bits,online_kbit,corr_kbit(measured),cots,cot_kbit(@{COT_BITS}),total_kbit,bit_per_out,rounds(per batch),online_us,corr_us");
+    out!("# 2PC, per call, mean of {REPS_2PC} runs: name,batch,out_bits,online_kbit,corr_kbit(measured),cots,cot_kbit(@{COT_BITS}),total_kbit,bit_per_out,rounds(per batch),online_us,corr_us");
     let reps = REPS_2PC;
     let mut rng = ChaCha20Rng::seed_from_u64(9);
     for batch in [1usize, 32] {
@@ -307,19 +335,31 @@ fn ferret() {
     let ((t0, s0), (t1, s1)) = run_two_party(party(0), party(1));
     let ns = t0.max(t1).as_nanos() as f64 / n as f64;
     let bits = 8.0 * (s0.bytes_sent + s1.bytes_sent) as f64 / n as f64;
-    println!("# Ferret B13, one direction, {n} COTs incl. refills");
-    println!("ferret_cot,ns_per_cot,{ns:.2},bits_per_cot,{bits:.3}");
+    out!("# Ferret B13, one direction, {n} COTs incl. refills");
+    out!("ferret_cot,ns_per_cot,{ns:.2},bits_per_cot,{bits:.3}");
 }
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "all".into());
     match mode.as_str() {
-        "local" => local(),
-        "2pc" => twopc(),
-        "ferret" => ferret(),
+        "local" => {
+            to_file("local");
+            local()
+        }
+        "2pc" => {
+            to_file("2pc");
+            twopc()
+        }
+        "ferret" => {
+            to_file("ferret");
+            ferret()
+        }
         "all" => {
+            to_file("local");
             local();
+            to_file("2pc");
             twopc();
+            to_file("ferret");
             ferret();
         }
         m => panic!("unknown mode {m}: local|2pc|ferret|all"),

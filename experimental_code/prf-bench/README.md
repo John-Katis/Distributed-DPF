@@ -12,7 +12,7 @@ cargo run --release -p exp-prf-bench --example bench-prf -- 2pc
 cargo run --release -p exp-prf-bench --example bench-prf -- ferret
 ```
 
-`all` runs the three modes in order. `2pc` runs 50 reps per row (about ten times its former minute) and `local` takes a few minutes.
+Each mode prints its rows and also writes them to `results-prf/<mode>.csv` at the repository root (git-ignored), replacing the file of that mode. `all` runs the three modes in order. `2pc` runs 50 reps per row (about ten times its former minute) and `local` takes a few minutes.
 
 ## What each mode measures
 
