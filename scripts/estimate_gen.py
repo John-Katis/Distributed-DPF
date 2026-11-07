@@ -7,8 +7,13 @@ width n0 up to a given width, one row per (in_bits, out_bits).
 The estimate continues the last two measured widths n0 - 1 and n0 (the mean
 of their rows, per output width), with k = n - n0:
 
-  * computation (comp_ms, gen_ms_p0, gen_ms_p1): c(n0)·2^k, since a tree-based
-    Gen makes Theta(2^n) PRG calls;
+  * generation (gen_ms_p0, gen_ms_p1): g(n0)·2^k, since a tree-based Gen
+    makes Theta(2^n) PRG calls;
+  * computation (comp_ms = setup + preprocessing + generation of the slower
+    party): setup as at n0, preprocessing linear as below, and the rest,
+    comp_ms - setup_ms - pre_ms at n0, x2 per bit (doubling all of comp_ms
+    would double the one-time setup too, which matters when n0 is far below
+    the target width);
   * setup (setup_ms, setup_bytes): as at n0, since it does not depend on n;
   * everything else that is counted (bytes, rounds, network times, COTs, key
     bytes, ...): linear in n, x(n0) + k·(x(n0) - x(n0 - 1)), as rounds and
@@ -22,7 +27,7 @@ measured.
 import sys
 from collections import defaultdict
 
-DOUBLING = {"comp_ms", "gen_ms_p0", "gen_ms_p1"}
+DOUBLING = {"gen_ms_p0", "gen_ms_p1"}
 CONSTANT = {"bm", "setup_ms", "setup_bytes"}
 INTS = {"bm", "comm_p0", "comm_p1", "comm_p2", "comm_total", "rounds", "setup_bytes", "pre_bytes",
         "pre_rounds", "gen_bytes", "gen_bytes_per_level", "gen_rounds", "and_gates", "cots", "key_bytes"}
@@ -54,13 +59,15 @@ def main(path, max_in):
             for c in cols[5:]:
                 x0, x1 = mean(n0 - 1, c), mean(n0, c)
                 e[c] = x1 * 2 ** k if c in DOUBLING else x1 if c in CONSTANT else max(0.0, x1 + k * (x1 - x0))
+            g = mean(n0, "comp_ms") - mean(n0, "setup_ms") - mean(n0, "pre_ms")
+            e["comp_ms"] = e["setup_ms"] + e["pre_ms"] + g * 2 ** k
             e["reps"] = 0
             e["gen_bytes_per_level"] = e["gen_bytes"] / n
             e["lan_total_ms"] = e["comp_ms"] + e["lan_net_ms"]
             e["wan_total_ms"] = e["comp_ms"] + e["wan_net_ms"]
             fmt = lambda c: str(round(e[c])) if c in INTS or c == "reps" else f"{e[c]:.6f}" if c.endswith("_ms") and c[:3] in ("com", "lan", "wan") else f"{e[c]:.3f}"
             out.append(",".join(["gen", variant + "+est", str(2 ** n), f"{n:.2f}", str(m)] + [fmt(c) for c in cols[5:]]))
-        out.insert(len(out) - (max_in - n0), f"# estimated: in_bits={n0 + 1}..={max_in} out_bits={m} from in_bits={n0 - 1},{n0} (computation x2 per bit, setup constant, the rest linear)")
+        out.insert(len(out) - (max_in - n0), f"# estimated: in_bits={n0 + 1}..={max_in} out_bits={m} from in_bits={n0 - 1},{n0} (generation x2 per bit, setup constant, the rest linear)")
     open(path, "w").write("\n".join(keep + out) + "\n")
 
 
