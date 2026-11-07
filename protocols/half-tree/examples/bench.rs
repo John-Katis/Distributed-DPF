@@ -8,8 +8,9 @@
 //!   Convert, wider payloads hash every leaf.
 //! * `mal-ferret`: actively secure DPF with one-bit leakage (ZGY+24). The
 //!   payload is `ceil(out_bits/128)` GF(2^128) elements, and every output also
-//!   carries a MAC. `gen` covers input authentication, generation and the final
-//!   MAC check. F_COT is Ferret (`FerretConfig::B13`), as in the paper's
+//!   carries a MAC. `gen` covers generation and the final MAC check; the
+//!   authentication of α and β is preprocessing, since Fig. 5 takes them as
+//!   authenticated inputs. F_COT is Ferret (`FerretConfig::B13`), as in the paper's
 //!   implementation: setup bootstraps Ferret and fills one ~10M-COT batch per
 //!   direction; preprocessing refills only if that runs out, and generation
 //!   then pays one bit per COT.
@@ -17,7 +18,8 @@
 //! Options and CSV columns are those of `dpf_common::bench`. Setup (base OTs,
 //! COT/MAC-key initialisation, coin tosses) and preprocessing (the random
 //! COTs, KOS-checked or from Ferret) are reported apart from generation, which
-//! derandomises those COTs with one bit each. Gen builds the key only: `ht` skips
+//! derandomises those COTs with one bit each (`mal-ferret`: the input
+//! authentication does, in preprocessing). Gen builds the key only: `ht` skips
 //! the full-domain output, and `mal-ferret` computes the outputs for the MAC
 //! check but does not keep them. `eval` and `full` use dealer keys.
 //! With `--stream`, Gen and the dealer use the streaming tree and `full` folds
