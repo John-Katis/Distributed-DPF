@@ -141,10 +141,10 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal --in-b
 cargo run --release -p ht-aes --example bench-ht-aes -- all --variant mal-arith --in-bits 16 --out-bits 31
 cargo run --release -p ht-aes --example bench-ht-aes -- gen --variant sh --in-bits 32 --out-bits 31 --nu 16   # glue level ν ≥ 1 (every variant)
 cargo run --release -p ggm-lpn --example bench-ggm-lpn -- all --variant bin --in-bits 16 --out-bits 64 --nu 5   # glue level ν ≥ 0
-scripts/bench_prf.sh                          # ours with AES (ht-aes sh-bin) and with the LPN-PRG (ggm-lpn), ν ∈ {1, 5, 17}, Floram and Half-Tree, Gen n = 8..42, into results-PRF/gen/
-scripts/bench_prf.sh full                     # full-domain eval, n = 8..32 (ours at ν = 5), into results-PRF/full/
-scripts/bench_all.sh                          # Gen, n = 12..42 (others measured to 36, estimated above), out-bits 64 and 128, one CSV per protocol in results-gen/
-scripts/bench_all.sh full                     # full-domain eval, same sweep, into results-eval/
+scripts/bench_prf.sh                          # ours with AES (ht-aes sh-bin) and with the LPN-PRG (ggm-lpn), ν ∈ {1, 5, 17}, Floram and Half-Tree (measured to 29, estimated above), Gen n = 8..42, 10 reps, into results-PRF/gen/
+scripts/bench_prf.sh full                     # full-domain eval, n = 8..32 (ours at ν = 5; measured to 28–29, estimated above), into results-PRF/full/
+scripts/bench_all.sh                          # Gen, n = 12..42 (FssNN and ours measured throughout, the others to 26–29 and estimated above), out-bits 64 and 128, 10 reps, one CSV per protocol in results-gen/
+scripts/bench_all.sh full                     # full-domain eval, n = 8..32 (measured to 27–29, estimated above), into results-eval/
 python3 -I scripts/paper_data.py              # rewrite the plot tables of paper-eval/8-dpf-data.tex (Gen amortized, see below); prints crossovers and keys per Ferret pool
 ```
 
@@ -262,9 +262,28 @@ path, so for those two only the full-domain eval streams.
   `tests/stream.rs` checks this), so only the timing columns differ.
 - The variant column reads `<variant>+stream`.
 - `--stream-from n` keeps the stored tree below 2^n and streams from 2^n on.
-  `scripts/bench_all.sh` uses it so each protocol runs stored for as long as
-  it fits in memory: streaming from n = 29 (Floram, HT, Floram-arith), 27
-  (HT-mal) and 30 (Duoram); FssNN always runs stored.
+
+The sweep scripts (`scripts/bench_all.sh`, `scripts/bench_prf.sh`) do not use
+streaming. Every protocol runs with its stored tree up to the largest input
+width that fits in memory and is estimated above it (rows `<variant>+est`,
+reps 0). The cut-offs come from peak RSS at ℓ = 128, which doubles per input
+bit, kept below ~18 GB of the 27 GB free:
+
+| protocol | Gen measured to | full-domain eval measured to |
+|---|---|---|
+| floram-cprg, half-tree (`ht`), floram-arith | 29 (17.6 GB) | 29 (17.3 GB) |
+| half-tree (`mal-ferret`) | 26 (11.3 GB) | 27 |
+| duoram (`2p`, `3p`) | 29 (16.5 GB) | 28 |
+| fssnn (`bin`, `arith`) | 42 (path to α only) | 28 |
+| ht-aes (`sh`, `sh-bin`) | 42 (path to α only) | 28 |
+| ht-aes (`mal`, `mal-arith`) | 42 (path to α only) | 27 |
+| ggm-lpn (`bench_prf.sh`) | 42 (path to α only) | 28 |
+
+`scripts/estimate_gen.py` doubles the computation per bit, keeps the setup and
+continues bytes, rounds and network time linearly; `scripts/estimate_full.py`
+doubles the time per bit at a constant ns per point. Both replace the `+est`
+rows of an earlier run. Streaming would instead measure these widths at about
+2× the Gen PRG work of the stored tree the papers describe.
 
 The stored code paths are unchanged and remain the default. In code, the
 `*_mode` entry points take a `dpf_common::stream::TreeMode`, and keys have an
