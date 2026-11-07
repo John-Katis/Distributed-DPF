@@ -24,7 +24,7 @@
 //!   `lsb(γ) = lsb(β) ⊕ 1 ⊕ τ_{m,0} ⊕ τ_{m,1}` is public.
 
 use crate::key::{CorrectionWord, DpfKey};
-use dpf_common::block::{bits_msb_first, blocks_for_bits, depth_for, expand_in_place, last_block_mask, mask_to_bits, xor_blocks, Block};
+use dpf_common::block::{bits_msb_first, blocks_for_bits, depth_for, expand_in_place, last_block_mask, xor_blocks, Block};
 use dpf_common::gc::{Evaluator, GcParty, Garbler, Wire};
 use dpf_common::net::{Channel, CommStats};
 use dpf_common::prg::Prg;
@@ -420,6 +420,19 @@ pub fn level_circuit<P: GcParty>(
     CorrectionWord { z, tau_l: bits[127], tau_r: bits[128] }
 }
 
+/// The low `out_bits` bits of a payload (`ceil(out_bits/128)` blocks), block 0
+/// first, lsb first.
+fn payload_bits(blocks: &[Block], out_bits: usize) -> Vec<bool> {
+    (0..out_bits).map(|i| blocks[i / 128].bit(i % 128)).collect()
+}
+
+/// The inverse of [`payload_bits`]: `ceil(out_bits/128)` blocks, bits from
+/// `out_bits` on cleared.
+fn payload_blocks(bits: &[bool], out_bits: usize) -> Vec<Block> {
+    assert_eq!(bits.len(), out_bits);
+    bits.chunks(128).map(Block::from_bits).collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gen_with<P: GcParty, T: CprgTree>(
     p: &mut P,
@@ -435,6 +448,8 @@ fn gen_with<P: GcParty, T: CprgTree>(
 ) -> (DpfKey, Option<FullEval>) {
     let depth = depth_for(n_size);
     let alpha = p.input_shared(ch, &bits_msb_first(alpha_share, depth));
+    // β enters the circuit as an XOR-shared value, as α does.
+    let beta = p.input_shared(ch, &payload_bits(beta_share, out_bits));
 
     let (mut local, mut acc) = T::start(prg.clone(), n_size, out_bits, root, mode);
     let mut cws = Vec::with_capacity(depth);
@@ -447,15 +462,13 @@ fn gen_with<P: GcParty, T: CprgTree>(
     }
     let leaf_acc = local.finalize(full_output);
 
-    // γ = acc^0 ⊕ acc^1 ⊕ β. Floram computes this in the circuit, but it has only
-    // XOR gates, so opening the XOR shares directly gives the same result.
-    // The leaf sum is `out_bits` wide and β ∈ F_2^out_bits, so the share is
-    // reduced to `out_bits` and γ goes in `ceil(out_bits/8)` bytes.
-    let mut mine = xor_blocks(&leaf_acc, beta_share);
-    mask_to_bits(&mut mine, out_bits);
-    ch.send_payload(&mine, out_bits);
-    let theirs = ch.recv_payload(out_bits);
-    let gamma = xor_blocks(&mine, &theirs);
+    // γ = acc^0 ⊕ acc^1 ⊕ β, computed in the circuit as in Floram (Fig. 7
+    // line 15): the leaf accumulators enter as XOR-shared inputs, the XORs are
+    // free, and γ is revealed to both. The leaf sum is `out_bits` wide and
+    // β ∈ F_2^out_bits, so γ has `out_bits` wires.
+    let acc = p.input_shared(ch, &payload_bits(&leaf_acc, out_bits));
+    let gamma_w: Vec<Wire> = acc.iter().zip(&beta).map(|(a, b)| p.xor(*a, *b)).collect();
+    let gamma = payload_blocks(&p.reveal_both(ch, &gamma_w), out_bits);
 
     let full = if full_output { local.output(&gamma) } else { None };
     let key = DpfKey { party: ch.party(), n_size, out_bits, bm: gamma.len(), prg, root, cws, gamma };

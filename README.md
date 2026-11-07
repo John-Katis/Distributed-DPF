@@ -48,7 +48,7 @@ REFERENCES.md        papers and techniques this code implements
 
 | Protocol | Security | α input | Payload | Correction words via |
 |---|---|---|---|---|
-| `floram-cprg` | semi-honest | XOR shares | `F_2^m` | GC MUX per level |
+| `floram-cprg` | semi-honest | XOR shares | `F_2^m` | GC MUX per level; γ = acc⁰ ⊕ acc¹ ⊕ β in the circuit (Fig. 7 l.15), the accumulator and β as XOR-shared inputs |
 | `half-tree` (`semi_honest`) | semi-honest | XOR shares | `F_2^m` | COT + global offset Δ (no 2PC per level) |
 | `half-tree` (`malicious`) | malicious, one-bit leakage | BDOZ-authenticated bits | `GF(2^128)^bm` + SPDZ MACs | as above, plus a batch MAC check |
 | `floram-arith` | semi-honest | additive shares mod 2^n (BitDec from bit triples) | `Z_2^ℓ`, ℓ ≤ 64 | COT-based block MUX per level, CCMP + arithmetic MUX for the last word |
