@@ -38,6 +38,8 @@ scripts/
   bench_all.sh       runs all benchmarks into results-gen/ or results-eval/
   bench_prf.sh       AES half-tree vs LPN-PRG GGM instance of ours at several ν,
                      with Floram and Half-Tree, into results-PRF/{gen,full}/
+  paper_data.py      the paper's plot tables (paper-eval/8-dpf-data.tex) from
+                     results-gen/, results-eval/, results-PRF/; Gen amortized
 REFERENCES.md        papers and techniques this code implements
 ```
 
@@ -143,6 +145,7 @@ scripts/bench_prf.sh                          # ours with AES (ht-aes sh-bin) an
 scripts/bench_prf.sh full                     # full-domain eval, n = 8..32 (ours at ν = 5), into results-PRF/full/
 scripts/bench_all.sh                          # Gen, n = 12..42 (others measured to 36, estimated above), out-bits 64 and 128, one CSV per protocol in results-gen/
 scripts/bench_all.sh full                     # full-domain eval, same sweep, into results-eval/
+python3 -I scripts/paper_data.py              # rewrite the plot tables of paper-eval/8-dpf-data.tex (Gen amortized, see below); prints crossovers and keys per Ferret pool
 ```
 
 All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`); the
@@ -180,6 +183,40 @@ row then breaks Gen down into three phases:
 | setup | `setup_ms`, `setup_bytes` | base OTs, keys, Ferret bootstrap; once per session |
 | preprocessing | `pre_ms`, `pre_bytes`, `pre_rounds` | the input-independent correlations Gen consumes: random COTs/OTs, bit triples, PRG correlations, Duoram-3P's dealing |
 | generation | `gen_ms_p*`, `gen_bytes`, `gen_bytes_per_level`, `gen_rounds` | generation proper, given those correlations |
+
+**Full and amortized cost.** The CSVs, and the tables of the paper, hold the
+full cost of one key pair: `comp_ms`, `comm_total`, `rounds` and the totals
+include the setup. The paper's Gen graphs (`scripts/paper_data.py`, for
+results-gen/ and results-PRF/) show the cost amortized over the keys of a
+session, which is what every further key pair costs:
+
+* the setup is removed from every protocol: `setup_ms` from the computation,
+  `setup_bytes` from the traffic, and its rounds (`rounds − pre_rounds −
+  gen_rounds`);
+* every COT a key pair draws from a Ferret pool (`cots`, without the base COTs
+  of Ferret's bootstrap, which FssNN's count includes) is charged at Ferret's
+  marginal rate, 0.443 bits (YWLZW20) and 23.3 ns (our Ferret), the price of
+  the next Ferret iteration once the pool runs dry. IKNP extension (Floram,
+  Half-Tree, Duoram-2P, Xing et al.) runs in preprocessing and stays as
+  measured;
+* LAN and WAN totals are recomputed from the result with the network model
+  above.
+
+Why this is the fair comparison: setup is paid once per session for any
+number of keys. The base OTs of IKNP extend to arbitrarily many OTs, and one
+Ferret B13 setup (≈ 0.8 s, 3 MB, 16 rounds) leaves 1.0·10⁷ COTs per direction,
+enough for about 110 (n = 42) to 1,600 (n = 12) key pairs of ours in
+results-gen/, 78 to 5,500 of the two template instances in results-PRF/
+(fewer at larger n and smaller ν), 150 to 510 of FssNN and 34,000 to 37,000
+of Zhang et al. (the script prints these ranges, assuming the COTs of a key
+pair split evenly between the two directions); after that, every further
+COT costs exactly the rate charged above. These protocols exist for
+efficiency at scale, and a deployment that generates keys at all generates
+many (e.g. the (ct)² DPFs of one PCG seed). Charging one key pair the whole
+setup would rank protocols by the size of their one-time setup (3 MB of
+Ferret against 22–44 KB of base OTs for Floram and Half-Tree) instead of by
+the cost of their keys, by an amount that vanishes after the first keys of a
+session. The same rule applies to every protocol; Duoram-3P has no setup.
 
 Where the paper (or its reference code) makes the correlations ahead of Gen,
 they are made in the preprocessing phase, before α and β are used. Where Gen
