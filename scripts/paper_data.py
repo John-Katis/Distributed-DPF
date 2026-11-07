@@ -30,7 +30,7 @@ from collections import defaultdict
 
 PROTOS = {  # table prefix -> CSV name
     'Fl': 'floram', 'HT': 'ht', 'HTm': 'ht-mal-ferret', 'FA': 'floram-arith',
-    'Fb': 'fssnn-bin', 'Fa': 'fssnn-arith', 'Dtwo': 'duoram-2p', 'Dthree': 'duoram-3p',
+    'Fb': 'fssnn-bin', 'Fa': 'fssnn-arith', 'Dtwo': 'duoram-2p',
 }
 OURS = ['ht-aes-sh-bin', 'ht-aes-sh', 'ht-aes-mal', 'ht-aes-mal-arith']
 WIDTH = {64: 'A', 128: 'B'}

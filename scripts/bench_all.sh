@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the DPF benchmarks (Floram, HT, HT-mal with Ferret, Floram-arith,
-# FssNN bin/arith, Duoram 2P/3P, ours: ht-aes {bin,arith} x {sh,mal}) over the same sweep and writes one CSV per
+# FssNN bin/arith, Duoram 2P (3P stays in the code), ours: ht-aes {bin,arith} x {sh,mal}) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen), results-single-point/ (mode eval:
 # evaluation at single points) or results-eval/ (full, all).
 #
@@ -136,7 +136,6 @@ run floram-arith     29  29   29   "$BIN/bench-floram-arith" "$MODE" "${S[@]}"
 run fssnn-bin        42  42   28   "$BIN/bench-fssnn"        "$MODE" "${S[@]}" --variant bin
 run fssnn-arith      42  42   28   "$BIN/bench-fssnn"        "$MODE" "${S[@]}" --variant arith
 run duoram-2p        29  29   28   "$BIN/bench-duoram"       "$MODE" "${S[@]}" --variant 2p
-run duoram-3p        29  29   28   "$BIN/bench-duoram"       "$MODE" "${S[@]}" --variant 3p
 if [[ ${SKIP_OURS:-0} != 1 ]]; then
   run ht-aes-sh-bin    42  42   28 "$BIN/bench-ht-aes" "$MODE" "${S[@]}" --variant sh-bin
   run ht-aes-sh        42  42   28 "$BIN/bench-ht-aes" "$MODE" "${S[@]}" --variant sh
