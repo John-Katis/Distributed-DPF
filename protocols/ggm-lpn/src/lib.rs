@@ -24,7 +24,7 @@
 //! party expands its own tree, and `D_σ` is the XOR of the two parties'
 //! sums over their levels; `α_ℓ·U_ℓ` is a preprocessed product, so a top
 //! level costs one opening. The glue turns level ν into a sharing of
-//! `st_{ν,0}` (tag sums mod 4, one AND, one bit-times-block product with
+//! `st_{ν,0}` (tag sums mod 4, the tag shared locally, one bit-times-block product with
 //! `⟨V_ν⟩`) and opens `M_ν`. Below ν the on-path states `u_{ℓ,0}` and `u_{ℓ,1}
 //! = u_{ℓ,0} ⊕ V_ℓ` are pre-sampled, so all 2(n − ν) 2PC PRG calls run in one
 //! batch of two rounds; then the side words and `M_ℓ` are opened. The leaf

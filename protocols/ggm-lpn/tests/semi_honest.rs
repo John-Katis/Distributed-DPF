@@ -97,9 +97,10 @@ fn two_party_gen_matches_deal() {
                     assert_eq!(keys[0].public_part(), want[0].public_part(), "{ctx}");
                     check(&keys, alpha, beta);
                 }
-                // Rounds of Gen proper: max(ν + 3, 4) (4 for ν = 0).
+                // Rounds of Gen proper: max(ν + 2, 4) (4 for ν = 0, ν + 2 for ν = n:
+                // no bottom levels; the leaf's two PRG rounds and opening fit in it).
                 let rounds = outs[0].gen_stats.rounds.max(outs[1].gen_stats.rounds);
-                let want = if nu == 0 { 4 } else { (nu + 3).max(4) };
+                let want = if nu == 0 { 4 } else if nu == n { nu + 2 } else { (nu + 2).max(4) };
                 assert_eq!(rounds, want, "gen rounds: {ctx}");
             }
         }

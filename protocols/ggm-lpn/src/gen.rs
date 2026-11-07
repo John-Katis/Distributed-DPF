@@ -13,7 +13,7 @@
 //!   level's online multiplexer (its bit is α_ℓ itself, so only the block is
 //!   opened);
 //! * `u_{n,0}`, and each party's root `r_b` with `lsb(r_b) = b`;
-//! * two bit-times-block triples for the glue (ν ≥ 1);
+//! * one bit-times-block triple for the glue (ν ≥ 1);
 //! * the LPN-PRG correlations of [`crate::prg_calls`] 2PC calls (DGH+21 §5.5,
 //!   from Ferret COTs; [`fssnn::semi_honest::sec_prg::preprocess`]).
 //!
@@ -21,8 +21,9 @@
 //! 1. Top phase, `ℓ = 1, …, ν`, on its own lane: each party expands its own
 //!    tree; `⟨D_σ⟩` is its sum of σ-children over level ℓ − 1, and `s^L_CW`,
 //!    `s^R_CW`, `t^L_CW`, `t^R_CW` are opened (one round per level). Glue: `E_b`,
-//!    `A_b` over level ν; `⟨t_{ν,0}⟩` from `A_0 mod 4` and `−A_1 mod 4` (one
-//!    AND); `⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ ¬⟨t_{ν,0}⟩·⟨V_ν⟩` (one product); `M_ν =
+//!    `A_b` over level ν; `⟨t_{ν,0}⟩ = (¬a_1, e_1)` locally, from the high
+//!    bits of `a = A_0 mod 4` and `e = −A_1 mod 4` (as in `ht-aes`, Lemma
+//!    "Glue"); `⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ ¬⟨t_{ν,0}⟩·⟨V_ν⟩` (one product); `M_ν =
 //!    st_{ν,0} ⊕ u_{ν,0}` opened.
 //! 2. Bottom, `ν < ℓ ≤ n`, on the main line: `G(⟨u_{ℓ−1,0}⟩)`, `G(⟨u_{ℓ−1,1}⟩)`
 //!    for all levels (and the leaf for ℓ > 127) in one batch (two rounds);
@@ -34,7 +35,7 @@
 //!    in the first round; for ℓ > 127 `Conv` of the two G outputs, opened
 //!    after the batch.
 //!
-//! Rounds: `max(ν + 3, 4)` for 1 ≤ ν < n (`4` for ν = 0).
+//! Rounds: `max(ν + 2, 4)` for 1 ≤ ν < n (`4` for ν = 0, `n + 2` for ν = n).
 
 use crate::key::{BinKey, LevelWord};
 use crate::{default_nu, prg_calls, seed, Word};
@@ -174,7 +175,7 @@ pub struct Pre {
     pub mux: Vec<(Block, Block)>,
     /// This party's root.
     pub root: Block,
-    /// The glue's two bit-times-block triples.
+    /// The glue's bit-times-block triple.
     pub glue: Vec<(bool, Block, Block)>,
     /// The LPN-PRG correlations.
     pub prg: Vec<PrgCorr>,
@@ -203,7 +204,7 @@ pub fn precompute<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, n
     let mut tweak = 0;
     let prg = preprocess(ch, cot, prg_calls(n, nu, bits), &mut tweak, rng);
     let wide = rot_wide_triples(ch, cot, n, rng);
-    let glue = if nu >= 1 { rot_string_triples(ch, cot, 2, rng) } else { vec![] };
+    let glue = if nu >= 1 { rot_string_triples(ch, cot, 1, rng) } else { vec![] };
     let first = nu.max(1);
     let alpha: Vec<bool> = wide.iter().map(|t| t.0).collect();
     let v: Vec<Block> = wide.iter().map(|t| t.1[0].with_lsb(b == 0)).collect();
@@ -286,13 +287,12 @@ fn top(pre: &Pre, ch: &mut Channel, lane: &mut Lane) -> (Vec<LevelWord>, Block) 
     // Glue: E_b and A_b over level ν.
     let (e_b, a_b) = nodes.iter().filter(|s| s.lsb()).fold((Block::ZERO, 0u64), |(e, c), &s| (e ^ s, c + 1));
     // Party 0 holds a = A_0 mod 4, party 1 e = −A_1 mod 4; t_{ν,0} = 1 iff
-    // a + e ≡ 1 (mod 4), and ¬t_{ν,0} = a_1 ⊕ e_1 ⊕ a_0·e_0 (as in ht-aes).
+    // a + e ≡ 1 (mod 4). a + e is odd, so a_0·e_0 = 0 and ¬t_{ν,0} = a_1 ⊕ e_1:
+    // each party's share is its high bit (as in ht-aes, Lemma "Glue").
     let v = if b == 0 { a_b % 4 } else { (4 - a_b % 4) % 4 };
-    let (x, y) = if b == 0 { (v & 1 == 1, false) } else { (false, v & 1 == 1) };
-    let g = bit_times_block(ch, lane, &[(x, Block::ZERO.with_lsb(y))], &pre.glue[..1])[0].lsb();
-    let not_t = ((v >> 1) & 1 == 1) ^ g;
+    let not_t = (v >> 1) & 1 == 1;
     // ⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ ¬⟨t_{ν,0}⟩·⟨V_ν⟩.
-    let st = e_b ^ bit_times_block(ch, lane, &[(not_t, pre.v[nu - 1])], &pre.glue[1..2])[0];
+    let st = e_b ^ bit_times_block(ch, lane, &[(not_t, pre.v[nu - 1])], &pre.glue[..1])[0];
     let m = open_on(ch, lane, (st ^ pre.u0(nu)).to_bytes().to_vec());
     (cws, Block::from_bytes(&m))
 }
@@ -392,7 +392,7 @@ pub struct GenOutput {
     pub gen_time: Duration,
     /// 2PC calls of the LPN-PRG.
     pub prg_calls: usize,
-    /// Bit products in Gen: the glue's AND and product, one multiplexer per
+    /// Bit products in Gen: the glue's product, one multiplexer per
     /// bottom level.
     pub products: usize,
     /// COTs consumed after setup (both directions).
@@ -439,7 +439,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_s
         pre_time,
         gen_time: t_gen.elapsed(),
         prg_calls: prg_calls(n, nu, bits),
-        products: if nu >= 1 { 2 } else { 0 } + (n - nu),
+        products: if nu >= 1 { 1 } else { 0 } + (n - nu),
         cots: cot.produced - cots_before,
     }
 }
