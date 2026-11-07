@@ -12,7 +12,8 @@ from the mean of the measured rows at n0 (per output width):
   * ns_per_point: as at n0, which is the same estimate per point;
   * communication, rounds, network time: 0, as measured (evaluation is local).
 
-Estimated rows have the variant suffix `+est` and reps 0. Rows from an earlier
+Estimated rows have the variant suffix `+est` (after the variant of the row at
+n0, without a `+stream` suffix) and reps 0. Rows from an earlier
 run of this script are replaced, so it can run again after more points were
 measured. Only `full,` rows are read and estimated; every other line (the
 `eval,` rows, headers) is kept as it is.
@@ -48,7 +49,7 @@ def main(path, max_in):
             e = {c: mean(c) * 2 ** (n - n0) if c in DOUBLING else mean(c) for c in cols[5:]}
             e["reps"] = 0
             fmt = lambda c: str(round(e[c])) if c in INTS or c == "reps" else f"{e[c]:.6f}" if c.endswith("_ms") else f"{e[c]:.2f}"
-            out.append(",".join(["full", variant + "+stream+est", str(2 ** n), f"{n:.2f}", str(m)] + [fmt(c) for c in cols[5:]]))
+            out.append(",".join(["full", variant + "+est", str(2 ** n), f"{n:.2f}", str(m)] + [fmt(c) for c in cols[5:]]))
     open(path, "w").write("\n".join(keep + out) + "\n")
 
 
