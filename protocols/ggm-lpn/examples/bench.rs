@@ -15,7 +15,7 @@
 //! counts the bit products of Gen (the glue's two, one multiplexer per
 //! bottom level). `eval` and `full` use dealer keys.
 
-use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
+use dpf_common::bench::{bench_eval, bench_full, mean, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::ot::FerretConfig;
 use dpf_common::stream::TreeMode;
 use ggm_lpn::gen::gen_reference;
@@ -46,11 +46,11 @@ fn gen_bin(o: &Opts, rng: &mut ChaCha20Rng) {
             bm: 1,
             sent,
             rounds,
-            total: median(total),
-            setup: median(setup),
-            pre: median(pre),
-            gen_p0: median(g0),
-            gen_p1: median(g1),
+            total: mean(total),
+            setup: mean(setup),
+            pre: mean(pre),
+            gen_p0: mean(g0),
+            gen_p1: mean(g1),
             setup_bytes: o0.setup_stats.total_bytes(),
             pre_bytes: o0.pre_stats.total_bytes(),
             pre_rounds: o0.pre_stats.rounds.max(o1.pre_stats.rounds),

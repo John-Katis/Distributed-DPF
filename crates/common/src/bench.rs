@@ -8,7 +8,7 @@
 //!   --in-bits n        domain 2^n (default 16)
 //!   --size N           any domain size N >= 2 (overrides --in-bits)
 //!   --out-bits m       payload bits (default 128)
-//!   --reps R           repetitions; the median is reported (default 5)
+//!   --reps R           repetitions; the mean is reported (default 5)
 //!   --points P         points per repetition in `eval` (default 100000)
 //!   --sweep            sweep in-bits over 8..=max-in-bits and out-bits over --out-list
 //!   --max-in-bits n    upper end of the sweep (default 20)
@@ -30,7 +30,7 @@
 //!   (see [`crate::net`]); the maximum over the parties, which is also the
 //!   protocol's total.
 //! * `comp_ms`: computation, the wall time from the start to the end of the
-//!   operation (median over `reps`; for Gen the slower party, setup included).
+//!   operation (mean over `reps`; for Gen the slower party, setup included).
 //! * `lan_net_ms`, `wan_net_ms`: analytical network time on each profile,
 //!   `rounds·latency + 8·comm_total/bandwidth` ([`crate::net::net_time`]).
 //! * `lan_total_ms`, `wan_total_ms`: `comp_ms` plus that profile's network time.
@@ -216,9 +216,10 @@ impl Opts {
     }
 }
 
-pub fn median(mut v: Vec<Duration>) -> Duration {
-    v.sort();
-    v[v.len() / 2]
+/// The mean of the runs. Linear, so the mean of a per-run difference (e.g.
+/// Gen without setup) is the difference of the means of its columns.
+pub fn mean(v: Vec<Duration>) -> Duration {
+    v.iter().sum::<Duration>() / v.len() as u32
 }
 
 pub fn ms(d: Duration) -> f64 {
@@ -302,7 +303,7 @@ pub fn print_gen(o: &Opts, r: &GenRow) {
 }
 
 /// Times `eval(x)` over `points` random inputs, `reps` times, and prints the
-/// median nanoseconds per evaluation.
+/// mean nanoseconds per evaluation.
 pub fn bench_eval(o: &Opts, bm: usize, xs: &[u64], mut eval: impl FnMut(u64)) {
     let mut times = vec![];
     for _ in 0..o.reps {
@@ -312,7 +313,7 @@ pub fn bench_eval(o: &Opts, bm: usize, xs: &[u64], mut eval: impl FnMut(u64)) {
         }
         times.push(t.elapsed());
     }
-    let per = Duration::from_secs_f64(median(times).as_secs_f64() / xs.len() as f64);
+    let per = Duration::from_secs_f64(mean(times).as_secs_f64() / xs.len() as f64);
     println!(
         "eval,{},{},{:.2},{},{},{},{},{},{:.1}",
         o.label(),
@@ -327,7 +328,7 @@ pub fn bench_eval(o: &Opts, bm: usize, xs: &[u64], mut eval: impl FnMut(u64)) {
     );
 }
 
-/// Times a full-domain evaluation `reps` times and prints the median.
+/// Times a full-domain evaluation `reps` times and prints the mean.
 pub fn bench_full(o: &Opts, bm: usize, mut full: impl FnMut()) {
     let mut times = vec![];
     for _ in 0..o.reps {
@@ -335,7 +336,7 @@ pub fn bench_full(o: &Opts, bm: usize, mut full: impl FnMut()) {
         full();
         times.push(t.elapsed());
     }
-    let m = median(times);
+    let m = mean(times);
     println!(
         "full,{},{},{:.2},{},{},{},{},{:.2}",
         o.label(),

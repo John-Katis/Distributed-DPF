@@ -29,7 +29,7 @@
 //! `eval` and `full` use dealer keys. With `--stream`, preprocessing and the
 //! dealer use the streaming tree and `full` folds the outputs.
 
-use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
+use dpf_common::bench::{bench_eval, bench_full, mean, print_gen, whole_gen, GenRow, Opts};
 use duoram::{gen_reference_mode, run_gen_2p_mode, run_gen_3p_mode, Lanes, TreeMode};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -70,11 +70,11 @@ fn bench_gen<R: Lanes>(o: &Opts, rng: &mut ChaCha20Rng) {
             bm: 1,
             sent,
             rounds,
-            total: median(total),
-            setup: median(setup),
-            pre: median(pre),
-            gen_p0: median(g0),
-            gen_p1: median(g1),
+            total: mean(total),
+            setup: mean(setup),
+            pre: mean(pre),
+            gen_p0: mean(g0),
+            gen_p1: mean(g1),
             setup_bytes: o0.setup_stats.total_bytes(),
             pre_bytes,
             pre_rounds: o0.pre_stats.rounds.max(o1.pre_stats.rounds),
@@ -87,12 +87,12 @@ fn bench_gen<R: Lanes>(o: &Opts, rng: &mut ChaCha20Rng) {
         },
     );
     println!(
-        "# online,{},{},bytes_both_dirs={},rounds={},median_ms={:.3}",
+        "# online,{},{},bytes_both_dirs={},rounds={},mean_ms={:.3}",
         o.label(),
         o.size,
         o0.online_stats.total_bytes(),
         o0.online_stats.rounds.max(o1.online_stats.rounds),
-        median(onl).as_secs_f64() * 1e3
+        mean(onl).as_secs_f64() * 1e3
     );
 }
 

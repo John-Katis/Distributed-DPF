@@ -26,8 +26,7 @@
 # the rows to the existing CSVs instead of starting them afresh, e.g. --append
 # --min-in-bits 37 runs only FssNN and ours on 37..=42. --reps-from n R (gen default: 33 2) runs each point from in-bits n on
 # as R separate 1-rep processes, one CSV row each, so the rows can be
-# averaged (the bench reports the median, which for 2 reps is the slower
-# one); below n a point runs once with --reps (default 5). Every (in-bits, out-bits)
+# averaged (scripts/paper_data.py takes their mean); below n a point runs once with --reps (default 5). Every (in-bits, out-bits)
 # point is its own process, so a point that crashes (out of memory, panic)
 # loses only itself: it is logged as a `# failed:` line in the CSV and the
 # sweep moves on to the next protocol, since the larger points would not fit

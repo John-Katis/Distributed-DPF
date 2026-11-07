@@ -23,7 +23,7 @@
 //! With `--stream`, Gen and the dealer use the streaming tree and `full` folds
 //! the outputs instead of storing them.
 
-use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
+use dpf_common::bench::{bench_eval, bench_full, mean, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::block::{blocks_for_bits, depth_for};
 use dpf_common::ot::FerretConfig;
 use dpf_common::testing::random_beta;
@@ -56,11 +56,11 @@ fn gen_ht(o: &Opts, rng: &mut ChaCha20Rng) {
             bm: o0.key.bm(),
             sent,
             rounds,
-            total: median(total),
-            setup: median(setup),
-            pre: median(pre),
-            gen_p0: median(g0),
-            gen_p1: median(g1),
+            total: mean(total),
+            setup: mean(setup),
+            pre: mean(pre),
+            gen_p0: mean(g0),
+            gen_p1: mean(g1),
             setup_bytes: o0.setup_stats.total_bytes(),
             pre_bytes: o0.pre_stats.total_bytes(),
             pre_rounds: o0.pre_stats.rounds.max(o1.pre_stats.rounds),
@@ -99,11 +99,11 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
             bm,
             sent,
             rounds,
-            total: median(total),
-            setup: median(setup),
-            pre: median(pre),
-            gen_p0: median(g0),
-            gen_p1: median(g1),
+            total: mean(total),
+            setup: mean(setup),
+            pre: mean(pre),
+            gen_p0: mean(g0),
+            gen_p1: mean(g1),
             setup_bytes: r0.setup_stats.total_bytes(),
             pre_bytes: r0.pre_stats.total_bytes(),
             pre_rounds: r0.pre_stats.rounds.max(r1.pre_stats.rounds),

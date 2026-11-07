@@ -167,7 +167,7 @@ Every row reports the same metrics, for Gen and for evaluation alike:
 | `comm_p0`, `comm_p1`, `comm_p2` | bytes each party sends (`comm_p2`: Duoram-3P's helper, else 0) |
 | `comm_total` | all traffic, their sum |
 | `rounds` | one-way latencies, a simultaneous exchange counting once; max over the parties = the protocol's total |
-| `comp_ms` | wall time from the start to the end of the operation (Gen: slower party, setup included) |
+| `comp_ms` | wall time from the start to the end of the operation, mean over `--reps` (Gen: slower party, setup included) |
 | `lan_net_ms`, `wan_net_ms` | `rounds·latency + 8·comm_total/bandwidth` |
 | `lan_total_ms`, `wan_total_ms` | `comp_ms` + that network time |
 

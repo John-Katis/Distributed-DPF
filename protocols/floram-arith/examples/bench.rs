@@ -13,7 +13,7 @@
 //! `full` folds the outputs instead of storing them.
 
 use dpf_common::arith::Ring;
-use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
+use dpf_common::bench::{bench_eval, bench_full, mean, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::net::CommStats;
 use floram_arith::{gen_reference_mode, run_gen_mode, TreeMode};
 use rand::{Rng, SeedableRng};
@@ -43,11 +43,11 @@ fn bench_gen<R: Ring>(o: &Opts, rng: &mut ChaCha20Rng) {
             bm: 1,
             sent,
             rounds,
-            total: median(total),
-            setup: median(setup),
+            total: mean(total),
+            setup: mean(setup),
             pre: std::time::Duration::ZERO,
-            gen_p0: median(g0),
-            gen_p1: median(g1),
+            gen_p0: mean(g0),
+            gen_p1: mean(g1),
             setup_bytes: o0.setup_stats.total_bytes(),
             pre_bytes: 0,
             pre_rounds: 0,

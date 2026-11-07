@@ -11,7 +11,7 @@
 //! the trusted-dealer `gen_reference`. With `--stream`, Gen and the dealer use
 //! the streaming tree and `full` folds the outputs instead of storing them.
 
-use dpf_common::bench::{bench_eval, bench_full, median, print_gen, whole_gen, GenRow, Opts};
+use dpf_common::bench::{bench_eval, bench_full, mean, print_gen, whole_gen, GenRow, Opts};
 use dpf_common::net::CommStats;
 use dpf_common::testing::random_beta;
 use floram_cprg::{gen_reference_keys, run_gen_mode, Block, TreeMode};
@@ -42,11 +42,11 @@ fn bench_gen(o: &Opts, rng: &mut ChaCha20Rng) {
             bm: o0.key.bm,
             sent,
             rounds,
-            total: median(total),
-            setup: median(setup),
+            total: mean(total),
+            setup: mean(setup),
             pre: std::time::Duration::ZERO,
-            gen_p0: median(gen0),
-            gen_p1: median(gen1),
+            gen_p0: mean(gen0),
+            gen_p1: mean(gen1),
             setup_bytes: o0.setup_stats.total_bytes(),
             pre_bytes: 0,
             pre_rounds: 0,

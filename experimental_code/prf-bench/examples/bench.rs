@@ -5,7 +5,7 @@
 //! ```
 //!
 //! * `local`: latency of one plaintext call, each call on the previous
-//!   output (a descent), median of 7 runs; and throughput on independent
+//!   output (a descent), mean of 7 runs; and throughput on independent
 //!   inputs (full-domain style).
 //! * `2pc`: one call of F_prf on XOR-shared input, batches of 1 and of the
 //!   calls of one n = 32 key pair (32 joint AES–MMO calls at ν = 17, 64
@@ -33,19 +33,14 @@ const COT_BITS: f64 = 0.443;
 /// Runs averaged per row in `2pc`.
 const REPS_2PC: usize = 50;
 
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    v[v.len() / 2]
-}
-
 fn mean(v: Vec<f64>) -> f64 {
     v.iter().sum::<f64>() / v.len() as f64
 }
 
-/// Median ns per call of `f` over `reps` runs of `calls` calls.
+/// Mean ns per call of `f` over `reps` runs of `calls` calls.
 fn ns_per_call(reps: usize, calls: usize, mut f: impl FnMut(usize)) -> f64 {
     f(calls / 10); // warm-up
-    median(
+    mean(
         (0..reps)
             .map(|_| {
                 let t = Instant::now();
@@ -63,7 +58,7 @@ fn local() {
     let (reps, n_aes, n_lpn) = (7, 3_000_000, 300_000);
     let x0 = Block(0x0123_4567_89ab_cdef_fedc_ba98_7654_3210);
 
-    println!("# local latency (chained), ns/call, median of {reps}");
+    println!("# local latency (chained), ns/call, mean of {reps}");
     let pi = ns_per_call(reps, n_aes, |k| {
         let mut x = x0;
         for _ in 0..k {
@@ -119,7 +114,7 @@ fn local() {
     println!("lpn_prg_fssnn_current,{lfss:.1}");
     println!("lpn_prg_colxor_B,{lcol:.1}");
 
-    println!("# local throughput (independent inputs), ns/call, median of {reps}");
+    println!("# local throughput (independent inputs), ns/call, mean of {reps}");
     const BUF: usize = 1024;
     let xs: Vec<Block> = (0..BUF).map(|i| Block(i as u128 * 0x9e37_79b9_7f4a_7c15)).collect();
     let mut out = vec![Block::ZERO; BUF];
