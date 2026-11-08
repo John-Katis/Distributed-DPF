@@ -13,7 +13,7 @@ total WAN (s), comm (KB), see `amortize`. Measured rows go into \\T<p>A/B, the
 last measured row plus the `+est` rows into \\T<p>XA/XB. Full-domain Eval
 tables: n, comp, LAN, WAN (s); measured rows into \\T<p>EA/EB, the last
 measured row plus `+est` rows into \\T<p>XEA/XEB. \\TOenv* is the maximum over
-our four variants. \\TP* are the tables of our template's section
+our four variants (\\TOenvXE*: above the last width all four measured). \\TP* are the tables of our template's section
 (results-template/): Floram, Half-Tree, and ours with AES--MMO (\\TPAes<ν>) and
 with the LPN-PRG (\\TPLpn<ν>), ν spelled out (one, five, seventeen).
 
@@ -199,6 +199,12 @@ def main():
             ns = set.intersection(*(set(o[(False, m)]) for o in ours))
             env = {n: [max(o[(False, m)][n][i] for o in ours) for i in range(len(cols))] for n in ns}
             tables[f'TOenv{tag}{w}'] = table(env, cols)
+            # above the last width all four measured: the maximum over measured and estimated rows
+            alls = [series(o, m) for o in ours]
+            xs = sorted(set.intersection(*(set(s) for s in alls)) - ns)
+            if ns and xs:
+                last = max(ns)
+                tables[f'TOenvX{tag}{w}'] = table({last: env[last], **{n: [max(s[n][i] for s in alls) for i in range(len(cols))] for n in xs}}, cols)
     prf = {}
     for p, name in PRF.items():
         # n ≥ 8 as for the baselines (ours runs from n = ν + 1)
