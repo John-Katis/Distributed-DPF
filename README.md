@@ -230,6 +230,10 @@ session, which is what every further key pair costs:
   the next Ferret iteration once the pool runs dry. IKNP extension (Floram,
   Half-Tree, Duoram-2P, Xing et al.) runs in preprocessing and stays as
   measured;
+* for the protocols on Ferret, the computation is preprocessing plus Gen
+  (`pre_ms` + the slower `gen_ms_p*`): `comp_ms` also holds ~59 ms, constant
+  in n, outside those timers, at least ~33 ms of it the teardown of the COT
+  pool, which a further key does not pay;
 * LAN and WAN totals are recomputed from the result with the network model
   above.
 

@@ -78,7 +78,14 @@ def amortize(name, row):
     setup_ms, setup_bytes = float(row[17]), float(row[21])
     pre_rounds, gen_rounds = float(row[23]), float(row[26])
     f = ferret_cots(name, float(row[28]))
-    comp = comp - setup_ms + f * COT_NS / 1e6
+    if f > 0:
+        # A Ferret session also spends ~59 ms, constant in n, outside its
+        # setup, preprocessing and Gen timers (at least ~33 ms of it the pool's
+        # teardown): a one-off per session, so only the per-key phases count.
+        comp = float(row[18]) + max(float(row[19]), float(row[20]))
+    else:
+        comp -= setup_ms
+    comp += f * COT_NS / 1e6
     nbytes = nbytes - setup_bytes + f * COT_BITS / 8
     rounds = pre_rounds + gen_rounds  # rounds = setup + pre + gen
     return [comp, comp + net(rounds, nbytes, LAN), comp + net(rounds, nbytes, WAN), nbytes]
