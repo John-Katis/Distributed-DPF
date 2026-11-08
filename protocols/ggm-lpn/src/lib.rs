@@ -33,7 +33,9 @@
 //! The pre-sampled bottom with side words and `M_ℓ` is the construction of the
 //! research note "Our Framework Applied to FssNN" (FssNN-PS). The side words in
 //! the top levels, which remove that note's per-level online multiplexer, are
-//! our extension of it; their privacy argument is not written yet.
+//! our extension of it. Key privacy, top levels included, follows from plain
+//! pseudorandomness of `G` by a hybrid over the levels (paper, "Instance with
+//! an Alternating-Moduli PRF"). Semi-honest only: the tests check correctness.
 //!
 //! * [`key`]: the key and its evaluation.
 //! * [`gen`]: the cleartext Gen ([`gen::deal`]) and the 2PC Gen ([`gen::gen`]).

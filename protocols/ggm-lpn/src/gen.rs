@@ -5,11 +5,11 @@
 //! bootstrap.
 //!
 //! **Preprocessing** (input-independent, [`precompute`]):
-//! * for every level ℓ, one bit-times-3-block triple `(a, [B_1, B_2, B_3],
-//!   [a·B_1, a·B_2, a·B_3])` from one random COT per direction. Its bit is
-//!   `α_ℓ` (so α is random, as in `ht-aes`), `B_1` gives `U_ℓ` and `⟨α_ℓ·U_ℓ⟩`,
-//!   `B_2` gives the pre-sampled `u_{ℓ−1,0}` of a bottom level and, through
-//!   its lsb, `⟨t_{ℓ−1,0}·α_ℓ⟩`, and `(B_3, a·B_3)` is the triple of the
+//! * for every level ℓ, one bit-times-3-block triple `(a, [Y_1, Y_2, Y_3],
+//!   [a·Y_1, a·Y_2, a·Y_3])` from one random COT per direction. Its bit is
+//!   `α_ℓ` (so α is random, as in `ht-aes`), `Y_1` gives `U_ℓ` and `⟨α_ℓ·U_ℓ⟩`,
+//!   `Y_2` gives the pre-sampled `u_{ℓ−1,0}` of a bottom level and, through
+//!   its lsb, `⟨t_{ℓ−1,0}·α_ℓ⟩`, and `(Y_3, a·Y_3)` is the triple of the
 //!   level's online multiplexer (its bit is α_ℓ itself, so only the block is
 //!   opened);
 //! * `u_{n,0}`, and each party's root `r_b` with `lsb(r_b) = b`;
@@ -171,7 +171,7 @@ pub struct Pre {
     pub u: Vec<Block>,
     /// `⟨t_{ℓ−1,0}·α_ℓ⟩` for the bottom levels (index ℓ − 1).
     pub ta: Vec<bool>,
-    /// The multiplexer triple of each level: `(⟨B_3⟩, ⟨α_ℓ·B_3⟩)`.
+    /// The multiplexer triple of each level: `(⟨Y_3⟩, ⟨α_ℓ·Y_3⟩)`.
     pub mux: Vec<(Block, Block)>,
     /// This party's root.
     pub root: Block,
@@ -209,7 +209,7 @@ pub fn precompute<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, n
     let alpha: Vec<bool> = wide.iter().map(|t| t.0).collect();
     let v: Vec<Block> = wide.iter().map(|t| t.1[0].with_lsb(b == 0)).collect();
     let av: Vec<Block> = wide.iter().map(|t| seed(t.2[0])).collect();
-    // u_{ℓ−1,0} of bottom level ℓ is B_2 of level ℓ; u_{n,0} is fresh.
+    // u_{ℓ−1,0} of bottom level ℓ is Y_2 of level ℓ; u_{n,0} is fresh.
     let mut u: Vec<Block> = (first + 1..=n).map(|l| wide[l - 1].1[1]).collect();
     u.push(Block::random(rng));
     let ta: Vec<bool> = wide.iter().map(|t| t.2[1].lsb()).collect();
@@ -339,7 +339,7 @@ fn gen_with(pre: &Pre, ch: &mut Channel, n_size: u64, bits: usize, beta_share: W
         w_cw = Some(Word::from_bytes(&open_on(ch, &mut leaf_lane, share.to_bytes(bits))));
     }
     if k > 0 {
-        // Side and tag words, and the multiplexer's opened block f = (st^L_0 ⊕ st^R_0) ⊕ B_3.
+        // Side and tag words, and the multiplexer's opened block f = (st^L_0 ⊕ st^R_0) ⊕ Y_3.
         let mut msg = Vec::with_capacity(49 * k);
         for j in 0..k {
             let i = nu + j;
@@ -358,7 +358,7 @@ fn gen_with(pre: &Pre, ch: &mut Channel, n_size: u64, bits: usize, beta_share: W
             let cw = unpack_word(&o[..33]);
             let f = Block::from_bytes(&o[33..]);
             let g0 = y[2 * j];
-            // st^Keep_0 = st^L_0 ⊕ α·(st^L_0 ⊕ st^R_0), α·Y = α·f ⊕ α·B_3.
+            // st^Keep_0 = st^L_0 ⊕ α·(st^L_0 ⊕ st^R_0), α·Y = α·f ⊕ α·Y_3.
             let keep0 = g0[0] ^ f.and_bit(pre.alpha[i]) ^ pre.mux[i].1;
             // t_{ℓ−1,0}·(s^Keep ∥ t^Keep) = t·w_L ⊕ (t·α)·(w_L ⊕ w_R).
             let (t, ta) = if level == 1 { (false, false) } else { (pre.u0(level - 1).lsb(), pre.ta[i]) };
