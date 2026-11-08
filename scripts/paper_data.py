@@ -44,10 +44,10 @@ PRF_FULL_NU = 5
 # the OT extension, Ferret's bootstrap with its first main iteration) is
 # removed. A protocol on Ferret instead pays every COT its key pair draws from
 # the setup's pool at Ferret's marginal rate: 0.443 bits (CCS:YWLZW20) and
-# 23.3 ns (our Ferret, Tab. prf-2pc), the cost of the next main iteration once
+# 22.2 ns (our Ferret, Tab. prf-2pc), the cost of the next main iteration once
 # the pool runs dry. OT extension by IKNP already runs inside preprocessing
 # and stays as measured.
-COT_BITS, COT_NS = 0.443, 23.3
+COT_BITS, COT_NS = 0.443, 22.2
 LAN, WAN = (10.0, 1000.0), (100.0, 100.0)  # ms per round, Mbit/s
 # Ferret B13 (crates/common/src/ot/ferret.rs): COTs per direction in the pool
 # after the bootstrap, main.n - (main.k + main.t * main.log_bin + 128).

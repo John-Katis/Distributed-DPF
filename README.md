@@ -113,7 +113,7 @@ its output folder if it is missing (all of them are git-ignored). The
 | §6a/§6d: evaluation at single points | `scripts/bench_all.sh eval` | `results-single-point/<protocol>.csv` |
 | §6b PRF microbenchmarks, Tab. prf-local | `cargo run --release -p exp-prf-bench --example bench-prf -- local` | `results-prf/local.csv` |
 | §6b PRF microbenchmarks, Tab. prf-2pc | `cargo run --release -p exp-prf-bench --example bench-prf -- 2pc` | `results-prf/2pc.csv` |
-| §6b/§6a: cost of one Ferret COT (the 23.3 ns charged when amortizing) | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` | `results-prf/ferret.csv` |
+| §6b/§6a: cost of one Ferret COT (the 22.2 ns charged when amortizing) | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` | `results-prf/ferret.csv` |
 | §6c our template (AES vs LPN-PRG), Gen (Fig. eval-template) | `scripts/bench_template.sh` | `results-template/gen/<protocol>[-nuν].csv` |
 | §6c our template, full-domain Eval (Fig. eval-template) | `scripts/bench_template.sh full` | `results-template/full/<protocol>[-nuν].csv` |
 | plot data of §6a and §6c | `python3 -I scripts/paper_data.py` (after the sweeps above) | rewrites the tables in `paper-eval/6-dpf-data.tex`; prints crossovers and keys per Ferret pool |
@@ -226,7 +226,7 @@ session, which is what every further key pair costs:
   gen_rounds`);
 * every COT a key pair draws from a Ferret pool (`cots`, without the base COTs
   of Ferret's bootstrap, which FssNN's count includes) is charged at Ferret's
-  marginal rate, 0.443 bits (YWLZW20) and 23.3 ns (our Ferret), the price of
+  marginal rate, 0.443 bits (YWLZW20) and 22.2 ns (our Ferret), the price of
   the next Ferret iteration once the pool runs dry. IKNP extension (Floram,
   Half-Tree, Duoram-2P, Xing et al.) runs in preprocessing and stays as
   measured;
