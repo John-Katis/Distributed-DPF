@@ -8,7 +8,9 @@
 # results-template/full/ (mode full), and leaves results-gen/ and results-eval/
 # as they are.
 #
-#   [OUT_LIST=a,b,..] [NU_LIST="1 5 17"] [NU_FULL=5] [REPS=10] [ONLY="name .."] scripts/bench_template.sh [gen|full|all]
+#   [APPEND=1] [OUT_LIST=a,b,..] [NU_LIST="1 5 17"] [NU_FULL=5] [REPS=10] [ONLY="name .."] scripts/bench_template.sh [gen|full|all]
+#
+# APPEND=1 keeps the rows already in a CSV, to add output widths to it; without it a CSV is rewritten.
 #
 # As in bench_all.sh, every protocol keeps its tree in memory (no streaming
 # tree) and is measured only up to the largest in-bits that fits, then
@@ -47,7 +49,7 @@ run() {
   [[ -n ${ONLY:-} && " $ONLY " != *" $name "* ]] && return
   mkdir -p "results-template/$mode"
   echo "$mode $name"
-  : > "$csv"
+  [[ -z ${APPEND:-} ]] && : > "$csv"
   for ((n = lo; n <= hi; n++)); do
     for m in ${OUT_LIST//,/ }; do
       "$@" "$mode" --in-bits "$n" --out-bits "$m" --reps "$REPS" \
