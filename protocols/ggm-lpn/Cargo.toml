@@ -1,12 +1,13 @@
 [package]
 name = "ggm-lpn"
-description = "Our template on a full GGM tree with the DGH+21 LPN-PRG: local top phase with two side seed words per level, glue, pre-sampled bottom levels joined by M_l, all 2PC PRG calls in one batch; semi-honest, binary payload."
+description = "Our template on a full GGM tree with the DGH+21 LPN-PRG: local top phase with two side seed words per level, glue, pre-sampled bottom levels joined by M_l, all 2PC PRG calls in one batch; semi-honest, binary or arithmetic payload."
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 dpf-common.workspace = true
 fssnn = { path = "../fssnn" }
+ht-aes = { path = "../ht-aes" }
 rand.workspace = true
 rand_chacha.workspace = true
 

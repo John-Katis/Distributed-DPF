@@ -36,8 +36,20 @@
 //!    after the batch.
 //!
 //! Rounds: `max(ν + 2, 4)` for 1 ≤ ν < n (`4` for ν = 0, `n + 2` for ν = n).
+//!
+//! **Arithmetic payload** ([`gen_arith`]): the tree as above and the leaf of
+//! the half-tree instance, indexed by tag: with `t = t_{n,0} = lsb(u_{n,0})`
+//! and `⟨Y⟩ = ⟨u_{n,0}⟩ ⊕ ⟨t·V_n⟩` (one Beaver product), `Y` and `Y ⊕ V_n` are
+//! the on-path leaf states with tags 0 and 1, and `W_CW = W^(0) − W^(1) −
+//! (1 − 2σ)·β` is linear in the B2A outputs of their mask bits and of `t`
+//! ([`ht_aes::leaf::tag_leaf`], two rounds, daBits from
+//! [`ht_aes::leaf::fp_pre`] in preprocessing). A mask is the integer of κ
+//! seed bits for κ ≤ λ = 127, as `Conv` of the Boolean leaf, so these three
+//! rounds run beside the bottom phase. For κ > 127 (`2^127 − 1`) it comes from
+//! two more calls of `G` in the batch, on inputs known after the product, so
+//! Gen takes 5 rounds below ν.
 
-use crate::key::{BinKey, LevelWord};
+use crate::key::{leaf_mask, mask_from_seed, seed_mask, ArithKey, BinKey, LevelWord, Tree};
 use crate::{default_nu, prg_calls, seed, Word};
 use dpf_common::block::{depth_for, Block};
 use dpf_common::bool2pc::rot_string_triples;
@@ -46,6 +58,8 @@ use dpf_common::net::{run_two_party, Channel, CommStats, Lane};
 use dpf_common::ot::{CotPair, FerretConfig, RandomCots};
 use fssnn::semi_honest::sec_prg::{eval_shared, preprocess, PrgCorr};
 use fssnn::tree::{conv, conv_prg, expand, SEED_BITS};
+use ht_aes::field::Field;
+use ht_aes::leaf::{fp_pre, leaf_dabits, tag_leaf};
 use rand::{CryptoRng, Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::time::{Duration, Instant};
@@ -85,16 +99,15 @@ fn level_word(g: [[Block; 2]; 2], a: bool, v: Block) -> LevelWord {
     LevelWord { s: [seed(d[0] ^ us.and_bit(!a)), seed(d[1] ^ us.and_bit(a))], t: [d[0].lsb() ^ a ^ true, d[1].lsb() ^ a] }
 }
 
-/// Trusted-dealer generation: the cleartext Gen, and the bit-exact oracle of
-/// [`gen`]. Asserts the invariant at every level: the on-path nodes differ by
+/// The cleartext tree: the level words, the shifts and the on-path leaf
+/// states. Asserts the invariant at every level: the on-path nodes differ by
 /// `V_ℓ`, and from the glue level on they are `u_{ℓ,0}`, `u_{ℓ,0} ⊕ V_ℓ`.
-pub fn deal(p: &DealParams, n_size: u64, bits: usize, alpha: u64, beta: Word) -> [BinKey; 2] {
+fn deal_tree(p: &DealParams, n_size: u64, alpha: u64) -> (Vec<LevelWord>, Vec<Block>, [Block; 2]) {
     let n = depth_for(n_size);
     let nu = p.nu;
     assert!(alpha < n_size && nu <= n && p.v.len() == n && p.u.len() == n + 1 - nu.max(1));
     assert!(!p.roots[0].lsb() && p.roots[1].lsb(), "lsb(r_b) = b");
     assert!(p.v.iter().all(|v| v.lsb()), "lsb(V_ℓ) = 1");
-    assert!((1..=256).contains(&bits) && beta == beta.masked(bits));
     let first = nu.max(1);
     let mut st = p.roots;
     let (mut cws, mut ms) = (Vec::with_capacity(n), Vec::with_capacity(p.u.len()));
@@ -112,8 +125,28 @@ pub fn deal(p: &DealParams, n_size: u64, bits: usize, alpha: u64, beta: Word) ->
         }
         cws.push(cw);
     }
+    (cws, ms, st)
+}
+
+/// Trusted-dealer generation: the cleartext Gen, and the bit-exact oracle of
+/// [`gen`].
+pub fn deal(p: &DealParams, n_size: u64, bits: usize, alpha: u64, beta: Word) -> [BinKey; 2] {
+    assert!((1..=256).contains(&bits) && beta == beta.masked(bits));
+    let (cws, ms, st) = deal_tree(p, n_size, alpha);
     let w_cw = conv(st[0], bits) ^ conv(st[1], bits) ^ beta;
-    let mk = |party: usize| BinKey { party, n_size, bits, nu, root: p.roots[party], cws: cws.clone(), ms: ms.clone(), w_cw };
+    let mk = |party: usize| BinKey { party, bits, tree: Tree { n_size, nu: p.nu, root: p.roots[party], cws: cws.clone(), ms: ms.clone() }, w_cw };
+    [mk(0), mk(1)]
+}
+
+/// The cleartext Gen with an arithmetic payload, the oracle of [`gen_arith`].
+pub fn deal_arith<F: Field>(p: &DealParams, n_size: u64, alpha: u64, beta: F) -> [ArithKey<F>; 2] {
+    let (cws, ms, st) = deal_tree(p, n_size, alpha);
+    let sigma = st[0].lsb();
+    let v = st[0] ^ st[1];
+    let y = st[0] ^ v.and_bit(sigma);
+    let w = |s: Block| F::from_block(leaf_mask::<F>(s));
+    let w_cw = w(y).sub(w(y ^ v)).sub(if sigma { beta.neg() } else { beta });
+    let mk = |party: usize| ArithKey { party, tree: Tree { n_size, nu: p.nu, root: p.roots[party], cws: cws.clone(), ms: ms.clone() }, w_cw };
     [mk(0), mk(1)]
 }
 
@@ -124,6 +157,14 @@ pub fn gen_reference(n_size: u64, nu: Option<usize>, bits: usize, alpha: u64, be
     let mut rng = ChaCha20Rng::from_seed(seed);
     let p = DealParams::random(&mut rng, n, nu.unwrap_or(default_nu(n)));
     deal(&p, n_size, bits, alpha, beta)
+}
+
+/// [`gen_reference`] with an arithmetic payload.
+pub fn gen_reference_arith<F: Field>(n_size: u64, nu: Option<usize>, alpha: u64, beta: F, seed: [u8; 32]) -> [ArithKey<F>; 2] {
+    let n = depth_for(n_size);
+    let mut rng = ChaCha20Rng::from_seed(seed);
+    let p = DealParams::random(&mut rng, n, nu.unwrap_or(default_nu(n)));
+    deal_arith(&p, n_size, alpha, beta)
 }
 
 /// A bit-times-3-block Beaver triple's shares.
@@ -177,6 +218,8 @@ pub struct Pre {
     pub root: Block,
     /// The glue's bit-times-block triple.
     pub glue: Vec<(bool, Block, Block)>,
+    /// The bit-times-block triple of `⟨Y⟩` (arithmetic payload).
+    pub leaf_triple: Option<(bool, Block, Block)>,
     /// The LPN-PRG correlations.
     pub prg: Vec<PrgCorr>,
 }
@@ -197,14 +240,16 @@ impl Pre {
     }
 }
 
-/// The preprocessing of one Gen of depth n, glue level ν and ℓ = `bits`.
-pub fn precompute<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, n: usize, nu: usize, bits: usize, rng: &mut R) -> Pre {
+/// The preprocessing of one Gen of depth n and glue level ν, with ℓ = `bits`
+/// mask bits per leaf and, if `y`, the triple of `⟨Y⟩`.
+pub fn precompute<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, n: usize, nu: usize, bits: usize, y: bool, rng: &mut R) -> Pre {
     assert!(n >= 1 && nu <= n);
     let b = ch.party();
     let mut tweak = 0;
     let prg = preprocess(ch, cot, prg_calls(n, nu, bits), &mut tweak, rng);
     let wide = rot_wide_triples(ch, cot, n, rng);
-    let glue = if nu >= 1 { rot_string_triples(ch, cot, 1, rng) } else { vec![] };
+    let mut glue = rot_string_triples(ch, cot, (nu >= 1) as usize + y as usize, rng);
+    let leaf_triple = if y { glue.pop() } else { None };
     let first = nu.max(1);
     let alpha: Vec<bool> = wide.iter().map(|t| t.0).collect();
     let v: Vec<Block> = wide.iter().map(|t| t.1[0].with_lsb(b == 0)).collect();
@@ -215,7 +260,7 @@ pub fn precompute<R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, n
     let ta: Vec<bool> = wide.iter().map(|t| t.2[1].lsb()).collect();
     let mux = wide.iter().map(|t| (t.1[2], t.2[2])).collect();
     let root = Block::random(rng).with_lsb(b == 1);
-    Pre { n, nu, alpha, v, av, u, ta, mux, root, glue, prg }
+    Pre { n, nu, alpha, v, av, u, ta, mux, root, glue, leaf_triple, prg }
 }
 
 /// Opens an XOR-shared message on `lane` (one round).
@@ -297,8 +342,24 @@ fn top(pre: &Pre, ch: &mut Channel, lane: &mut Lane) -> (Vec<LevelWord>, Block) 
     (cws, Block::from_bytes(&m))
 }
 
-/// Generation proper, given the preprocessing: the key.
-fn gen_with(pre: &Pre, ch: &mut Channel, n_size: u64, bits: usize, beta_share: Word) -> BinKey {
+/// `⟨Y⟩ = ⟨u_{n,0}⟩ ⊕ ⟨t_{n,0}·V_n⟩`, one round on `lane`.
+fn leaf_y(pre: &Pre, ch: &mut Channel, lane: &mut Lane) -> Block {
+    let (u, v) = (pre.u0(pre.n), pre.v[pre.n - 1]);
+    let triple = pre.leaf_triple.expect("the triple of Y");
+    u ^ bit_times_block(ch, lane, &[(u.lsb(), v)], &[triple])[0]
+}
+
+/// Generation proper, given the preprocessing: the level words, the shifts
+/// and the leaf word. `before` runs on the leaf lane before the batch of PRG
+/// calls and returns the leaf word if it needs no PRG call, and the extra
+/// inputs of the batch otherwise; `after` gets the outputs of those inputs,
+/// on a lane that starts after the batch.
+fn gen_with<L>(
+    pre: &Pre,
+    ch: &mut Channel,
+    before: impl FnOnce(&mut Channel, &mut Lane) -> (Option<L>, Vec<u128>),
+    after: impl FnOnce(&mut Channel, &mut Lane, &[[Block; 2]]) -> L,
+) -> (Vec<LevelWord>, Vec<Block>, L) {
     let b = ch.party();
     let (n, nu) = (pre.n, pre.nu);
     let k = n - nu;
@@ -310,14 +371,9 @@ fn gen_with(pre: &Pre, ch: &mut Channel, n_size: u64, bits: usize, beta_share: W
     } else {
         (vec![], vec![])
     };
-    // Leaf word for ℓ ≤ λ: Conv(u_{n,0}) ⊕ Conv(u_{n,1}) = Conv(V_n), linear.
     let mut leaf_lane = ch.lane();
-    let mut w_cw = None;
-    if bits <= SEED_BITS {
-        let share = conv(pre.v[n - 1], bits) ^ beta_share;
-        w_cw = Some(Word::from_bytes(&open_on(ch, &mut leaf_lane, share.to_bytes(bits))));
-    }
-    // Bottom: the on-path inputs of levels ν + 1..=n (and the leaf for ℓ > λ).
+    let (mut w_cw, extra) = before(ch, &mut leaf_lane);
+    // Bottom: the on-path inputs of levels ν + 1..=n, and the leaf's.
     let inputs = |level: usize| -> [Block; 2] {
         // The on-path nodes of level `level` (≥ ν).
         if level == 0 {
@@ -330,13 +386,11 @@ fn gen_with(pre: &Pre, ch: &mut Channel, n_size: u64, bits: usize, beta_share: W
         }
     };
     let mut xs: Vec<u128> = (nu..n).flat_map(|l| inputs(l).map(|x| seed(x).0)).collect();
-    if bits > SEED_BITS {
-        xs.extend(inputs(n).map(|x| seed(x).0));
-    }
+    xs.extend(extra);
     let y: Vec<[Block; 2]> = eval_shared(ch, &pre.prg, &xs).into_iter().map(|g| [Block(g[0]), Block(g[1])]).collect();
-    if bits > SEED_BITS {
-        let share = conv_prg(y[2 * k], bits) ^ conv_prg(y[2 * k + 1], bits) ^ beta_share;
-        w_cw = Some(Word::from_bytes(&open_on(ch, &mut leaf_lane, share.to_bytes(bits))));
+    let mut after_lane = ch.lane();
+    if w_cw.is_none() {
+        w_cw = Some(after(ch, &mut after_lane, &y[2 * k..]));
     }
     if k > 0 {
         // Side and tag words, and the multiplexer's opened block f = (st^L_0 ⊕ st^R_0) ⊕ Y_3.
@@ -370,14 +424,62 @@ fn gen_with(pre: &Pre, ch: &mut Channel, n_size: u64, bits: usize, beta_share: W
         ch.send_blocks(&m_shares);
         ms.extend(m_shares.iter().zip(ch.recv_blocks(k)).map(|(&x, y)| x ^ y));
     }
+    ch.join(after_lane);
     ch.join(leaf_lane);
     ch.join(top_lane);
-    BinKey { party: b, n_size, bits, nu, root: pre.root, cws, ms, w_cw: w_cw.expect("leaf word") }
+    (cws, ms, w_cw.expect("leaf word"))
 }
 
-/// Everything one party gets out of [`gen`].
-pub struct GenOutput {
-    pub key: BinKey,
+/// The leaf of the Boolean payload around [`gen_with`]: for ℓ ≤ λ,
+/// `Conv(u_{n,0}) ⊕ Conv(u_{n,1}) = Conv(V_n)`, linear.
+fn gen_bin_key(pre: &Pre, ch: &mut Channel, n_size: u64, bits: usize, beta_share: Word) -> BinKey {
+    let (cws, ms, w_cw) = gen_with(
+        pre,
+        ch,
+        |ch, lane| {
+            if bits <= SEED_BITS {
+                let share = conv(pre.v[pre.n - 1], bits) ^ beta_share;
+                (Some(Word::from_bytes(&open_on(ch, lane, share.to_bytes(bits)))), vec![])
+            } else {
+                let u = pre.u0(pre.n);
+                (None, vec![seed(u).0, seed(u ^ pre.v[pre.n - 1]).0])
+            }
+        },
+        |ch, lane, y| {
+            let share = conv_prg(y[0], bits) ^ conv_prg(y[1], bits) ^ beta_share;
+            Word::from_bytes(&open_on(ch, lane, share.to_bytes(bits)))
+        },
+    );
+    BinKey { party: ch.party(), bits, tree: Tree { n_size, nu: pre.nu, root: pre.root, cws, ms }, w_cw }
+}
+
+/// The tag-indexed leaf of an arithmetic payload around [`gen_with`].
+fn gen_arith_key<F: Field>(pre: &Pre, dabits: &[(bool, F)], ch: &mut Channel, n_size: u64, beta: F) -> ArithKey<F> {
+    let t = pre.u0(pre.n).lsb();
+    let v = pre.v[pre.n - 1];
+    let (cws, ms, w_cw) = gen_with(
+        pre,
+        ch,
+        |ch, lane| {
+            if mask_from_seed::<F>() {
+                let y = leaf_y(pre, ch, lane);
+                (Some(tag_leaf(ch, lane, [seed_mask(y), seed_mask(y ^ v)], t, dabits, beta)), vec![])
+            } else {
+                // The batch's inputs depend on the product.
+                let mut first = ch.lane();
+                let y = leaf_y(pre, ch, &mut first);
+                ch.join(first);
+                (None, vec![seed(y).0, seed(y ^ v).0])
+            }
+        },
+        |ch, lane, g| tag_leaf(ch, lane, [g[0][0], g[1][0]], t, dabits, beta),
+    );
+    ArithKey { party: ch.party(), tree: Tree { n_size, nu: pre.nu, root: pre.root, cws, ms }, w_cw }
+}
+
+/// Everything one party gets out of [`gen`] or [`gen_arith`].
+pub struct GenOutput<K = BinKey> {
+    pub key: K,
     /// This party's XOR share of the random α (bit `n − 1 − i` is level i + 1).
     pub alpha_share: u64,
     /// This party's shares of `V_1, …, V_n` and of `u_{ℓ,0}`, `ℓ ≥ max(ν, 1)`
@@ -393,18 +495,25 @@ pub struct GenOutput {
     /// 2PC calls of the LPN-PRG.
     pub prg_calls: usize,
     /// Bit products in Gen: the glue's product, one multiplexer per
-    /// bottom level.
+    /// bottom level, and the product of `⟨Y⟩` for an arithmetic payload.
     pub products: usize,
     /// COTs consumed after setup (both directions).
     pub cots: usize,
 }
 
-/// This party's side of the generation: setup, preprocessing, then Gen with
-/// glue level ν (`0 ≤ ν ≤ n`, [`default_nu`] if `None`), a random α and an
-/// XOR-shared `β ∈ {0,1}^ℓ`, `1 ≤ ℓ ≤ 256`. `ferret`: the silent-OT
-/// parameters (`B13` for benchmarks, `TOY` for tests).
-pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_share: Word, seed: [u8; 32], ferret: FerretConfig) -> GenOutput {
-    assert!((1..=256).contains(&bits));
+/// Setup, preprocessing (the common part and `extra`), then `run`.
+#[allow(clippy::too_many_arguments)]
+fn drive<K, X>(
+    ch: &mut Channel,
+    n_size: u64,
+    nu: Option<usize>,
+    bits: usize,
+    y: bool,
+    seed: [u8; 32],
+    ferret: FerretConfig,
+    extra: impl FnOnce(&mut Channel, &mut CotPair, &mut ChaCha20Rng) -> X,
+    run: impl FnOnce(&Pre, X, &mut Channel) -> K,
+) -> GenOutput<K> {
     let n = depth_for(n_size);
     let nu = nu.unwrap_or(default_nu(n));
     assert!(nu <= n, "0 ≤ ν ≤ n");
@@ -418,7 +527,8 @@ pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_s
     let setup_time = t_setup.elapsed();
     let cots_before = cot.produced;
     let t_pre = Instant::now();
-    let pre = precompute(ch, &mut cot, n, nu, bits, &mut rng);
+    let pre = precompute(ch, &mut cot, n, nu, bits, y, &mut rng);
+    let x = extra(ch, &mut cot, &mut rng);
     let pre_stats = ch.stats().since(&setup_stats);
     let pre_time = t_pre.elapsed();
     // Timing only: neither party's gen time includes waiting for the other's
@@ -426,7 +536,7 @@ pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_s
     ch.sync();
     let gen_start = ch.stats();
     let t_gen = Instant::now();
-    let key = gen_with(&pre, ch, n_size, bits, beta_share);
+    let key = run(&pre, x, ch);
     GenOutput {
         key,
         alpha_share: pre.alpha_share(),
@@ -439,9 +549,35 @@ pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_s
         pre_time,
         gen_time: t_gen.elapsed(),
         prg_calls: prg_calls(n, nu, bits),
-        products: if nu >= 1 { 1 } else { 0 } + (n - nu),
+        products: (nu >= 1) as usize + (n - nu) + y as usize,
         cots: cot.produced - cots_before,
     }
+}
+
+/// This party's side of the generation: setup, preprocessing, then Gen with
+/// glue level ν (`0 ≤ ν ≤ n`, [`default_nu`] if `None`), a random α and an
+/// XOR-shared `β ∈ {0,1}^ℓ`, `1 ≤ ℓ ≤ 256`. `ferret`: the silent-OT
+/// parameters (`B13` for benchmarks, `TOY` for tests).
+pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_share: Word, seed: [u8; 32], ferret: FerretConfig) -> GenOutput {
+    assert!((1..=256).contains(&bits));
+    drive(ch, n_size, nu, bits, false, seed, ferret, |_, _, _| (), |pre, (), ch| gen_bin_key(pre, ch, n_size, bits, beta_share))
+}
+
+/// [`gen`] with a public payload in the prime field F and additive output
+/// shares. The daBits of the leaf follow the common preprocessing, as in the
+/// half-tree instance.
+pub fn gen_arith<F: Field>(ch: &mut Channel, n_size: u64, nu: Option<usize>, beta: F, seed: [u8; 32], ferret: FerretConfig) -> GenOutput<ArithKey<F>> {
+    drive(
+        ch,
+        n_size,
+        nu,
+        F::KAPPA,
+        true,
+        seed,
+        ferret,
+        |ch, cot, rng| fp_pre::<F, F, _>(ch, cot, leaf_dabits::<F>(&[1]), 0, &[], rng),
+        |pre, fpre, ch| gen_arith_key(pre, &fpre.dabits, ch, n_size, beta),
+    )
 }
 
 /// Both parties' [`gen`] on an in-process channel, β XOR-shared at random;
@@ -455,6 +591,21 @@ pub fn run_gen(n_size: u64, nu: Option<usize>, bits: usize, beta: Word, seed: u6
         move |c: &mut Channel| {
             let t = Instant::now();
             let o = gen(c, n_size, nu, bits, shares[party], seeds[party], ferret);
+            (o, t.elapsed())
+        }
+    };
+    let ((o0, t0), (o1, t1)) = run_two_party(timed(0), timed(1));
+    ([o0, o1], [t0, t1])
+}
+
+/// Both parties' [`gen_arith`] on an in-process channel.
+pub fn run_gen_arith<F: Field>(n_size: u64, nu: Option<usize>, beta: F, seed: u64, ferret: FerretConfig) -> ([GenOutput<ArithKey<F>>; 2], [Duration; 2]) {
+    let mut rng = ChaCha20Rng::seed_from_u64(seed);
+    let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
+    let timed = |party: usize| {
+        move |c: &mut Channel| {
+            let t = Instant::now();
+            let o = gen_arith(c, n_size, nu, beta, seeds[party], ferret);
             (o, t.elapsed())
         }
     };

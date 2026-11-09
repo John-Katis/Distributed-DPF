@@ -28,7 +28,8 @@
 //! `⟨V_ν⟩`) and opens `M_ν`. Below ν the on-path states `u_{ℓ,0}` and `u_{ℓ,1}
 //! = u_{ℓ,0} ⊕ V_ℓ` are pre-sampled, so all 2(n − ν) 2PC PRG calls run in one
 //! batch of two rounds; then the side words and `M_ℓ` are opened. The leaf
-//! word is `Conv(u_{n,0}) ⊕ Conv(u_{n,1}) ⊕ β`.
+//! word is `Conv(u_{n,0}) ⊕ Conv(u_{n,1}) ⊕ β`, or, for an arithmetic payload
+//! ([`gen::gen_arith`]), the tag-indexed word of the half-tree instance.
 //!
 //! The pre-sampled bottom with side words and `M_ℓ` is the construction of the
 //! research note "Our Framework Applied to FssNN" (FssNN-PS). The side words in
@@ -44,8 +45,8 @@ pub mod gen;
 pub mod key;
 
 pub use fssnn::Word;
-pub use gen::{deal, gen, gen_reference, run_gen, DealParams, GenOutput};
-pub use key::{BinKey, LevelWord};
+pub use gen::{deal, deal_arith, gen, gen_arith, gen_reference, gen_reference_arith, run_gen, run_gen_arith, DealParams, GenOutput};
+pub use key::{ArithKey, BinKey, LevelWord, Tree};
 
 use dpf_common::block::Block;
 

@@ -196,6 +196,7 @@ version = "0.1.0"
 dependencies = [
  "dpf-common",
  "fssnn",
+ "ht-aes",
  "rand",
  "rand_chacha",
 ]
