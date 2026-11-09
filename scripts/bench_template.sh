@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The PRF comparison of our template: the half-tree with AES–MMO (ht-aes
-# sh-bin) against the full GGM tree with the DGH+21 LPN-PRG (ggm-lpn bin),
+# sh-bin) against the full GGM tree with the DGH+21 LPN-PRG (ggm-lpn bin, and
+# arith for the applications),
 # each at several glue levels ν, and the two binary semi-honest baselines of
 # the Floram line, Floram and Half-Tree. Separate from bench_all.sh: writes
 # one CSV per protocol and ν into results-template/gen/ (mode gen) or
@@ -72,6 +73,7 @@ if [[ $MODE == gen || $MODE == all ]]; then
   for nu in $NU_LIST; do
     run gen "ht-aes-sh-bin-nu$nu" $((nu + 1)) 42 0 "$BIN/bench-ht-aes" --variant sh-bin --nu "$nu"
     run gen "ggm-lpn-bin-nu$nu"   $((nu + 1)) 42 0 "$BIN/bench-ggm-lpn" --variant bin --nu "$nu"
+    run gen "ggm-lpn-arith-nu$nu" $((nu + 1)) 42 0 "$BIN/bench-ggm-lpn" --variant arith --nu "$nu"
   done
 fi
 if [[ $MODE == full || $MODE == all ]]; then
@@ -79,6 +81,7 @@ if [[ $MODE == full || $MODE == all ]]; then
   run full ht     8 29 32 "$BIN/bench-half-tree" --variant ht
   run full "ht-aes-sh-bin-nu$NU_FULL" $((NU_FULL + 1)) 28 32 "$BIN/bench-ht-aes" --variant sh-bin --nu "$NU_FULL"
   run full "ggm-lpn-bin-nu$NU_FULL"   $((NU_FULL + 1)) 28 32 "$BIN/bench-ggm-lpn" --variant bin --nu "$NU_FULL"
+  run full "ggm-lpn-arith-nu$NU_FULL" $((NU_FULL + 1)) 28 32 "$BIN/bench-ggm-lpn" --variant arith --nu "$NU_FULL"
 fi
 
 if ((${#FAILED[@]})); then
