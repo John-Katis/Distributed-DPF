@@ -13,7 +13,7 @@ total WAN (s), comm (KB), see `amortize`. Measured rows go into \\T<p>A/B, the
 last measured row plus the `+est` rows into \\T<p>XA/XB. Full-domain Eval
 tables: n, comp, LAN, WAN (s); measured rows into \\T<p>EA/EB, the last
 measured row plus `+est` rows into \\T<p>XEA/XEB. \\TOenv* is the maximum over
-our four variants and \\TFenv* over FssNN's two (\\T?envXE*: above the last width all were measured). \\TP* are the tables of our template's section
+our four variants, \\TFenv* over FssNN's two and \\TLpnenv* over the Boolean and arithmetic LPN instance (\\T?envXE*: above the last width all were measured). \\TP* are the tables of our template's section
 (results-template/): Floram, Half-Tree, and ours with AES--MMO (\\TPAes<ν>) and
 with the LPN-PRG (\\TPLpn<ν>), ν spelled out (one, five, seventeen).
 
@@ -204,8 +204,13 @@ def main():
         if mode == 'gen':
             ours_gen = ours
         fssnn = [load(f'{d}/{name}.csv', mode, name) for name in FSSNN]
-        for prefix, group in [('TOenv', ours), ('TFenv', fssnn)]:
+        # The LPN instance: Boolean and arithmetic, Gen at ν = 1, Eval at PRF_FULL_NU.
+        nu = 1 if mode == 'gen' else PRF_FULL_NU
+        lpn = [load(f'results-template/{mode}/ggm-lpn-{v}-nu{nu}.csv', mode, f'ggm-lpn-{v}-nu{nu}') for v in ('bin', 'arith')]
+        for prefix, group in [('TOenv', ours), ('TFenv', fssnn), ('TLpnenv', lpn)]:
             for m, w in WIDTH.items():
+                if not all((False, m) in o for o in group):
+                    continue  # the arithmetic LPN instance has ℓ = 64 only
                 ns = set.intersection(*(set(o[(False, m)]) for o in group))
                 env = {n: [max(o[(False, m)][n][i] for o in group) for i in range(len(cols))] for n in ns}
                 tables[f'{prefix}{tag}{w}'] = table(env, cols)
