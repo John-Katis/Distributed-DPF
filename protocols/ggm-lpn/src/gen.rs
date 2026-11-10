@@ -432,7 +432,8 @@ fn gen_with<L>(
 
 /// The leaf of the Boolean payload around [`gen_with`]: for ℓ ≤ λ,
 /// `Conv(u_{n,0}) ⊕ Conv(u_{n,1}) = Conv(V_n)`, linear.
-fn gen_bin_key(pre: &Pre, ch: &mut Channel, n_size: u64, bits: usize, beta_share: Word) -> BinKey {
+fn gen_bin_key(pre: &Pre, ch: &mut Channel, n_size: u64, bits: usize, beta: Word) -> BinKey {
+    let beta_share = if ch.party() == 0 { beta } else { Word::ZERO };
     let (cws, ms, w_cw) = gen_with(
         pre,
         ch,
@@ -555,12 +556,12 @@ fn drive<K, X>(
 }
 
 /// This party's side of the generation: setup, preprocessing, then Gen with
-/// glue level ν (`0 ≤ ν ≤ n`, [`default_nu`] if `None`), a random α and an
-/// XOR-shared `β ∈ {0,1}^ℓ`, `1 ≤ ℓ ≤ 256`. `ferret`: the silent-OT
+/// glue level ν (`0 ≤ ν ≤ n`, [`default_nu`] if `None`), a random α and a
+/// public `β ∈ {0,1}^ℓ`, `1 ≤ ℓ ≤ 256`. `ferret`: the silent-OT
 /// parameters (`B13` for benchmarks, `TOY` for tests).
-pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_share: Word, seed: [u8; 32], ferret: FerretConfig) -> GenOutput {
+pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta: Word, seed: [u8; 32], ferret: FerretConfig) -> GenOutput {
     assert!((1..=256).contains(&bits));
-    drive(ch, n_size, nu, bits, false, seed, ferret, |_, _, _| (), |pre, (), ch| gen_bin_key(pre, ch, n_size, bits, beta_share))
+    drive(ch, n_size, nu, bits, false, seed, ferret, |_, _, _| (), |pre, (), ch| gen_bin_key(pre, ch, n_size, bits, beta))
 }
 
 /// [`gen`] with a public payload in the prime field F and additive output
@@ -580,17 +581,15 @@ pub fn gen_arith<F: Field>(ch: &mut Channel, n_size: u64, nu: Option<usize>, bet
     )
 }
 
-/// Both parties' [`gen`] on an in-process channel, β XOR-shared at random;
-/// returns the outputs and each party's wall time.
+/// Both parties' [`gen`] on an in-process channel; returns the outputs and
+/// each party's wall time.
 pub fn run_gen(n_size: u64, nu: Option<usize>, bits: usize, beta: Word, seed: u64, ferret: FerretConfig) -> ([GenOutput; 2], [Duration; 2]) {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-    let b0 = Word::random(&mut rng, bits);
-    let shares = [b0, b0 ^ beta];
     let timed = |party: usize| {
         move |c: &mut Channel| {
             let t = Instant::now();
-            let o = gen(c, n_size, nu, bits, shares[party], seeds[party], ferret);
+            let o = gen(c, n_size, nu, bits, beta, seeds[party], ferret);
             (o, t.elapsed())
         }
     };
