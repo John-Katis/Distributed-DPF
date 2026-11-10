@@ -36,16 +36,17 @@ fn gen_matches_point_function_and_dealer() {
         let b0 = low(Block::random(&mut rng), bits);
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
         let (o0, o1) = run_two_party(move |c| gen(c, n, nu, bits, b0, seeds[0], None), move |c| gen(c, n, nu, bits, beta ^ b0, seeds[1], None));
-        let (depth, nu) = (o0.key.depth(), o0.key.nu);
-        // 𝓕_COT and the top phase on one lane (ν + 3), the AES–MMO calls from
-        // round 1 (no ⟨Y⟩ with a binary payload), then Step B and M_ℓ.
-        let rounds = (nu + 3).max(if nu < depth { 42 } else { 41 });
+        let (depth, nu) = (o0.key.depth(), o0.key.nu());
+        // The top phase (ν rounds, no COT at the glue) concurrently with the
+        // pairs (20), then C_ℓ and W_CW, then CW_ℓ and M^0_ν, then M^0_ℓ.
+        let rounds = if nu < depth { (nu + 2).max(23) } else { (nu + 1).max(22) };
         assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), rounds, "case {i}");
         let alpha = o0.alpha_share ^ o1.alpha_share;
-        let us: Vec<Block> = o0.onpath_share.iter().zip(&o1.onpath_share).map(|(&a, &b)| a ^ b).collect();
+        let pairs: Vec<[Block; 2]> = o0.pairs.iter().zip(&o1.pairs).map(|(x, y)| [x[0] ^ y[0], x[1] ^ y[1]]).collect();
+        let rs: Vec<bool> = o0.rs.iter().zip(&o1.rs).map(|(&x, &y)| x ^ y).collect();
         let keys = [o0.key, o1.key];
         check(&keys, n, alpha, beta);
-        assert_eq!(deal([keys[0].root, keys[1].root], keys[0].prf.key(), n, nu, bits, alpha, beta, &us), keys);
+        assert_eq!(deal([keys[0].root, keys[1].root], keys[0].prf.key(), n, nu, bits, alpha, beta, &pairs, &rs), keys);
     }
 }
 

@@ -4,27 +4,31 @@
 //! Ferret COTs.
 //!
 //! The semi-honest Gen ([`semi_honest::gen`]) is the paper's Figure
-//! "DPF.Gen" in a [`semi_honest::Session`]: one public AES key K (`F = H_K`,
-//! `F^pay = H_K(· ∥ 0)`) and one secret-shared Δ for all Gens of the session,
-//! the roots `k_b = Δ_b ⊕ W` re-randomised per Gen by a public W, and `Δ_b`
-//! doubling as party b's Ferret key, so `⟨α_ℓ·Δ⟩` costs a bit per COT; for the
-//! top ν ≥ 1 levels each party expands its own tree locally and the words
-//! `CW_ℓ` follow from frontier sums; the glue turns the level-ν frontier into
-//! a sharing of the on-path state; below ν the on-path states `u_ℓ` are
-//! sampled in preprocessing and joined to the tree by one public word `M_ℓ`
-//! per level, so all AES–MMO calls in 2PC run in the same 40 rounds,
-//! concurrently with the top phase. Evaluation is the half-tree walk `L =
-//! H_K(st)`, `R = st ⊕ L`, `st' = child ⊕ t·CW`, followed by `st' ⊕= M_ℓ`
-//! for `ℓ ≥ ν` ([`children_masked`]).
+//! `Π_GenSH` in a [`semi_honest::Session`]: one public AES key K (`F = H_K`)
+//! and one secret-shared Δ for all Gens of the session, the roots `k_b = Δ_b ⊕
+//! W` re-randomised per Gen by a public W, and `Δ_b` doubling as party b's
+//! Ferret key; for the top ν ≥ 1 levels each party expands its own tree
+//! locally and the words `CW_ℓ` follow from frontier sums; the glue turns the
+//! level-ν frontier into a sharing of the on-path state; below ν every level
+//! takes two on-path pairs `(⟨X⟩, ⟨H_K(X)⟩)` sampled in the middle of the
+//! cipher ([`dpf_common::aes_tower::mmo_pairs`], 20 rounds), concurrently with
+//! the top phase. A level's public words are `CW_ℓ`, the shift `M^0_ℓ`, the
+//! offset `C_ℓ` and the two bits `b^τ_ℓ` ([`Bottom`]). Evaluation is the
+//! half-tree walk with `L = H_K(s ∥ b^t_{ℓ−1})`, `R = st ⊕ L`, `st' = child ⊕
+//! t·CW`, followed by the shift `M^t_ℓ` of the child's tag for `ℓ ≥ ν`
+//! ([`expand_level`]).
 //!
 //! * [`semi_honest`]: payload in `G = F_p` ([`field`]) with a public β, the
-//!   leaf indexed by tag ([`leaf::tag_leaf`]: B2A by daBits, no product).
-//! * [`semi_honest::bin`]: the same Gen with a binary payload, no B2A.
+//!   leaf indexed by server, with one sign product ([`leaf::pair_leaf`]).
+//! * [`semi_honest::bin`]: the same Gen with a binary payload: no B2A, no
+//!   sign, no tag count at the glue.
 //! * [`malicious_arith`]: the paper's §malicious for an arithmetic payload
-//!   in F_p: the same Gen in the same session, with (A) the payload-MAC word
-//!   under a persistent δ and public keys `K^mac_j` ([`leaf::mal_leaf`]), (B)
-//!   one product per bottom level, (C) the glue residual
-//!   ([`leaf::glue_residual`]), and Π_Verify on the outputs and residuals.
+//!   in F_p, still on the previous Gen with Δ-correlated on-path states
+//!   ([`semi_honest::gen::walk`], 40 rounds for the AES–MMO calls): (A) the
+//!   payload-MAC word under a persistent δ and public keys `K^mac_j`
+//!   ([`leaf::mal_leaf`]), (B) one product per bottom level, (C) the glue
+//!   residual ([`leaf::glue_residual`]), and Π_Verify on the outputs and
+//!   residuals.
 //! * [`malicious`]: the same for a payload in `{0,1}^ℓ ⊂ GF(2^128)`, without
 //!   (C): in characteristic 2 a swap of the servers' states does not change
 //!   an output.
@@ -66,6 +70,135 @@ pub fn children_masked(f: &Mmo, parents: &[Block], cw: Block, m: Block, out: &mu
         kids[2 * i] = lv ^ m;
         kids[2 * i + 1] = st ^ lv ^ m;
     }
+}
+
+/// The public words of the bottom layer of a key, for `ν ≤ ℓ ≤ n`: the shifts
+/// `M^0_ℓ`, the offsets `C_ℓ` (with `C_{ν−1} := 0`) and the bits `(b^0_ℓ,
+/// b^1_ℓ)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bottom {
+    /// The glue level ν ≥ 1.
+    pub nu: usize,
+    pub m0: Vec<Block>,
+    pub c: Vec<Block>,
+    pub b: Vec<[bool; 2]>,
+}
+
+impl Bottom {
+    /// `M^0_ℓ` and `C_ℓ` per level, two bits per level.
+    pub fn size_bytes(&self) -> usize {
+        32 * self.m0.len() + (2 * self.b.len()).div_ceil(8)
+    }
+
+    /// `(s ∥ b^t_ℓ)` of a state at level ℓ, with `b^t_ℓ := t` for ℓ < ν.
+    #[inline]
+    pub fn hash_input(&self, level: usize, st: Block) -> Block {
+        if level < self.nu {
+            st
+        } else {
+            st.with_lsb(self.b[level - self.nu][st.lsb() as usize])
+        }
+    }
+
+    /// `(M^0_ℓ, C_{ℓ−1} ⊕ C_ℓ)`, for ℓ ≥ ν.
+    #[inline]
+    fn words(&self, level: usize) -> (Block, Block) {
+        let j = level - self.nu;
+        (self.m0[j], if j == 0 { self.c[0] } else { self.c[j - 1] ^ self.c[j] })
+    }
+
+    /// The corrected child of level ℓ after its shift `M^t_ℓ`, t its tag.
+    #[inline]
+    pub fn shift(&self, level: usize, child: Block) -> Block {
+        if level < self.nu {
+            return child;
+        }
+        let (m, d) = self.words(level);
+        child ^ m ^ d.and_bit(child.lsb())
+    }
+
+    /// The state of the path to x (`n` bits) at level n from the `root`.
+    pub fn path(&self, f: &Mmo, root: Block, cws: &[Block], x: u64) -> Block {
+        let n = cws.len();
+        let mut st = root;
+        for (i, &cw) in cws.iter().enumerate() {
+            let l = f.h(self.hash_input(i, st));
+            let c = if (x >> (n - 1 - i)) & 1 == 1 { st ^ l } else { l };
+            st = self.shift(i + 1, c ^ cw.and_bit(st.lsb()));
+        }
+        st
+    }
+}
+
+/// Both corrected children of every parent, at level ℓ = `level`, appended to
+/// `out` as `[L(p0), R(p0), L(p1), …]`, each with its shift.
+pub fn expand_level(f: &Mmo, parents: &[Block], cw: Block, bot: &Bottom, level: usize, out: &mut Vec<Block>) {
+    if level < bot.nu {
+        return children(f, parents, cw, out);
+    }
+    let (start, k) = (out.len(), parents.len());
+    out.resize(start + 2 * k, Block::ZERO);
+    let kids = &mut out[start..];
+    for (i, &st) in parents.iter().enumerate() {
+        kids[k + i] = bot.hash_input(level - 1, st);
+    }
+    f.h_many_inplace(&mut kids[k..]);
+    let (m, d) = bot.words(level);
+    // Slot i is read before slots 2i, 2i + 1 ≤ k + i are written.
+    for (i, &st) in parents.iter().enumerate() {
+        let c0 = kids[k + i] ^ cw.and_bit(st.lsb());
+        let c1 = st ^ c0;
+        kids[2 * i] = c0 ^ m ^ d.and_bit(c0.lsb());
+        kids[2 * i + 1] = c1 ^ m ^ d.and_bit(c1.lsb());
+    }
+}
+
+/// The cleartext Gen of Figure `Π_GenSH`: the n level words, the [`Bottom`]
+/// words and the two leaf hashes `(H_K(X^0_n), H_K(X^1_n))`, for roots `roots`,
+/// α, and the inputs `pairs = [[X^0_ℓ, X^1_ℓ]]` and bits `rs = [r_ℓ]` of levels
+/// ν..=n. With `binary`, the glue takes the state of the server with tag 1 as
+/// `st_{ν,0}`, as in the paper's paragraph on Boolean payloads.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn deal_pairs(f: &Mmo, roots: [Block; 2], n: usize, nu: usize, alpha: u64, pairs: &[[Block; 2]], rs: &[bool], binary: bool) -> (Vec<Block>, Bottom, [Block; 2]) {
+    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
+    assert!(n >= 64 || alpha >> n == 0, "α ∈ {{0,1}}^n");
+    assert!((1..=n).contains(&nu) && pairs.len() == n - nu + 1 && rs.len() == pairs.len(), "1 ≤ ν ≤ n, levels ν..=n");
+    let delta = roots[0] ^ roots[1];
+    let bit = |i: usize| (alpha >> (n - 1 - i)) & 1 == 1;
+    let us: Vec<[Block; 2]> = pairs.iter().zip(rs).map(|(p, &r)| [p[0].with_lsb(r), p[1].with_lsb(!r)]).collect();
+    let c: Vec<Block> = us.iter().map(|u| delta ^ u[0] ^ u[1]).collect();
+    let b: Vec<[bool; 2]> = pairs
+        .iter()
+        .zip(rs)
+        .map(|(p, &r)| {
+            let g = r && (p[0].lsb() ^ p[1].lsb());
+            [p[0].lsb() ^ g, p[1].lsb() ^ g]
+        })
+        .collect();
+    let mut st = roots;
+    let mut cws = Vec::with_capacity(n);
+    for i in 0..nu {
+        let a = bit(i);
+        let cw = f.h(st[0]) ^ f.h(st[1]) ^ delta.and_bit(!a);
+        st = [child(f, st[0], cw, a), child(f, st[1], cw, a)];
+        cws.push(cw);
+    }
+    let mut m0 = Vec::with_capacity(pairs.len());
+    m0.push(if binary {
+        (if st[0].lsb() { st[0] } else { st[1] }) ^ us[0][0] ^ c[0]
+    } else {
+        st[0] ^ us[0][0] ^ c[0].and_bit(st[0].lsb())
+    });
+    for j in 0..n - nu {
+        let a = bit(nu + j);
+        let (l0, l1) = (f.h(pairs[j][0]), f.h(pairs[j][1]));
+        let cw = l0 ^ l1 ^ (delta ^ c[j]).and_bit(!a);
+        let k = l0 ^ us[j][0].and_bit(a) ^ cw.and_bit(rs[j]);
+        m0.push(k ^ us[j + 1][0] ^ (c[j] ^ c[j + 1]).and_bit(k.lsb()));
+        cws.push(cw);
+    }
+    let last = pairs[n - nu];
+    (cws, Bottom { nu, m0, c, b }, [f.h(last[0]), f.h(last[1])])
 }
 
 /// The cleartext walk of the Gen with glue level ν ≥ 1: the n level words and
@@ -128,8 +261,8 @@ fn clamp_nu(nu: usize, n: usize) -> usize {
     nu.min(n.saturating_sub(1)).max(1)
 }
 
-/// AES–MMO calls in 2PC in one semi-honest Gen of depth n with glue level
-/// ν: two per level below ν, two at the leaf.
+/// Calls of `𝓕_PRFPair` in one semi-honest Gen of depth n with glue level ν:
+/// two for each level ν..=n.
 pub fn sh_calls(n: usize, nu: usize) -> usize {
     2 * (n - nu + 1)
 }

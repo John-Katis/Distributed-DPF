@@ -1,8 +1,9 @@
-//! The semi-honest key: K, root `st_{0,b}`, n level words, the words `M_ν, …,
-//! M_n`, the payload word in F_p, and its point and full-domain evaluation.
+//! The semi-honest key: K, root `st_{0,b}`, n level words, the words of the
+//! bottom layer ([`Bottom`]), the payload word in F_p, and its point and
+//! full-domain evaluation.
 
 use crate::field::Field;
-use crate::{child, children_masked, leaf_seed};
+use crate::{expand_level, Bottom};
 use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::stream::walk;
@@ -11,16 +12,14 @@ use dpf_common::stream::walk;
 pub struct ShKey<T: Field> {
     pub party: usize,
     pub n_size: u64,
-    /// `F = H_K` and `F^pay = H_K(· ∥ 0)`, K public.
+    /// `F = H_K`, K public.
     pub prf: Mmo,
     /// `st_{0,b}`, with `st_{0,0} ⊕ st_{0,1} = Δ`.
     pub root: Block,
-    /// The glue level ν ≥ 1.
-    pub nu: usize,
     pub cws: Vec<Block>,
-    /// `M_ν, …, M_n`, XORed onto every node of levels ν..=n.
-    pub ms: Vec<Block>,
-    /// `W_CW = (−1)^{t_{n,0}}·(W_0 − W_1 − β)`.
+    /// `M^0_ℓ`, `C_ℓ` and `b^τ_ℓ` for `ν ≤ ℓ ≤ n`.
+    pub bottom: Bottom,
+    /// `W_CW = (1 − 2t_{n,0})·(W_0 − W_1 − β)`, `W_b` the mask of `X^b_n`.
     pub w_cw: T,
 }
 
@@ -29,23 +28,22 @@ impl<T: Field> ShKey<T> {
         depth_for(self.n_size)
     }
 
-    /// K, root, n + (n − ν + 1) words of 16 bytes, the payload word.
+    /// The glue level ν.
+    pub fn nu(&self) -> usize {
+        self.bottom.nu
+    }
+
+    /// K, root, n level words, the bottom layer's words, the payload word.
     pub fn size_bytes(&self) -> usize {
-        16 + 16 + 16 * (self.cws.len() + self.ms.len()) + T::BYTES
+        16 + 16 + 16 * self.cws.len() + self.bottom.size_bytes() + T::BYTES
     }
 
     /// The part both parties share.
-    pub fn public_part(&self) -> (&[Block], &[Block], T) {
-        (&self.cws, &self.ms, self.w_cw)
+    pub fn public_part(&self) -> (&[Block], &Bottom, T) {
+        (&self.cws, &self.bottom, self.w_cw)
     }
 
-    /// `M_ℓ`, zero above the glue level.
-    #[inline]
-    pub fn m(&self, level: usize) -> Block {
-        level_word(self.nu, &self.ms, level)
-    }
-
-    /// `(−1)^b·(F^pay(s) + t·W_CW)` at a leaf, `F^pay` read in F_p
+    /// `(−1)^b·(w + t·W_CW)` at a leaf, w the mask read in F_p
     /// ([`Field::from_block`]).
     #[inline]
     fn output(&self, leaf: Block, w: Block) -> T {
@@ -63,20 +61,16 @@ impl<T: Field> ShKey<T> {
     /// This party's additive share of `f(x)`.
     pub fn eval_point(&self, x: u64) -> T {
         assert!(x < self.n_size);
-        let n = self.depth();
-        let mut st = self.root ^ self.m(0);
-        for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
-        }
-        self.output(st, self.prf.h(leaf_seed(st)))
+        let st = self.bottom.path(&self.prf, self.root, &self.cws, x);
+        self.output(st, self.prf.h(self.bottom.hash_input(self.depth(), st)))
     }
 
     /// Shares of `f(0), …, f(N − 1)`: all 2^n leaves, one level at a time.
     pub fn eval_full(&self) -> Vec<T> {
-        let mut nodes = vec![self.root ^ self.m(0)];
+        let mut nodes = vec![self.root];
         for (i, &cw) in self.cws.iter().enumerate() {
             let mut next = Vec::new();
-            children_masked(&self.prf, &nodes, cw, self.m(i + 1), &mut next);
+            expand_level(&self.prf, &nodes, cw, &self.bottom, i + 1, &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -91,10 +85,10 @@ impl<T: Field> ShKey<T> {
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[T])) {
         let (mut buf, mut ys) = (Vec::new(), Vec::new());
         walk(
-            self.root ^ self.m(0),
+            self.root,
             self.cws.len(),
             batch,
-            |l, parents, out| children_masked(&self.prf, parents, self.cws[l - 1], self.m(l), out),
+            |l, parents, out| expand_level(&self.prf, parents, self.cws[l - 1], &self.bottom, l, out),
             |x0, leaves| {
                 if x0 < self.n_size {
                     self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut ys);
@@ -108,7 +102,8 @@ impl<T: Field> ShKey<T> {
     fn outputs(&self, leaves: &[Block], buf: &mut Vec<Block>, ys: &mut Vec<T>) {
         let k = leaves.len();
         buf.clear();
-        buf.extend(leaves.iter().map(|&s| leaf_seed(s)));
+        let n = self.depth();
+        buf.extend(leaves.iter().map(|&s| self.bottom.hash_input(n, s)));
         buf.resize(2 * k, Block::ZERO);
         let (seeds, w) = buf.split_at_mut(k);
         self.prf.h_many(seeds, w);

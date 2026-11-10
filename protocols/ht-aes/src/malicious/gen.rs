@@ -24,7 +24,6 @@
 
 use super::key::{low, MalKey};
 use crate::malicious_arith::VerifyMask;
-use crate::semi_honest::bin::onpath_leaf_jobs;
 use crate::semi_honest::gen::{bit_times_block, precompute, setup, walk, Deviation, Pre, Setup, Shape, Walk};
 use crate::{deal_walk_nu, default_nu, leaf_seed};
 use dpf_common::aes_tower::Mmo;
@@ -45,6 +44,11 @@ pub fn mal_calls(n: usize, nu: usize) -> usize {
 /// ANDs of one malicious Gen (all keys public: no Π_KeyExp).
 pub fn mal_ands(n: usize, nu: usize) -> usize {
     mal_calls(n, nu) * dpf_common::aes_tower::ANDS_PER_CALL
+}
+
+/// Leaf jobs for a binary payload: `H_K(seed(u_n ⊕ c·Δ))`, `c = 0, 1`.
+fn onpath_leaf_jobs(pre: &Pre) -> Vec<(usize, Block)> {
+    vec![(0, leaf_seed(pre.un())), (0, leaf_seed(pre.un() ^ pre.delta))]
 }
 
 /// Deliberate deviations for the abort tests.

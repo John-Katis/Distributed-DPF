@@ -8,14 +8,16 @@
 //!   Babybear (the paper's) for ≤ 31, Goldilocks for ≤ 64, `2^127 − 1`
 //!   above; public K, a local top phase of ν ≥ 1 levels (`--nu`, default
 //!   `max(1, min(17, n − 1))`; the label gets `+nu<ν>` when it is given), the lower
-//!   levels' AES–MMO calls on the OT tower (every AND from Ferret COTs) all
-//!   in one batch, and the leaf indexed by tag (daBits, no product).
-//! * `sh-bin`: as `sh` with an XOR-shared payload in F_2^ℓ (no B2A at the
-//!   leaf).
-//! * `mal`: malicious, the `sh-bin` Gen with one product per bottom level
+//!   levels' on-path pairs from the middle of AES (20 rounds) on the OT tower
+//!   (every AND from Ferret COTs) all in one batch, and the leaf indexed by
+//!   server, with one sign product.
+//! * `sh-bin`: as `sh` with an XOR-shared payload in F_2^ℓ (no B2A and no
+//!   product at the leaf, no tag count at the glue).
+//! * `mal`: malicious, the previous `sh-bin` Gen (Δ-correlated on-path states,
+//!   40 rounds for the AES–MMO calls) with one product per bottom level
 //!   (`--nu` as for `sh`), public payload in `{0,1}^ℓ ⊂ GF(2^128)` with a
 //!   payload MAC and Π_Verify.
-//! * `mal-arith`: malicious, the `sh` Gen with one product per bottom level
+//! * `mal-arith`: malicious, the previous `sh` Gen with one product per bottom level
 //!   and the glue residual (`--nu` as for `sh`): public payload in Babybear
 //!   with MACs in `F_{q^4}` (the paper's) for `--out-bits` ≤ 31, payload and
 //!   MAC in Goldilocks for ≤ 64, in `2^127 − 1` above.

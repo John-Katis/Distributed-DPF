@@ -1,20 +1,20 @@
 //! Semi-honest variant with a binary payload: `β ∈ F_2^ℓ` XOR-shared, output
 //! XOR shares (ℓ ≤ 128).
 //!
-//! Gen is the arithmetic one ([`super::gen`]) up to the leaf. In a group of
-//! characteristic 2 the sign `(−1)^{t_{n,0}}` is 1, so the order of the two
-//! leaf states does not matter and the payload needs no B2A: the leaf hashes
-//! `u_n`, `u_n ⊕ Δ` directly (no `Y`, no 𝓕_COT for `t_{n,0}`) and opens `W_CW =
-//! h_0 ⊕ h_1 ⊕ β` (low ℓ bits) right after the AES–MMO calls, concurrently
-//! with Step B. Evaluation outputs `F^pay(s) ⊕ t·W_CW`.
+//! Gen is the arithmetic one ([`super::gen`]) up to the leaf, as in the paper's
+//! paragraph "Boolean payloads": the servers open `W_CW = W(L^0_{n+1}) ⊕
+//! W(L^1_{n+1}) ⊕ β` right after the pairs, with no sign, B2A or product.
+//! Below ν the servers play symmetric roles, so the glue takes the state of
+//! the server with tag 1 as `st_{ν,0}`: no tag count and no 𝓕_COT, and `M^0_ν
+//! = E ⊕ u^0_ν ⊕ C_ν`. Evaluation outputs `W(h) ⊕ t·W_CW`.
 //!
-//! Rounds: `max(ν + 3, 42)` for ν < n, `max(n + 3, 41)` for ν = n.
-//! Preprocessing: as the arithmetic variant's, without the leaf's daBits.
+//! Rounds: `max(ν + 2, 23)` for ν < n, `max(ν + 1, 22)` for ν = n.
+//! Preprocessing: as the arithmetic variant's, without the leaf's daBits and
+//! triple and without the glue's COT.
 
-use super::gen::{drive, walk, Deviation, GenOutput, Pre, Session, Shape, Walk};
-use super::key::level_word;
+use super::gen::{drive, walk_pairs, GenOutput, PairWalk, Session};
 use crate::malicious::low;
-use crate::{child, children_masked, deal_walk_nu, default_nu, leaf_seed};
+use crate::{deal_pairs, default_nu, expand_level, Bottom};
 use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
 use dpf_common::net::Channel;
@@ -29,15 +29,13 @@ pub struct BinKey {
     pub n_size: u64,
     /// ℓ ≤ 128.
     pub bits: usize,
-    /// `F = H_K` and `F^pay = H_K(· ∥ 0)`, K public.
+    /// `F = H_K`, K public.
     pub prf: Mmo,
     pub root: Block,
-    /// The glue level ν ≥ 1.
-    pub nu: usize,
     pub cws: Vec<Block>,
-    /// `M_ν, …, M_n`.
-    pub ms: Vec<Block>,
-    /// `W_CW = F^pay(s_0) ⊕ F^pay(s_1) ⊕ β` (low ℓ bits).
+    /// `M^0_ℓ`, `C_ℓ` and `b^τ_ℓ` for `ν ≤ ℓ ≤ n`.
+    pub bottom: Bottom,
+    /// `W_CW = W(L^0_{n+1}) ⊕ W(L^1_{n+1}) ⊕ β` (low ℓ bits).
     pub w_cw: Block,
 }
 
@@ -46,34 +44,29 @@ impl BinKey {
         depth_for(self.n_size)
     }
 
-    /// K, root, n + (n − ν + 1) words, ⌈ℓ/8⌉ bytes of `W_CW`.
-    pub fn size_bytes(&self) -> usize {
-        16 + 16 + 16 * (self.cws.len() + self.ms.len()) + self.bits.div_ceil(8)
+    /// The glue level ν.
+    pub fn nu(&self) -> usize {
+        self.bottom.nu
     }
 
-    /// `M_ℓ`, zero above the glue level.
-    #[inline]
-    pub fn m(&self, level: usize) -> Block {
-        level_word(self.nu, &self.ms, level)
+    /// K, root, n level words, the bottom layer's words, ⌈ℓ/8⌉ bytes of `W_CW`.
+    pub fn size_bytes(&self) -> usize {
+        16 + 16 + 16 * self.cws.len() + self.bottom.size_bytes() + self.bits.div_ceil(8)
     }
 
     /// This party's XOR share of `f(x)`.
     pub fn eval_point(&self, x: u64) -> Block {
         assert!(x < self.n_size);
-        let n = self.depth();
-        let mut st = self.root ^ self.m(0);
-        for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
-        }
-        low(self.prf.h(leaf_seed(st)), self.bits) ^ self.w_cw.and_bit(st.lsb())
+        let st = self.bottom.path(&self.prf, self.root, &self.cws, x);
+        low(self.prf.h(self.bottom.hash_input(self.depth(), st)), self.bits) ^ self.w_cw.and_bit(st.lsb())
     }
 
     /// Shares of `f(0), …, f(N − 1)`: all 2^n leaves, one level at a time.
     pub fn eval_full(&self) -> Vec<Block> {
-        let mut nodes = vec![self.root ^ self.m(0)];
+        let mut nodes = vec![self.root];
         for (i, &cw) in self.cws.iter().enumerate() {
             let mut next = Vec::new();
-            children_masked(&self.prf, &nodes, cw, self.m(i + 1), &mut next);
+            expand_level(&self.prf, &nodes, cw, &self.bottom, i + 1, &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -88,10 +81,10 @@ impl BinKey {
     pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[Block])) {
         let (mut buf, mut ys) = (Vec::new(), Vec::new());
         stream_walk(
-            self.root ^ self.m(0),
+            self.root,
             self.cws.len(),
             batch,
-            |l, parents, out| children_masked(&self.prf, parents, self.cws[l - 1], self.m(l), out),
+            |l, parents, out| expand_level(&self.prf, parents, self.cws[l - 1], &self.bottom, l, out),
             |x0, leaves| {
                 if x0 < self.n_size {
                     self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut ys);
@@ -103,9 +96,9 @@ impl BinKey {
 
     /// The outputs at `leaves` into `ys`; `buf` is scratch, reused across calls.
     fn outputs(&self, leaves: &[Block], buf: &mut Vec<Block>, ys: &mut Vec<Block>) {
-        let k = leaves.len();
+        let (k, n) = (leaves.len(), self.depth());
         buf.clear();
-        buf.extend(leaves.iter().map(|&s| leaf_seed(s)));
+        buf.extend(leaves.iter().map(|&s| self.bottom.hash_input(n, s)));
         buf.resize(2 * k, Block::ZERO);
         let (seeds, w) = buf.split_at_mut(k);
         self.prf.h_many(seeds, w);
@@ -125,27 +118,23 @@ impl Session {
             ch,
             &mut self.s,
             n,
-            Shape::sh(nu.unwrap_or(default_nu(n)), false),
+            nu.unwrap_or(default_nu(n)),
+            true,
             0,
             |_, _, _| (),
             |mut pre, (), ch| {
                 let b = ch.party();
-                let Walk { cws, ms, leaf, mut leaf_lane, top_lane, .. } = walk(&mut pre, ch, onpath_leaf_jobs, Deviation::default(), false);
-                let w_share = low(leaf[0] ^ leaf[1], bits) ^ low(beta_share, bits);
+                let PairWalk { cws, bottom, hs, xs, mut leaf_lane } = walk_pairs(&mut pre, ch);
+                let w_share = low(hs[0] ^ hs[1], bits) ^ low(beta_share, bits);
                 let theirs = ch.exchange_on(&mut leaf_lane, w_share.to_bytes().to_vec());
                 assert_eq!(theirs.len(), 16, "malformed payload share");
                 ch.join(leaf_lane);
-                ch.join(top_lane);
                 let w_cw = w_share ^ Block::from_bytes(&theirs);
-                (BinKey { party: b, n_size, bits, prf: pre.keys.swap_remove(0), root: pre.root(), nu: pre.shape.nu, cws, ms, w_cw }, pre.be.ands)
+                let root = pre.root();
+                (BinKey { party: b, n_size, bits, prf: pre.key, root, cws, bottom, w_cw }, pre.be.ands, xs)
             },
         )
     }
-}
-
-/// Leaf jobs for a binary payload: `H_K(seed(u_n ⊕ c·Δ))`, `c = 0, 1`.
-pub(crate) fn onpath_leaf_jobs(pre: &Pre) -> Vec<(usize, Block)> {
-    vec![(0, leaf_seed(pre.un())), (0, leaf_seed(pre.un() ^ pre.delta))]
 }
 
 /// [`Session::setup`] and one [`Session::gen_bin`].
@@ -154,15 +143,15 @@ pub fn gen(ch: &mut Channel, n_size: u64, nu: Option<usize>, bits: usize, beta_s
 }
 
 /// Trusted-dealer generation for given roots (`lsb(root_b) = b`), AES key K,
-/// glue level ν ≥ 1 and on-path states `us = [u_ν, …, u_n]` of party 0: the
-/// cleartext Gen, and the bit-exact oracle of [`gen`].
+/// glue level ν ≥ 1, inputs `pairs = [[X^0_ℓ, X^1_ℓ]]` and bits `rs` of levels
+/// ν..=n: the cleartext Gen, and the bit-exact oracle of [`gen`].
 #[allow(clippy::too_many_arguments)]
-pub fn deal(roots: [Block; 2], key: [u8; 16], n_size: u64, nu: usize, bits: usize, alpha: u64, beta: Block, us: &[Block]) -> [BinKey; 2] {
+pub fn deal(roots: [Block; 2], key: [u8; 16], n_size: u64, nu: usize, bits: usize, alpha: u64, beta: Block, pairs: &[[Block; 2]], rs: &[bool]) -> [BinKey; 2] {
     assert_eq!(beta, low(beta, bits), "β must fit in the output width");
     let prf = Mmo::new(key);
-    let (cws, ms, st) = deal_walk_nu(&prf, roots, depth_for(n_size), nu, alpha, us);
-    let w_cw = low(prf.h(leaf_seed(st[0])) ^ prf.h(leaf_seed(st[1])), bits) ^ beta;
-    let mk = |party: usize| BinKey { party, n_size, bits, prf: prf.clone(), root: roots[party], nu, cws: cws.clone(), ms: ms.clone(), w_cw };
+    let (cws, bottom, h) = deal_pairs(&prf, roots, depth_for(n_size), nu, alpha, pairs, rs, true);
+    let w_cw = low(h[0] ^ h[1], bits) ^ beta;
+    let mk = |party: usize| BinKey { party, n_size, bits, prf: prf.clone(), root: roots[party], cws: cws.clone(), bottom: bottom.clone(), w_cw };
     [mk(0), mk(1)]
 }
 
@@ -170,6 +159,6 @@ pub fn deal(roots: [Block; 2], key: [u8; 16], n_size: u64, nu: usize, bits: usiz
 pub fn gen_reference(n_size: u64, bits: usize, alpha: u64, beta: Block, seed: [u8; 32]) -> [BinKey; 2] {
     assert!(alpha < n_size);
     let mut rng = ChaCha20Rng::from_seed(seed);
-    let (roots, key, nu, us) = super::gen::reference_params(n_size, &mut rng);
-    deal(roots, key, n_size, nu, bits, alpha, beta, &us)
+    let (roots, key, nu, pairs, rs) = super::gen::reference_params(n_size, &mut rng);
+    deal(roots, key, n_size, nu, bits, alpha, beta, &pairs, &rs)
 }

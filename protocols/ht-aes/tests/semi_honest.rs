@@ -28,27 +28,42 @@ fn check<F: Field>(keys: &[ShKey<F>; 2], n: u64, alpha: u64, beta: F) {
     }
 }
 
+/// The pair inputs `[X^0_ℓ, X^1_ℓ]` and the bits `r_ℓ` from the two parties' shares.
+fn open_pairs(a: &[[Block; 2]], b: &[[Block; 2]], ra: &[bool], rb: &[bool]) -> (Vec<[Block; 2]>, Vec<bool>) {
+    (a.iter().zip(b).map(|(x, y)| [x[0] ^ y[0], x[1] ^ y[1]]).collect(), ra.iter().zip(rb).map(|(&x, &y)| x ^ y).collect())
+}
+
+type Run<F> = ([ShKey<F>; 2], u64, Vec<[Block; 2]>, Vec<bool>);
+
 /// One Gen of a key for the public β with switch level ν; returns the keys,
-/// the random α (α_0 ⊕ α_1) and the on-path states U_ν, …, U_n.
-fn run<F: Field>(n: u64, nu: Option<usize>, beta: F, seed: u64) -> ([ShKey<F>; 2], u64, Vec<Block>) {
+/// the random α (α_0 ⊕ α_1), the pair inputs and the bits r_ν, …, r_n.
+fn run<F: Field>(n: u64, nu: Option<usize>, beta: F, seed: u64) -> Run<F> {
     let mut rng = ChaCha20Rng::seed_from_u64(seed);
     let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
     let (o0, o1) = run_two_party(move |c| gen(c, n, nu, beta, seeds[0], None), move |c| gen(c, n, nu, beta, seeds[1], None));
-    let (depth, nu) = (o0.key.depth(), o0.key.nu);
+    let (depth, nu) = (o0.key.depth(), o0.key.nu());
     assert_eq!(o0.ands, sh_ands(depth, nu));
     assert_eq!(o0.ands, sh_calls(depth, nu) * dpf_common::aes_tower::ANDS_PER_CALL);
-    // 𝓕_COT (one round, which ⟨Y⟩ needs before the leaf's AES–MMO calls),
-    // then the top phase and the glue (ν + 2 rounds) concurrently with the
-    // AES–MMO calls (40), Step B and M_ℓ (or the leaf's two openings).
+    // The top phase and the glue's COT (ν + 1 rounds) concurrently with the
+    // pairs (20), then C_ℓ, then CW_ℓ and M^0_ν, then M^0_ℓ and W_CW.
     assert!(nu >= 1);
-    assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), (nu + 3).max(43), "n={depth} ν={nu}");
+    assert_eq!(o0.gen_stats.rounds.max(o1.gen_stats.rounds), rounds(depth, nu), "n={depth} ν={nu}");
     // The roots are k_b = Δ_b ⊕ W, lsb(Δ_b) = b and lsb(W) = 0.
     assert!(!o0.key.root.lsb() && o1.key.root.lsb());
     let alpha = o0.alpha_share ^ o1.alpha_share;
     assert!(alpha < 1 << depth);
-    let us: Vec<Block> = o0.onpath_share.iter().zip(&o1.onpath_share).map(|(&a, &b)| a ^ b).collect();
-    assert_eq!(us.len(), depth - nu + 1);
-    ([o0.key, o1.key], alpha, us)
+    let (pairs, rs) = open_pairs(&o0.pairs, &o1.pairs, &o0.rs, &o1.rs);
+    assert_eq!(pairs.len(), depth - nu + 1);
+    ([o0.key, o1.key], alpha, pairs, rs)
+}
+
+/// Rounds of Gen: `max(ν + 3, 23)`, the leaf keeping it at 23 for ν = n.
+fn rounds(n: usize, nu: usize) -> usize {
+    if nu < n {
+        (nu + 3).max(23)
+    } else {
+        (nu + 2).max(23)
+    }
 }
 
 fn gen_matches_point_function_and_dealer<F: Field>(seed: u64) {
@@ -58,9 +73,9 @@ fn gen_matches_point_function_and_dealer<F: Field>(seed: u64) {
         for nu in nus {
             s += 1;
             let beta = F::random(&mut rng);
-            let (keys, alpha, us) = run::<F>(n, nu, beta, s);
+            let (keys, alpha, pairs, rs) = run::<F>(n, nu, beta, s);
             check(&keys, n, alpha, beta);
-            assert_eq!(deal([keys[0].root, keys[1].root], keys[0].prf.key(), n, keys[0].nu, alpha, beta, &us), keys);
+            assert_eq!(deal([keys[0].root, keys[1].root], keys[0].prf.key(), n, keys[0].nu(), alpha, beta, &pairs, &rs), keys);
         }
     }
 }
@@ -89,8 +104,9 @@ fn dealer_keys_are_point_functions() {
         let roots = [Block::random(&mut rng).with_lsb(false), Block::random(&mut rng).with_lsb(true)];
         let depth = dpf_common::block::depth_for(n);
         for nu in [1, (depth / 2).max(1), depth] {
-            let us: Vec<Block> = (nu..=depth).map(|_| Block::random(&mut rng)).collect();
-            check(&deal(roots, rng.gen(), n, nu, alpha, beta, &us), n, alpha, beta);
+            let pairs: Vec<[Block; 2]> = (nu..=depth).map(|_| [Block::random(&mut rng), Block::random(&mut rng)]).collect();
+            let rs: Vec<bool> = (nu..=depth).map(|_| rng.gen()).collect();
+            check(&deal(roots, rng.gen(), n, nu, alpha, beta, &pairs, &rs), n, alpha, beta);
         }
     }
 }
@@ -100,7 +116,7 @@ fn gen_at_domain_2_pow_63() {
     let mut rng = ChaCha20Rng::seed_from_u64(3);
     let n = 1u64 << 63;
     let beta = Gold::random(&mut rng);
-    let (keys, alpha, _) = run::<Gold>(n, Some(8), beta, 7);
+    let (keys, alpha, _, _) = run::<Gold>(n, Some(8), beta, 7);
     assert_eq!(keys[0].depth(), 63);
     for x in [alpha, alpha ^ 1, alpha ^ (1 << 62), 0, n - 1, rng.gen_range(0..n)] {
         let y = keys[0].eval_point(x).add(keys[1].eval_point(x));
@@ -110,7 +126,7 @@ fn gen_at_domain_2_pow_63() {
 
 /// Several Gens on one session: one global Δ (also the Ferret keys Γ_b = Δ_b)
 /// and one public K for all of them, roots re-randomised by a fresh public W
-/// per Gen, fresh α and on-path states.
+/// per Gen, fresh α and on-path pairs.
 #[test]
 fn gens_in_one_session_share_delta_and_key() {
     session_gens(None);
@@ -137,14 +153,14 @@ fn session_gens(ferret: Option<dpf_common::ot::FerretConfig>) {
     let delta = o0[0].key.root ^ o1[0].key.root;
     for (g, (a, b)) in o0.iter().zip(&o1).enumerate() {
         let alpha = a.alpha_share ^ b.alpha_share;
-        let us: Vec<Block> = a.onpath_share.iter().zip(&b.onpath_share).map(|(&x, &y)| x ^ y).collect();
+        let (pairs, rs) = open_pairs(&a.pairs, &b.pairs, &a.rs, &b.rs);
         let keys = [a.key.clone(), b.key.clone()];
         check(&keys, n, alpha, betas[g]);
-        assert_eq!(deal([keys[0].root, keys[1].root], keys[0].prf.key(), n, keys[0].nu, alpha, betas[g], &us), keys);
+        assert_eq!(deal([keys[0].root, keys[1].root], keys[0].prf.key(), n, keys[0].nu(), alpha, betas[g], &pairs, &rs), keys);
         assert_eq!(keys[0].root ^ keys[1].root, delta, "one Δ for the session");
         assert_eq!(keys[0].prf, o0[0].key.prf, "one K for the session");
         assert!(!keys[0].root.lsb() && keys[1].root.lsb());
-        assert_eq!(a.gen_stats.rounds.max(b.gen_stats.rounds), (keys[0].nu + 3).max(43));
+        assert_eq!(a.gen_stats.rounds.max(b.gen_stats.rounds), rounds(keys[0].depth(), keys[0].nu()));
     }
     assert_ne!(o0[0].key.root, o0[1].key.root, "W re-randomises the roots per Gen");
     assert_ne!(o0[1].key.root, o0[2].key.root);

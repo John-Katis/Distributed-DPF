@@ -13,8 +13,10 @@
 //! given v (`fixed`), which gives `⟦u·v⟧` for a random u and a shared v: the
 //! mask `(⟦r⟧, ⟦δr⟧)` of Π_Verify.
 //!
-//! **Online**: the semi-honest leaf [`tag_leaf`] (the payload word indexed
-//! by tag, linear in the B2A outputs, two rounds); the malicious leaf
+//! **Online**: the semi-honest leaf [`pair_leaf`] (the payload word indexed
+//! by server, with one sign product, three rounds); the leaf [`tag_leaf`] of
+//! the GGM instance (the payload word indexed by tag, linear in the B2A
+//! outputs, two rounds); the malicious leaf
 //! [`mal_leaf`] (the same payload word and the MAC word indexed by server,
 //! with one sign product, three rounds); and the malicious glue residual
 //! [`glue_residual`] (addition (C), three rounds). Every leaf mask
@@ -335,7 +337,56 @@ pub fn glue_residual<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(
     g.sub(sq[0]).add(sq[1])
 }
 
-/// The leaf of the semi-honest Gen (Figure "DPF.Gen"), indexed by tag: for
+/// The leaf of the semi-honest Gen (Figure `Π_Bottom`), indexed by server:
+/// `W_CW = 𝓕_Mul(1 − 2⟦σ⟧, ⟦W_0⟧ − ⟦W_1⟧ − β)` for the XOR-shared hashes `h =
+/// [h^(0), h^(1)]` of `X^0_n`, `X^1_n`, this party's share `t` of `σ = r_n` and
+/// the public β. On `lane`, three rounds: the masked bits of the
+/// [`leaf_dabits`]`(&[1])` daBits with the Beaver mask `d = ρ − u` of the sign
+/// (`ρ = 1 − 2r`, r the tag's daBit); `e = V − v` for `V = W_0 − W_1 − β`; then
+/// `X = ρ·V`, and `W_CW = (1 − 2c)·X` since `1 − 2σ = (1 − 2c)(1 − 2r)`.
+/// Consumes the daBits and one triple of `pre`.
+pub fn pair_leaf<F: Field>(ch: &mut Channel, lane: &mut Lane, h: [Block; 2], t: bool, pre: &mut FpPre<F, F>, beta: F) -> F {
+    let b = ch.party();
+    let kappa = F::KAPPA;
+    let nbits = leaf_dabits::<F>(&[1]);
+    let dabits: Vec<(bool, F)> = pre.dabits.drain(..nbits).collect();
+    let (u, v, w) = pre.triples.remove(0);
+    let one = if b == 0 { F::ONE } else { F::ZERO };
+    let r_t = dabits[nbits - 1].1;
+
+    // Round 1: the masked bits [h^(0), h^(1), t] and d = ρ − u.
+    let mut bits: Vec<bool> = h.iter().flat_map(|w| (0..kappa).map(move |k| w.bit(k))).collect();
+    bits.push(t);
+    let d_mine = one.sub(r_t.add(r_t)).sub(u);
+    let mut extra = Vec::new();
+    d_mine.put(&mut extra);
+    let (c, theirs) = open_masked(ch, lane, &bits, &dabits, extra);
+    let d = d_mine.add(F::get(&theirs));
+    let vals: Vec<F> = c.iter().zip(&dabits).map(|(&ci, &(_, r))| b2a(ci, r, one)).collect();
+    let v_share = coord(&vals, 0).sub(coord(&vals, kappa)).sub(one.mul(beta));
+
+    // Round 2: e = V − v.
+    let e_mine = v_share.sub(v);
+    let mut msg = Vec::with_capacity(F::BYTES);
+    e_mine.put(&mut msg);
+    let e = e_mine.add(F::get(&swap(ch, lane, msg)));
+
+    // Round 3: X = ρ·V; W_CW = (1 − 2c)·X.
+    let mut x_mine = w.add(e.mul(u)).add(d.mul(v));
+    if b == 0 {
+        x_mine = x_mine.add(d.mul(e));
+    }
+    let mut msg = Vec::with_capacity(F::BYTES);
+    x_mine.put(&mut msg);
+    let x = x_mine.add(F::get(&swap(ch, lane, msg)));
+    if c[nbits - 1] {
+        x.neg()
+    } else {
+        x
+    }
+}
+
+/// The leaf of the GGM instance's Gen (`protocols/ggm-lpn`), indexed by tag: for
 /// the XOR-shared mask blocks `h = [h^(0), h^(1)]` of the on-path leaf states
 /// with tags 0 and 1, this party's share `t` of `t_{n,0}` and the public β,
 /// `W_CW = W^(0) − W^(1) − (1 − 2σ)·β` with `W^(c)` the integer of the low κ

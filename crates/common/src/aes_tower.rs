@@ -469,6 +469,23 @@ impl Mmo {
         }
     }
 
+    /// `xs[i] ← H(xs[i])`, batched.
+    pub fn h_many_inplace(&self, xs: &mut [Block]) {
+        const BATCH: usize = 64;
+        let mut buf = [GenericArray::default(); BATCH];
+        let mut sig = [Block::ZERO; BATCH];
+        for d in xs.chunks_mut(BATCH) {
+            for (i, x) in d.iter().enumerate() {
+                sig[i] = sigma(*x);
+                buf[i] = GenericArray::from(sig[i].to_bytes());
+            }
+            self.aes.encrypt_blocks(&mut buf[..d.len()]);
+            for (i, x) in d.iter_mut().enumerate() {
+                *x = Block::from_bytes(buf[i].as_slice()) ^ sig[i];
+            }
+        }
+    }
+
     /// The round keys.
     pub fn round_keys(&self) -> &[[u8; 16]; 11] {
         &self.rk
