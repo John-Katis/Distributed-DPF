@@ -33,9 +33,8 @@ fn gen_matches_point_function_and_dealer() {
     let cases = [(2u64, None, 8usize), (8, None, 64), (8, Some(3), 64), (16, Some(1), 7), (13, None, 128), (1 << 9, Some(6), 33), (1 << 9, Some(9), 1)];
     for (i, (n, nu, bits)) in cases.into_iter().enumerate() {
         let beta = low(Block::random(&mut rng), bits);
-        let b0 = low(Block::random(&mut rng), bits);
         let seeds: [[u8; 32]; 2] = [rng.gen(), rng.gen()];
-        let (o0, o1) = run_two_party(move |c| gen(c, n, nu, bits, b0, seeds[0], None), move |c| gen(c, n, nu, bits, beta ^ b0, seeds[1], None));
+        let (o0, o1) = run_two_party(move |c| gen(c, n, nu, bits, beta, seeds[0], None), move |c| gen(c, n, nu, bits, beta, seeds[1], None));
         let (depth, nu) = (o0.key.depth(), o0.key.nu());
         // The top phase (ν rounds, no COT at the glue) concurrently with the
         // pairs (20), then C_ℓ and W_CW, then CW_ℓ and M^0_ν, then M^0_ℓ.
