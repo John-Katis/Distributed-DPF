@@ -11,6 +11,9 @@
 //!   calls of one n = 32 key pair (32 joint AES–MMO calls at ν = 17, 64
 //!   LPN-PRG calls), mean of 50 runs, outputs checked against the clear.
 //!   Correlations come from Ferret (B13), bootstrapped once and not counted.
+//!   `aes_mmo_pair_ot_tower` is `𝓕_PRFPair` (a pair `(X, H_K(X))` from the
+//!   middle of the cipher, the call of our Gen): the same 160 S-boxes in 20
+//!   rounds, batch 32 being the pairs of one n = 32 key at ν = 17.
 //!   Also the other S-box realization of Tab. prf-2pc: the Boyar–Peralta
 //!   circuit with AND triples (`triples`), on the same Ferret COTs and the
 //!   same `mmo_shared`.
@@ -19,7 +22,7 @@
 //! Each mode prints its rows and writes them to `results-prf/<mode>.csv` at
 //! the repository root (git-ignored), replacing that file.
 
-use dpf_common::aes_tower::{bits_of, block_of, mmo_shared, Mmo, OtTower, Shared128, SharedKey, COTS_PER_CALL};
+use dpf_common::aes_tower::{bits_of, block_of, mmo_pairs, mmo_shared, Mmo, OtTower, Shared128, SharedKey, COTS_PER_CALL};
 use dpf_common::block::Block;
 use dpf_common::net::{run_two_party, Channel, CommStats};
 use dpf_common::ot::{CotPair, FerretConfig};
@@ -200,6 +203,28 @@ fn mmo_party(b: usize, batch: usize, reps: usize, xs: Vec<Vec<Block>>, s0: Vec<V
     }
 }
 
+/// `𝓕_PRFPair` on shared middle states `mid ⊕ s0` / `s0`.
+#[allow(clippy::type_complexity)]
+fn pair_party(b: usize, batch: usize, reps: usize, mid: Vec<Vec<Block>>, s0: Vec<Vec<Block>>) -> impl FnOnce(&mut Channel) -> (Vec<Run>, Vec<Vec<(Block, Block)>>) {
+    move |ch: &mut Channel| {
+        let (mut cot, mut r) = setup(ch, 500 + b as u64);
+        let m = Mmo::new(*b"prf-bench/key-01");
+        let (mut runs, mut outs) = (vec![], vec![]);
+        for rep in 0..reps {
+            let (t, s, p) = (Instant::now(), ch.stats(), cot.produced);
+            let pool = cot.random_cots(ch, 0, batch * COTS_PER_CALL, &mut r).unwrap();
+            let mut be = OtTower::new(b, pool, cot.delta());
+            let (tc, sc, used) = (t.elapsed(), ch.stats().since(&s), cot.produced - p);
+            let mids: Vec<Shared128<bool>> = (0..batch).map(|i| bits_of(if b == 0 { s0[rep][i] } else { mid[rep][i] ^ s0[rep][i] })).collect();
+            let (t, s) = (Instant::now(), ch.stats());
+            let y = mmo_pairs(&mut be, ch, &m, &mids);
+            runs.push((tc, t.elapsed(), sc, ch.stats().since(&s), used));
+            outs.push(y.iter().map(|(x, f)| (block_of(x), block_of(f))).collect());
+        }
+        (runs, outs)
+    }
+}
+
 /// AES–MMO with S-boxes from `make(ch, cot, rng, sboxes)` (built in the
 /// correlation phase: COTs and any preprocessing count as `corr`).
 fn mmo_with<B, F>(b: usize, batch: usize, reps: usize, xs: Vec<Vec<Block>>, s0: Vec<Vec<Block>>, make: F) -> impl FnOnce(&mut Channel) -> (Vec<Run>, Vec<Vec<Block>>)
@@ -279,7 +304,7 @@ fn twopc() {
     for batch in [1usize, 32] {
         let xs: Vec<Vec<Block>> = (0..reps).map(|_| (0..batch).map(|_| Block::random(&mut rng)).collect()).collect();
         let s0: Vec<Vec<Block>> = (0..reps).map(|_| (0..batch).map(|_| Block::random(&mut rng)).collect()).collect();
-        let ((r0, y0), (r1, y1)) = run_two_party(mmo_party(0, batch, reps, xs.clone(), s0.clone()), mmo_party(1, batch, reps, xs.clone(), s0));
+        let ((r0, y0), (r1, y1)) = run_two_party(mmo_party(0, batch, reps, xs.clone(), s0.clone()), mmo_party(1, batch, reps, xs.clone(), s0.clone()));
         let m = Mmo::new(*b"prf-bench/key-01");
         for rep in 0..reps {
             for i in 0..batch {
@@ -287,6 +312,13 @@ fn twopc() {
             }
         }
         report("aes_mmo_ot_tower", batch, 128, &r0, &r1);
+        let ((r0, y0), (r1, y1)) = run_two_party(pair_party(0, batch, reps, xs.clone(), s0.clone()), pair_party(1, batch, reps, xs.clone(), s0.clone()));
+        for rep in 0..reps {
+            for i in 0..batch {
+                assert_eq!(y0[rep][i].1 ^ y1[rep][i].1, m.h(y0[rep][i].0 ^ y1[rep][i].0), "AES–MMO pair");
+            }
+        }
+        report("aes_mmo_pair_ot_tower", batch, 128, &r0, &r1);
         let check = |y0: &[Vec<Block>], y1: &[Vec<Block>], what: &str| {
             for rep in 0..reps {
                 for i in 0..batch {
