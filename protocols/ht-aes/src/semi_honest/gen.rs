@@ -6,8 +6,7 @@
 //! **Setup** (`Π_setup`, once per [`Session`], for all its Gens): party b
 //! samples its share `Δ_b` of the global `⟨Δ⟩` (`lsb(Δ_b) = b`, so `lsb(Δ) =
 //! 1`) and uses it as its Ferret key `Γ_b := Δ_b`; base OTs and Ferret in both
-//! directions; then `K ← 𝓕_reveal(𝓕_rand)` (and the malicious variants'
-//! `K^mac_j`). The OT tower runs on party 0's COTs under `Γ_0 = Δ_0`; its
+//! directions; then `K ← 𝓕_reveal(𝓕_rand)`. The OT tower runs on party 0's COTs under `Γ_0 = Δ_0`; its
 //! hashes, the daBits' and the triples' are tweaked apart from H_K, so Δ_b's
 //! two uses are separate correlation-robustness queries.
 //!
@@ -38,14 +37,15 @@
 //! Rounds: `max(ν + 3, 23)`, and `max(ν + 2, 23)` for a binary payload, since
 //! the glue's opening waits for `C_ν` and the top phase.
 //!
-//! The malicious variants still run the previous Gen with Δ-correlated
-//! on-path states ([`walk`] and [`precompute`]; 40 rounds for the AES–MMO calls).
+//! The malicious variants run this Gen with the further pairs of a τ-block leaf
+//! hash ([`PreSpec::leaf_pairs`], whose words `C^j`, `N^j` ride in rounds 21 and
+//! 22) and may inject the deviations of [`Fault`].
 
 use super::key::ShKey;
 use crate::field::Field;
 use crate::leaf::{fp_pre, fp_pre_cots, leaf_dabits, pair_leaf, FpPre};
-use crate::{deal_pairs, default_nu, sh_calls, Bottom};
-use dpf_common::aes_tower::{bits_of, block_of, mmo_pairs, mmo_shared, Mmo, OtTower, Shared128, SharedKey, COTS_PER_CALL};
+use crate::{deal_pairs, default_nu, mal_calls, Bottom};
+use dpf_common::aes_tower::{bits_of, block_of, mmo_pairs, Mmo, OtTower, Shared128, COTS_PER_CALL};
 use dpf_common::block::{depth_for, pack_bits, unpack_bits, Block};
 use dpf_common::bool2pc::rot_string_triples;
 use dpf_common::hash::cot_hash;
@@ -79,100 +79,9 @@ pub struct GenOutput<K> {
     pub cots: usize,
 }
 
-/// What a variant's Gen asks of [`precompute`] and [`walk`].
-#[derive(Clone, Copy, Debug)]
-pub struct Shape {
-    /// The glue level ν, `1 ≤ ν ≤ n`.
-    pub nu: usize,
-    /// The leaf is indexed by tag: Gen computes `⟨Y⟩ = ⟨u_n⟩ ⊕ ⟨t_{n,0}·Δ⟩`
-    /// (one more 𝓕_COT, before the AES–MMO calls). Not needed with a binary
-    /// payload, where the order of the two leaf states does not matter.
-    pub y: bool,
-    /// Addition (B) of the malicious Gen: below ν, `⟨α_ℓ·Δ⟩` and `⟨P_ℓ⟩` come
-    /// from one bit-times-2-block product instead of 𝓕_COT and Step C.
-    pub one_product: bool,
-}
-
-impl Shape {
-    /// Levels whose `⟨α_ℓ·Δ⟩` comes from 𝓕_COT: all n, or the top ν with (B).
-    pub fn cot_levels(&self, n: usize) -> usize {
-        if self.one_product {
-            self.nu
-        } else {
-            n
-        }
-    }
-}
-
-/// A bit-times-2-block Beaver triple's shares `(a, [B_1, B_2], [a·B_1, a·B_2])`.
-pub type WideTriple = (bool, [Block; 2], [Block; 2]);
-
 /// One random COT under `Γ_b = Δ_b` per direction: this party's sender key
 /// `K` and its receiver side `(c, M)` with `M = K' ⊕ c·Δ_{1−b}`.
 pub type DeltaCot = (Block, bool, Block);
-
-/// The preprocessing of one generation.
-pub struct Pre {
-    pub shape: Shape,
-    /// `⟨α⟩`: this party's share, bit `n − 1 − i` for level i + 1.
-    pub alpha_share: u64,
-    /// `⟨Δ⟩`: this party's share `Δ_b`, `lsb(Δ_b) = b`.
-    pub delta: Block,
-    /// The public W, `lsb(W) = 0`, that re-randomises the roots per Gen.
-    pub w: Block,
-    /// `⟨α_ℓ·Δ⟩` for the n levels, filled in by [`walk`].
-    pub alpha_delta: Vec<Block>,
-    /// `⟨u_ν⟩, …, ⟨u_n⟩`.
-    pub us: Vec<Block>,
-    /// `⟨Y⟩`, `lsb(Y) = 0`, filled in by [`walk`] if `shape.y`.
-    pub y: Block,
-    /// `⟨t_{n,0}⟩ = lsb(⟨u_n⟩)`.
-    pub t_leaf: bool,
-    /// The public AES keys: K, then the session's `K^mac_j`.
-    pub keys: Vec<Mmo>,
-    /// The OT tower, on its random COTs.
-    pub be: OtTower,
-    /// `(a, B, a·B)`: Step C's n − ν (none with (B)), then the caller's extra
-    /// ones, which [`walk`] leaves here.
-    pub string_triples: Vec<(bool, Block, Block)>,
-    /// (B)'s n − ν bit-times-2-block triples.
-    pub wide_triples: Vec<WideTriple>,
-    /// 𝓕_COT's random COTs: the [`Shape::cot_levels`] bits of α, then
-    /// `t_{n,0}` if `shape.y`, then the glue's `¬t_{ν,0}`.
-    pub delta_cots: Vec<DeltaCot>,
-}
-
-/// Bit-times-block triples [`walk`] consumes: Step C's (none with (B)).
-pub fn walk_strings(n: usize, shape: Shape) -> usize {
-    if shape.one_product {
-        0
-    } else {
-        n - shape.nu
-    }
-}
-
-/// 𝓕_COT's random COTs per Gen: [`Pre::delta_cots`].
-pub fn delta_cots(n: usize, shape: Shape) -> usize {
-    shape.cot_levels(n) + shape.y as usize + 1
-}
-
-impl Pre {
-    /// This party's root `k_b = Δ_b ⊕ W`.
-    pub fn root(&self) -> Block {
-        self.delta ^ self.w
-    }
-
-    /// The bits of α, level 1 first.
-    fn alpha_bits(&self) -> Vec<bool> {
-        let n = self.alpha_delta.len();
-        (0..n).map(|i| (self.alpha_share >> (n - 1 - i)) & 1 == 1).collect()
-    }
-
-    /// This party's share of `u_n`.
-    pub fn un(&self) -> Block {
-        *self.us.last().unwrap()
-    }
-}
 
 /// `⟨x_i·Δ⟩` for shared bits `x_i` on random COTs under `Γ_b = Δ_b` (𝓕_COT of
 /// the paper, as in Half-Tree): `x·Δ = x_0Δ_0 ⊕ x_1Δ_1 ⊕ x_1Δ_0 ⊕ x_0Δ_1`,
@@ -189,280 +98,69 @@ fn delta_products(ch: &mut Channel, lane: &mut Lane, xs: &[bool], cots: &[DeltaC
     xs.iter().zip(cots).zip(d).map(|((&x, &(k, _, m)), d)| delta.and_bit(x) ^ k ^ delta.and_bit(d) ^ m).collect()
 }
 
-/// `m` bit-times-2-block triples from random OTs: as [`rot_string_triples`],
-/// with each COT hashed into a 256-bit pair.
-fn rot_wide_triples<R: rand::RngCore + rand::CryptoRng>(ch: &mut Channel, cot: &mut CotPair, m: usize, rng: &mut R) -> Vec<WideTriple> {
-    let gamma = cot.delta();
-    let h = |x: Block, i: usize| [0, 1].map(|j| cot_hash().h(x, (7 << 60) | (2 * i + j) as u64));
-    let x2 = |a: [Block; 2], b: [Block; 2]| [a[0] ^ b[0], a[1] ^ b[1]];
-    let (mut a, mut bb, mut c) = (vec![false; m], vec![[Block::ZERO; 2]; m], vec![[Block::ZERO; 2]; m]);
-    for s in 0..2 {
-        match cot.random_cots(ch, s, m, rng).expect("semi-honest COT") {
-            RandomCots::Sender(k) => {
-                for i in 0..m {
-                    let (y0, y1) = (h(k[i], i), h(k[i] ^ gamma, i));
-                    bb[i] = x2(y0, y1);
-                    c[i] = x2(c[i], y0);
-                }
-            }
-            RandomCots::Receiver(r, macs) => {
-                for i in 0..m {
-                    a[i] = r[i];
-                    c[i] = x2(c[i], h(macs[i], i));
-                }
-            }
-        }
-    }
-    (0..m).map(|i| (a[i], bb[i], [c[i][0] ^ bb[i][0].and_bit(a[i]), c[i][1] ^ bb[i][1].and_bit(a[i])])).collect()
+/// A public word of the malicious Gen that a test can falsify.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Word {
+    /// `CW_{i+1}`, `i < n`.
+    Cw(usize),
+    /// The payload word `W_CW`.
+    Payload,
+    /// The MAC word `W^MAC_CW`.
+    Mac,
+    /// `M^0_{ν+j}`.
+    M0(usize),
+    /// `C_{ν+j}`.
+    C(usize),
+    /// `b^τ_{ν+j}`, τ ∈ {0, 1}; the low bit of the error is XORed in.
+    BTau(usize, usize),
+    /// `C^{j+2}` of the leaf hash.
+    LeafC(usize),
+    /// `N^{j+2}` of the leaf hash.
+    LeafN(usize),
+    /// This party's share of the glue residual ω (arithmetic payload).
+    Omega,
 }
 
-/// The preprocessing of one Gen of depth n on session `s`: the OT tower's
-/// COTs for `calls` AES–MMO calls, [`walk_strings`] + `extra_strings`
-/// bit-times-block triples, (B)'s wide triples, 𝓕_COT's random COTs
-/// ([`delta_cots`]), and `cots` more COTs per direction (the leaf's).
-pub(crate) fn precompute(ch: &mut Channel, s: &mut Setup, n: usize, shape: Shape, calls: usize, extra_strings: usize, cots: usize) -> Pre {
-    let nu = shape.nu;
-    assert!(n >= 1 && (1..=n).contains(&nu), "1 ≤ ν ≤ n");
-    let b = ch.party();
-    let Setup { cot, rng, global, .. } = s;
-    let pool = cot.random_cots(ch, 0, calls * COTS_PER_CALL, rng).expect("semi-honest COT");
-    let be = OtTower::new(b, pool, cot.delta());
-    let string_triples = rot_string_triples(ch, cot, walk_strings(n, shape) + extra_strings, rng);
-    let wide_triples = if shape.one_product { rot_wide_triples(ch, cot, n - nu, rng) } else { vec![] };
-    let k = delta_cots(n, shape);
-    cot.precompute(ch, k + cots, k + cots, rng).expect("semi-honest COT");
-    let alpha_share: u64 = rng.gen::<u64>() & dpf_common::arith::mask(n);
-    let us: Vec<Block> = (nu..=n).map(|_| Block::random(rng)).collect();
-    let t_leaf = us[n - nu].lsb();
-    // W ← 𝓕_reveal(𝓕_rand) with lsb(W) = 0, and 𝓕_COT's random COTs (random
-    // choices c) under Γ_b = Δ_b, in one round.
-    let mine = Block::random(rng);
-    ch.send_blocks(&[mine]);
-    let w = (mine ^ ch.recv_blocks(1)[0]).with_lsb(false);
-    let choices: Vec<bool> = (0..k).map(|_| rng.gen()).collect();
-    let (keys_s, macs) = cot.extend(ch, &choices, k, rng).expect("semi-honest COT");
-    let delta_cots = (0..k).map(|i| (keys_s[i], choices[i], macs[i])).collect();
-    let keys = std::iter::once(global.key.clone()).chain(global.mac_keys.iter().cloned()).collect();
-    Pre {
-        shape,
-        alpha_share,
-        delta: global.delta,
-        w,
-        alpha_delta: vec![Block::ZERO; n],
-        us,
-        y: Block::ZERO,
-        t_leaf,
-        keys,
-        be,
-        string_triples,
-        wide_triples,
-        delta_cots,
-    }
+/// A deliberate deviation of one party, for the malicious tests.
+#[derive(Clone, Copy, Debug)]
+pub enum Fault {
+    /// XOR the error into this party's share of the word before it is opened
+    /// (added, for `Payload`, `Mac` and `Omega` in a field, as `from_u128`).
+    Word(Word, Block),
+    /// The swap of the paper: flip this party's share of `t_{ν,0}` in the glue,
+    /// both in the 𝓕_COT and in the local term `t_{ν,0}·C_ν`. With a Boolean
+    /// payload the glue has neither; a party that sets this takes the other
+    /// server's state as `st_{ν,0}`, adding `Δ_b` in place of `b·C_ν`.
+    Swap,
+    /// Flip this party's share of `α_{i+1}` into the one product it enters and
+    /// in the terms local to its level: the keys are honest keys for `α* = α ⊕
+    /// e_{i+1}`.
+    Alpha(usize),
+    /// Flip this party's share of the tag `σ = r_n` into the B2A of the leaf.
+    Sigma,
 }
 
-/// `⟨x_i·Y_i⟩` for shared bits `x_i` and blocks `Y_i`, by Beaver on the
-/// bit-times-block triples `(a, B, a·B)`: one round on `lane`, opening `x ⊕ a`
-/// and `Y ⊕ B`.
-pub(crate) fn bit_times_block(ch: &mut Channel, lane: &mut Lane, xy: &[(bool, Block)], triples: &mut std::vec::Drain<(bool, Block, Block)>) -> Vec<Block> {
-    let b = ch.party();
-    let t: Vec<(bool, Block, Block)> = triples.take(xy.len()).collect();
-    assert_eq!(t.len(), xy.len(), "bit-times-block triples exhausted");
-    let mut msg = Vec::with_capacity(17 * xy.len());
-    for (&(x, y), &(a, bb, _)) in xy.iter().zip(&t) {
-        msg.extend_from_slice(&(y ^ bb).to_bytes());
-        msg.push((x ^ a) as u8);
-    }
-    let theirs = ch.exchange_on(lane, msg.clone());
-    assert_eq!(theirs.len(), msg.len(), "malformed product message");
-    (0..xy.len())
-        .map(|i| {
-            let (a, bb, c) = t[i];
-            let f = Block::from_bytes(&msg[17 * i..17 * i + 16]) ^ Block::from_bytes(&theirs[17 * i..17 * i + 16]);
-            let e = (msg[17 * i + 16] ^ theirs[17 * i + 16]) & 1 == 1;
-            // x·Y = e·f ⊕ e·B ⊕ a·f ⊕ a·B.
-            f.and_bit(e && b == 0) ^ bb.and_bit(e) ^ f.and_bit(a) ^ c
-        })
-        .collect()
-}
-
-/// [`bit_times_block`] for one bit times two blocks, on the wide triples.
-fn bit_times_wide(ch: &mut Channel, lane: &mut Lane, xy: &[(bool, [Block; 2])], t: &[WideTriple]) -> Vec<[Block; 2]> {
-    let b = ch.party();
-    assert_eq!(t.len(), xy.len(), "wide triples exhausted");
-    let mut msg = Vec::with_capacity(33 * xy.len());
-    for (&(x, y), &(a, bb, _)) in xy.iter().zip(t) {
-        msg.extend_from_slice(&(y[0] ^ bb[0]).to_bytes());
-        msg.extend_from_slice(&(y[1] ^ bb[1]).to_bytes());
-        msg.push((x ^ a) as u8);
-    }
-    let theirs = ch.exchange_on(lane, msg.clone());
-    assert_eq!(theirs.len(), msg.len(), "malformed product message");
-    (0..xy.len())
-        .map(|i| {
-            let (a, bb, c) = t[i];
-            let o = 33 * i;
-            let e = (msg[o + 32] ^ theirs[o + 32]) & 1 == 1;
-            [0, 1].map(|j| {
-                let f = Block::from_bytes(&msg[o + 16 * j..o + 16 * j + 16]) ^ Block::from_bytes(&theirs[o + 16 * j..o + 16 * j + 16]);
-                f.and_bit(e && b == 0) ^ bb[j].and_bit(e) ^ f.and_bit(a) ^ c[j]
-            })
-        })
-        .collect()
-}
-
-/// What [`walk`] leaves: the n level words, the words `M_ν, …, M_n`, this
-/// party's shares of the outputs of the leaf jobs with the lane they may be
-/// opened on (after the AES–MMO calls), and the top phase's lane (not yet
-/// joined) with this party's share of the glue output `st_{ν,0}` and its
-/// level-ν frontier `st_b({0,1}^ν)` (if asked for).
-pub(crate) struct Walk {
-    pub cws: Vec<Block>,
-    pub ms: Vec<Block>,
-    pub leaf: Vec<Block>,
-    pub leaf_lane: Lane,
-    pub top_lane: Lane,
-    pub glue: Block,
-    pub frontier: Vec<Block>,
-}
-
-/// Deliberate deviations in [`walk`], for the malicious tests.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct Deviation {
-    /// ε is XORed into this party's share of `CW_{i+1}` (`i < n`) or of `M_ν`
-    /// (`i = n`) before it is opened.
-    pub word: Option<(usize, Block)>,
-    /// This party flips its share of `¬t_{ν,0}` into the glue's 𝓕_COT (the
-    /// swap of the paper).
-    pub flip_switch: bool,
-    /// This party flips its share of `α_ℓ` (level ℓ = i + 1) into the one
-    /// product it enters (𝓕_COT, or (B) below ν).
-    pub flip_alpha: Option<usize>,
-}
-
-impl Deviation {
-    fn at(&self, i: usize) -> Block {
-        match self.word {
-            Some((l, e)) if l == i => e,
+impl Fault {
+    /// The error on `word` (zero without this fault).
+    pub(crate) fn at(fault: Option<Fault>, word: Word) -> Block {
+        match fault {
+            Some(Fault::Word(w, e)) if w == word => e,
             _ => Block::ZERO,
         }
     }
 }
 
-/// The top phase and the glue (Figure "DPF.Gen", Π_top and lines 6–11) on
-/// `lane`: returns `CW_1, …, CW_ν`, `M_ν`, this party's share of `st_{ν,0}`
-/// and, if `keep`, its level-ν frontier.
-fn top(pre: &mut Pre, ch: &mut Channel, lane: &mut Lane, dev: Deviation, keep: bool) -> (Vec<Block>, Block, Block, Vec<Block>) {
-    let b = ch.party();
-    let (n, delta) = (pre.alpha_delta.len(), pre.delta);
-    let mut nodes = vec![pre.root()];
-    let mut ls = Vec::new();
-    let mut cws = Vec::with_capacity(pre.shape.nu);
-    for i in 0..pre.shape.nu {
-        ls.resize(nodes.len(), Block::ZERO);
-        pre.keys[0].h_many(&nodes, &mut ls);
-        // ⟨CW_ℓ⟩ = Z_{ℓ,b} ⊕ ⟨¬α_ℓ·Δ⟩, ⟨¬α_ℓ·Δ⟩ = ⟨Δ⟩ ⊕ ⟨α_ℓ·Δ⟩.
-        let z = ls.iter().fold(Block::ZERO, |acc, &l| acc ^ l);
-        let share = z ^ delta ^ pre.alpha_delta[i] ^ dev.at(i);
-        let cw = share ^ Block::from_bytes(&ch.exchange_on(lane, share.to_bytes().to_vec()));
-        let mut next = Vec::with_capacity(2 * nodes.len());
-        for (&st, &l) in nodes.iter().zip(&ls) {
-            let lv = l ^ cw.and_bit(st.lsb());
-            next.push(lv);
-            next.push(st ^ lv);
-        }
-        nodes = next;
-        cws.push(cw);
-    }
-    // Glue: E_b and A_b over level ν.
-    let (e_b, a_b) = nodes.iter().filter(|s| s.lsb()).fold((Block::ZERO, 0u64), |(e, c), &s| (e ^ s, c + 1));
-    // Party 0 holds a = A_0 mod 4, party 1 e = −A_1 mod 4. a + e ≡ A_0 − A_1 = ±1
-    // is odd, so a_0·e_0 = 0 and ¬t_{ν,0} = a_1 ⊕ e_1: each party's share is its
-    // high bit (Lemma "Glue"). Then ⟨st_{ν,0}⟩ = ⟨E⟩ ⊕ 𝓕_COT(¬⟨t_{ν,0}⟩, ⟨Δ⟩).
-    let v = if b == 0 { a_b % 4 } else { (4 - a_b % 4) % 4 };
-    let not_t = ((v >> 1) & 1 == 1) ^ dev.flip_switch;
-    let cot = pre.delta_cots.pop().expect("the glue's COT");
-    let st = e_b ^ delta_products(ch, lane, &[not_t], &[cot], delta)[0];
-    let share = st ^ pre.us[0] ^ dev.at(n);
-    let m_nu = share ^ Block::from_bytes(&ch.exchange_on(lane, share.to_bytes().to_vec()));
-    (cws, m_nu, st, if keep { nodes } else { vec![] })
-}
-
-/// Generation up to the leaf: 𝓕_COT, then the top phase and the glue on one
-/// lane, Step C (or (B)) on another, the AES–MMO calls of the lower levels and
-/// the leaf jobs (key index, this party's share of the input; `leaf_jobs` is
-/// called once `⟨Y⟩` is known) on the main line, then Step B and the openings
-/// of `M_ℓ`. Consumes the first [`walk_strings`] triples of `pre` and leaves
-/// the rest. `keep_frontier` keeps the level-ν frontier for the glue residual.
-pub(crate) fn walk(pre: &mut Pre, ch: &mut Channel, leaf_jobs: impl FnOnce(&Pre) -> Vec<(usize, Block)>, dev: Deviation, keep_frontier: bool) -> Walk {
-    let (n, shape, delta) = (pre.alpha_delta.len(), pre.shape, pre.delta);
-    let nu = shape.nu;
-    let mut a = pre.alpha_bits();
-    if let Some(l) = dev.flip_alpha {
-        a[l] = !a[l];
-    }
-    // 0. 𝓕_COT: ⟨α_ℓ·Δ⟩ for its levels and ⟨t_{n,0}·Δ⟩, one round.
-    let cl = shape.cot_levels(n);
-    let mut xs = a[..cl].to_vec();
-    if shape.y {
-        xs.push(pre.t_leaf);
-    }
-    let cots: Vec<DeltaCot> = pre.delta_cots.drain(..xs.len()).collect();
-    let mut lane = ch.lane();
-    let mut prods = delta_products(ch, &mut lane, &xs, &cots, delta);
-    if shape.y {
-        // ⟨Y⟩ = ⟨u_n⟩ ⊕ ⟨t_{n,0}·Δ⟩; the leaf's AES–MMO calls wait for it.
-        pre.y = pre.un() ^ prods.pop().unwrap();
-        ch.join(lane);
-    }
-    pre.alpha_delta[..cl].copy_from_slice(&prods);
-    let cot_lane = lane;
-
-    let rest = pre.string_triples.split_off(walk_strings(n, shape));
-    let mut mine = std::mem::replace(&mut pre.string_triples, rest);
-    let mut triples = mine.drain(..);
-    let k = n - nu;
-    let step_c: Vec<(bool, Block, Block)> = if shape.one_product { vec![] } else { triples.by_ref().take(k).collect() };
-    drop(triples);
-    let (mut cws, m_nu, glue, frontier) = top(pre, ch, &mut lane, dev, keep_frontier);
-    let mut ms = vec![m_nu];
-    // Step C, ⟨P_ℓ⟩ = ⟨α_ℓ·u_{ℓ−1}⟩, or (B), (⟨α_ℓ·Δ⟩, ⟨P_ℓ⟩) from one product.
-    let mut c_lane = ch.lane();
-    let prods: Vec<Block> = if k == 0 {
-        vec![]
-    } else if shape.one_product {
-        let xy: Vec<(bool, [Block; 2])> = (0..k).map(|j| (a[nu + j], [delta, pre.us[j]])).collect();
-        let t: Vec<WideTriple> = pre.wide_triples.drain(..).collect();
-        let out = bit_times_wide(ch, &mut c_lane, &xy, &t);
-        for (j, o) in out.iter().enumerate() {
-            pre.alpha_delta[nu + j] = o[0];
-        }
-        out.iter().map(|o| o[1]).collect()
-    } else {
-        let xy: Vec<(bool, Block)> = (0..k).map(|j| (a[nu + j], pre.us[j])).collect();
-        let mut sc = step_c;
-        let p = bit_times_block(ch, &mut c_lane, &xy, &mut sc.drain(..));
-        p
-    };
-    // Step A (level ℓ = ν + j + 1 hashes u_{ℓ−1}) and the leaf jobs, in one batch.
-    let mut jobs: Vec<(usize, _)> = (0..k).flat_map(|j| [(0, bits_of(pre.us[j])), (0, bits_of(pre.us[j] ^ delta))]).collect();
-    jobs.extend(leaf_jobs(pre).into_iter().map(|(kj, x)| (kj, bits_of(x))));
-    let mut keys: Vec<SharedKey<bool>> = pre.keys.iter().map(|m| SharedKey::public(&pre.be, m)).collect();
-    let out: Vec<Block> = mmo_shared(&mut pre.be, ch, &mut keys, &jobs).iter().map(block_of).collect();
-    let leaf_lane = ch.lane();
-    if k > 0 {
-        ch.join(cot_lane);
-        ch.join(c_lane);
-        // Step B: ⟨CW_ℓ⟩ = ⟨L_{ℓ,0}⟩ ⊕ ⟨L_{ℓ,1}⟩ ⊕ ⟨Δ⟩ ⊕ ⟨α_ℓ·Δ⟩.
-        let shares: Vec<Block> = (0..k).map(|j| out[2 * j] ^ out[2 * j + 1] ^ delta ^ pre.alpha_delta[nu + j] ^ dev.at(nu + j)).collect();
-        ch.send_blocks(&shares);
-        let low: Vec<Block> = shares.iter().zip(ch.recv_blocks(k)).map(|(&x, y)| x ^ y).collect();
-        // ⟨M_ℓ⟩ = ⟨L_{ℓ,0}⟩ ⊕ ⟨P_ℓ⟩ ⊕ lsb(⟨u_{ℓ−1}⟩)·CW_ℓ ⊕ ⟨u_ℓ⟩.
-        let shares: Vec<Block> = (0..k).map(|j| out[2 * j] ^ prods[j] ^ low[j].and_bit(pre.us[j].lsb()) ^ pre.us[j + 1]).collect();
-        ch.send_blocks(&shares);
-        ms.extend(shares.iter().zip(ch.recv_blocks(k)).map(|(&x, y)| x ^ y));
-        cws.extend(low);
-    }
-    Walk { cws, ms, leaf: out[2 * k..].to_vec(), leaf_lane, top_lane: lane, glue, frontier }
+/// What a variant asks of the preprocessing of [`walk_pairs`].
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PreSpec {
+    /// A binary payload: no glue COT.
+    pub binary: bool,
+    /// More COTs per direction, for the leaf.
+    pub cots: usize,
+    /// Further pairs of the leaf hash, `τ − 1` (two calls each).
+    pub leaf_pairs: usize,
+    /// The α share a party feeds to generation has this level flipped.
+    pub flip_alpha: Option<usize>,
 }
 
 /// The preprocessing of one generation of [`walk_pairs`].
@@ -482,7 +180,7 @@ pub struct PairPre {
     pub step_a: Vec<DeltaCot>,
     /// The glue's random COT (`None` for a binary payload).
     pub glue_cot: Option<DeltaCot>,
-    /// `⟨m⟩` of the two pairs of each level ν..=n.
+    /// `⟨m⟩` of the two pairs of each level ν..=n, then of each leaf pair.
     pub mids: Vec<[Block; 2]>,
     /// `⟨r_ℓ⟩`, `ν ≤ ℓ ≤ n`.
     pub rs: Vec<bool>,
@@ -492,6 +190,8 @@ pub struct PairPre {
     pub key: Mmo,
     /// The OT tower, on its random COTs.
     pub be: OtTower,
+    /// The level whose α share this party flips ([`Fault::Alpha`]).
+    pub flip_alpha: Option<usize>,
 }
 
 impl PairPre {
@@ -501,22 +201,23 @@ impl PairPre {
     }
 
     fn alpha_bits(&self) -> Vec<bool> {
-        alpha_bits(self.alpha_share, self.alpha_delta.len())
+        alpha_bits(self.alpha_share, self.alpha_delta.len(), self.flip_alpha)
     }
 }
 
-/// The bits of a share of α, level 1 first.
-fn alpha_bits(share: u64, n: usize) -> Vec<bool> {
-    (0..n).map(|i| (share >> (n - 1 - i)) & 1 == 1).collect()
+/// The bits of a share of α, level 1 first, with level `flip` flipped.
+fn alpha_bits(share: u64, n: usize, flip: Option<usize>) -> Vec<bool> {
+    (0..n).map(|i| ((share >> (n - 1 - i)) & 1 == 1) ^ (flip == Some(i))).collect()
 }
 
 /// The preprocessing of one Gen of depth n on session `s` (the module's
-/// header), with `cots` more COTs per direction for the leaf.
-pub(crate) fn precompute_pairs(ch: &mut Channel, s: &mut Setup, n: usize, nu: usize, binary: bool, cots: usize) -> PairPre {
+/// header), as `spec` asks.
+pub(crate) fn precompute_pairs(ch: &mut Channel, s: &mut Setup, n: usize, nu: usize, spec: PreSpec) -> PairPre {
     assert!(n >= 1 && (1..=n).contains(&nu), "1 ≤ ν ≤ n");
+    let PreSpec { binary, cots, leaf_pairs, flip_alpha } = spec;
     let b = ch.party();
     let Setup { cot, rng, global, .. } = s;
-    let pool = cot.random_cots(ch, 0, sh_calls(n, nu) * COTS_PER_CALL, rng).expect("semi-honest COT");
+    let pool = cot.random_cots(ch, 0, mal_calls(n, nu, leaf_pairs + 1) * COTS_PER_CALL, rng).expect("semi-honest COT");
     let be = OtTower::new(b, pool, cot.delta());
     let levels = n - nu + 1;
     let triples = rot_string_triples(ch, cot, levels, rng);
@@ -534,14 +235,14 @@ pub(crate) fn precompute_pairs(ch: &mut Channel, s: &mut Setup, n: usize, nu: us
     let step_a = randoms;
     cot.precompute(ch, nu + cots, nu + cots, rng).expect("semi-honest COT");
     let alpha_share: u64 = rng.gen::<u64>() & dpf_common::arith::mask(n);
-    let mids = (0..levels).map(|_| [Block::random(rng), Block::random(rng)]).collect();
+    let mids = (0..levels + leaf_pairs).map(|_| [Block::random(rng), Block::random(rng)]).collect();
     let rs = (0..levels).map(|_| rng.gen()).collect();
     // W ← 𝓕_reveal(𝓕_rand) with lsb(W) = 0, and the COTs under Γ_b = Δ_b with
     // the bits of α as choices, for the top levels, in one round.
     let mine = Block::random(rng);
     ch.send_blocks(&[mine]);
     let w = (mine ^ ch.recv_blocks(1)[0]).with_lsb(false);
-    let top = alpha_bits(alpha_share, n);
+    let top = alpha_bits(alpha_share, n, flip_alpha);
     let (keys, macs) = cot.extend(ch, &top[..nu], nu, rng).expect("semi-honest COT");
     let delta = global.delta;
     // ⟨α_ℓ·Δ⟩_b = α_{ℓ,b}·Δ_b ⊕ K ⊕ M, as in [`delta_products`] with no correction.
@@ -549,12 +250,13 @@ pub(crate) fn precompute_pairs(ch: &mut Channel, s: &mut Setup, n: usize, nu: us
     for i in 0..nu {
         alpha_delta[i] = delta.and_bit(top[i]) ^ keys[i] ^ macs[i];
     }
-    PairPre { nu, alpha_share, delta, w, alpha_delta, step_a, glue_cot, mids, rs, triples, key: global.key.clone(), be }
+    PairPre { nu, alpha_share, delta, w, alpha_delta, step_a, glue_cot, mids, rs, triples, key: global.key.clone(), be, flip_alpha }
 }
 
 /// `Π_top` and the glue's product on `lane`: `CW_1, …, CW_ν`, this party's
-/// share of `st_{ν,0}` (of E for a binary payload) and of `¬t_{ν,0}`.
-fn top_pairs(pre: &mut PairPre, ch: &mut Channel, lane: &mut Lane) -> (Vec<Block>, Block, bool) {
+/// share of `st_{ν,0}` (of E for a binary payload) and of `¬t_{ν,0}`, and, if
+/// `keep`, its level-ν frontier `st_b({0,1}^ν)`.
+fn top_pairs(pre: &mut PairPre, ch: &mut Channel, lane: &mut Lane, fault: Option<Fault>, keep: bool) -> (Vec<Block>, Block, bool, Vec<Block>) {
     let b = ch.party();
     let delta = pre.delta;
     let mut nodes = vec![pre.root()];
@@ -564,7 +266,7 @@ fn top_pairs(pre: &mut PairPre, ch: &mut Channel, lane: &mut Lane) -> (Vec<Block
         ls.resize(nodes.len(), Block::ZERO);
         pre.key.h_many(&nodes, &mut ls);
         // ⟨CW_ℓ⟩ = Z_{ℓ,b} ⊕ ⟨¬α_ℓ·Δ⟩, ⟨¬α_ℓ·Δ⟩ = ⟨Δ⟩ ⊕ ⟨α_ℓ·Δ⟩.
-        let share = ls.iter().fold(Block::ZERO, |acc, &l| acc ^ l) ^ delta ^ pre.alpha_delta[i];
+        let share = ls.iter().fold(Block::ZERO, |acc, &l| acc ^ l) ^ delta ^ pre.alpha_delta[i] ^ Fault::at(fault, Word::Cw(i));
         let cw = share ^ Block::from_bytes(&ch.exchange_on(lane, share.to_bytes().to_vec()));
         let mut next = Vec::with_capacity(2 * nodes.len());
         for (&st, &l) in nodes.iter().zip(&ls) {
@@ -578,12 +280,12 @@ fn top_pairs(pre: &mut PairPre, ch: &mut Channel, lane: &mut Lane) -> (Vec<Block
     // E_b and A_b over level ν; ¬t_{ν,0} = a_1 ⊕ e_1 (Lemma "Glue").
     let (e_b, a_b) = nodes.iter().filter(|s| s.lsb()).fold((Block::ZERO, 0u64), |(e, c), &s| (e ^ s, c + 1));
     let v = if b == 0 { a_b % 4 } else { (4 - a_b % 4) % 4 };
-    let not_t = (v >> 1) & 1 == 1;
+    let not_t = ((v >> 1) & 1 == 1) ^ matches!(fault, Some(Fault::Swap));
     let st = match pre.glue_cot.take() {
         Some(cot) => e_b ^ delta_products(ch, lane, &[not_t], &[cot], delta)[0],
         None => e_b,
     };
-    (cws, st, not_t)
+    (cws, st, not_t, if keep { nodes } else { vec![] })
 }
 
 /// One simultaneous exchange on the main line.
@@ -606,27 +308,39 @@ fn get_blocks(b: &[u8]) -> Vec<Block> {
 
 /// What [`walk_pairs`] leaves: the n level words, the bottom layer's public
 /// words, this party's shares of the leaf hashes `H_K(X^b_n)` and of the pair
-/// inputs, and the lane for the leaf, at the end of the pairs.
+/// inputs (the levels' first, then the leaf pairs'), the public words `[C^j,
+/// N^j]` of the leaf pairs with this party's shares of their hashes `[h^{(0)}_j,
+/// h^{(1)}_j]`, the lane for the leaf, at the end of the pairs; and, for the
+/// glue residual, this party's share of `st_{ν,0}`, its level-ν frontier and a
+/// lane at the end of the glue.
 pub struct PairWalk {
     pub cws: Vec<Block>,
     pub bottom: Bottom,
     pub hs: [Block; 2],
     pub xs: Vec<[Block; 2]>,
+    pub leaf_words: Vec<[Block; 2]>,
+    pub leaf_hs: Vec<[Block; 2]>,
     pub leaf_lane: Lane,
+    pub glue: Block,
+    pub frontier: Vec<Block>,
+    pub glue_lane: Lane,
 }
 
 /// Figures `Π_GenSH`, `Π_Top` and `Π_Bottom` up to the leaf, in the schedule of
-/// the module's header.
-pub(crate) fn walk_pairs(pre: &mut PairPre, ch: &mut Channel) -> PairWalk {
+/// the module's header, with the deviation `fault` of this party. `keep_frontier`
+/// keeps the level-ν frontier for the glue residual.
+pub(crate) fn walk_pairs(pre: &mut PairPre, ch: &mut Channel, fault: Option<Fault>, keep_frontier: bool) -> PairWalk {
     let b = ch.party();
     let (n, nu, delta) = (pre.alpha_delta.len(), pre.nu, pre.delta);
     let (levels, k) = (n - nu + 1, n - nu);
     let binary = pre.glue_cot.is_none();
     let a = pre.alpha_bits();
     let p0 = b == 0;
+    let err = |w: Word| Fault::at(fault, w);
 
     let mut top_lane = ch.lane();
-    let (mut cws, st_nu, not_t) = top_pairs(pre, ch, &mut top_lane);
+    let (mut cws, st_nu, not_t, frontier) = top_pairs(pre, ch, &mut top_lane, fault, keep_frontier);
+    let glue_lane = top_lane;
 
     // Rounds 1–20: the pairs.
     let mids: Vec<Shared128<bool>> = pre.mids.iter().flat_map(|m| m.iter().map(|&x| bits_of(x))).collect();
@@ -634,10 +348,12 @@ pub(crate) fn walk_pairs(pre: &mut PairPre, ch: &mut Channel) -> PairWalk {
     let leaf_lane = ch.lane();
     let xs: Vec<[Block; 2]> = out.chunks(2).map(|p| [block_of(&p[0].0), block_of(&p[1].0)]).collect();
     let ls: Vec<[Block; 2]> = out.chunks(2).map(|p| [block_of(&p[0].1), block_of(&p[1].1)]).collect();
+    let (leaf_xs, leaf_hs) = (xs[levels..].to_vec(), ls[levels..].to_vec());
     let us: Vec<[Block; 2]> = (0..levels).map(|j| [xs[j][0].with_lsb(pre.rs[j]), xs[j][1].with_lsb(pre.rs[j] ^ p0)]).collect();
 
-    // Round 21: C_ℓ, the masks of the ANDs, Step A's messages.
-    let c_mine: Vec<Block> = us.iter().map(|u| delta ^ u[0] ^ u[1]).collect();
+    // Round 21: C_ℓ and C^j, the masks of the ANDs, Step A's messages.
+    let mut c_mine: Vec<Block> = us.iter().enumerate().map(|(j, u)| delta ^ u[0] ^ u[1] ^ err(Word::C(j))).collect();
+    c_mine.extend(leaf_xs.iter().enumerate().map(|(j, x)| delta ^ x[0] ^ x[1] ^ err(Word::LeafC(j))));
     let t: Vec<(bool, Block, Block)> = pre.triples.drain(..).collect();
     let ef_mine: Vec<bool> = (0..levels).flat_map(|j| [pre.rs[j] ^ t[j].0, xs[j][0].lsb() ^ xs[j][1].lsb() ^ t[j].1.lsb()]).collect();
     let h = |x: Block, j: usize| cot_hash().h(x, (9 << 60) | j as u64);
@@ -653,8 +369,10 @@ pub(crate) fn walk_pairs(pre: &mut PairPre, ch: &mut Channel) -> PairWalk {
     let bits_peer = unpack_bits(&theirs[..nb], bits_mine.len());
     let ef: Vec<bool> = bits_peer.iter().zip(&ef_mine).map(|(&x, &y)| x ^ y).collect();
     let eps_peer = &bits_peer[2 * levels..];
-    let c: Vec<Block> = get_blocks(&theirs[nb..nb + 16 * levels]).iter().zip(&c_mine).map(|(&x, &y)| x ^ y).collect();
-    let d_peer = get_blocks(&theirs[nb + 16 * levels..]);
+    let nc = c_mine.len();
+    let mut c: Vec<Block> = get_blocks(&theirs[nb..nb + 16 * nc]).iter().zip(&c_mine).map(|(&x, &y)| x ^ y).collect();
+    let leaf_c = c.split_off(levels);
+    let d_peer = get_blocks(&theirs[nb + 16 * nc..]);
     // ⟨g_ℓ⟩ by Beaver; with K' = K ⊕ ε_{1−b}·Δ_b, ⟨α_ℓ·Δ⟩_b = α_b·Δ_b ⊕ K' ⊕ M
     // and ⟨P_ℓ⟩_b = α_b·u_b ⊕ H(K') ⊕ H(M) ⊕ α_b·D_{1−b}.
     let gs: Vec<bool> = (0..levels)
@@ -671,20 +389,30 @@ pub(crate) fn walk_pairs(pre: &mut PairPre, ch: &mut Channel) -> PairWalk {
         ps.push(us[j][0].and_bit(al) ^ h(shifted, j) ^ h(mac, j) ^ d_peer[j].and_bit(al));
     }
 
-    // Round 22, once the glue's product is in: CW_ℓ, b^τ_ℓ, M^0_ν.
+    // Round 22, once the glue's product is in: CW_ℓ, b^τ_ℓ, M^0_ν, N^j.
     ch.join(top_lane);
     let t_share = not_t ^ p0;
-    let m_nu_mine = st_nu ^ us[0][0] ^ if binary { c[0].and_bit(p0) } else { c[0].and_bit(t_share) };
-    let cw_mine: Vec<Block> = (0..k).map(|j| ls[j][0] ^ ls[j][1] ^ delta ^ pre.alpha_delta[nu + j] ^ c[j].and_bit(a[nu + j] ^ p0)).collect();
-    let bt_mine: Vec<bool> = (0..levels).flat_map(|j| [xs[j][0].lsb() ^ gs[j], xs[j][1].lsb() ^ gs[j]]).collect();
-    let mut msg = Vec::with_capacity(16 * (k + 1) + levels);
+    let glue_term = match (binary, matches!(fault, Some(Fault::Swap))) {
+        (true, false) => c[0].and_bit(p0),
+        (true, true) => delta,
+        (false, _) => c[0].and_bit(t_share),
+    };
+    let m_nu_mine = st_nu ^ us[0][0] ^ glue_term ^ err(Word::M0(0));
+    let cw_mine: Vec<Block> = (0..k).map(|j| ls[j][0] ^ ls[j][1] ^ delta ^ pre.alpha_delta[nu + j] ^ c[j].and_bit(a[nu + j] ^ p0) ^ err(Word::Cw(nu + j))).collect();
+    let (un0, r_n, cn) = (us[levels - 1][0], pre.rs[levels - 1], c[levels - 1]);
+    let n_mine: Vec<Block> = leaf_xs.iter().zip(&leaf_c).enumerate().map(|(j, (x, &cj))| un0 ^ x[0] ^ (cn ^ cj).and_bit(r_n) ^ err(Word::LeafN(j))).collect();
+    let bt_mine: Vec<bool> = (0..levels).flat_map(|j| (0..2).map(move |tau| (j, tau))).map(|(j, tau)| xs[j][tau].lsb() ^ gs[j] ^ err(Word::BTau(j, tau)).lsb()).collect();
+    let mut msg = Vec::with_capacity(16 * (k + 1 + n_mine.len()) + levels);
     put_blocks(&mut msg, &[m_nu_mine]);
     put_blocks(&mut msg, &cw_mine);
+    put_blocks(&mut msg, &n_mine);
     msg.extend(pack_bits(&bt_mine));
     let theirs = exchange(ch, msg);
     let m_nu = m_nu_mine ^ Block::from_bytes(&theirs[..16]);
     let low: Vec<Block> = get_blocks(&theirs[16..16 * (k + 1)]).iter().zip(&cw_mine).map(|(&x, &y)| x ^ y).collect();
-    let bt: Vec<bool> = unpack_bits(&theirs[16 * (k + 1)..], 2 * levels).iter().zip(&bt_mine).map(|(&x, &y)| x ^ y).collect();
+    let bw = 16 * (k + 1 + n_mine.len());
+    let ns: Vec<Block> = get_blocks(&theirs[16 * (k + 1)..bw]).iter().zip(&n_mine).map(|(&x, &y)| x ^ y).collect();
+    let bt: Vec<bool> = unpack_bits(&theirs[bw..], 2 * levels).iter().zip(&bt_mine).map(|(&x, &y)| x ^ y).collect();
 
     // Round 23: M^0_ℓ.
     let mut m0 = vec![m_nu];
@@ -692,7 +420,7 @@ pub(crate) fn walk_pairs(pre: &mut PairPre, ch: &mut Channel) -> PairWalk {
         let mine: Vec<Block> = (0..k)
             .map(|j| {
                 let kl = ls[j][0] ^ ps[j] ^ low[j].and_bit(pre.rs[j]);
-                kl ^ us[j + 1][0] ^ (c[j] ^ c[j + 1]).and_bit(kl.lsb())
+                kl ^ us[j + 1][0] ^ (c[j] ^ c[j + 1]).and_bit(kl.lsb()) ^ err(Word::M0(j + 1))
             })
             .collect();
         let mut msg = Vec::with_capacity(16 * k);
@@ -702,12 +430,13 @@ pub(crate) fn walk_pairs(pre: &mut PairPre, ch: &mut Channel) -> PairWalk {
     }
     cws.extend(low);
     let b_pairs = bt.chunks(2).map(|p| [p[0], p[1]]).collect();
-    PairWalk { cws, bottom: Bottom { nu, m0, c, b: b_pairs }, hs: ls[levels - 1], xs, leaf_lane }
+    let leaf_words = leaf_c.iter().zip(&ns).map(|(&c, &n)| [c, n]).collect();
+    PairWalk { cws, bottom: Bottom { nu, m0, c, b: b_pairs }, hs: ls[levels - 1], xs, leaf_words, leaf_hs, leaf_lane, glue: st_nu, frontier, glue_lane }
 }
 
 fn gen_with<F: Field>(mut pre: PairPre, mut fpre: FpPre<F, F>, ch: &mut Channel, n_size: u64, beta: F) -> (ShKey<F>, usize, Vec<[Block; 2]>) {
     let b = ch.party();
-    let PairWalk { cws, bottom, hs, xs, mut leaf_lane } = walk_pairs(&mut pre, ch);
+    let PairWalk { cws, bottom, hs, xs, mut leaf_lane, .. } = walk_pairs(&mut pre, ch, None, false);
     let w_cw = pair_leaf(ch, &mut leaf_lane, hs, *pre.rs.last().unwrap(), &mut fpre, beta);
     ch.join(leaf_lane);
     let root = pre.root();
@@ -725,7 +454,7 @@ impl Session {
     /// Base OTs, Ferret (`ferret`: `Some(FerretConfig::B13)` for benchmarks,
     /// `None` keeps IKNP, for tests), `⟨Δ⟩` and K.
     pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Self {
-        Session { s: setup(ch, seed, ferret, 0) }
+        Session { s: setup(ch, seed, ferret) }
     }
 
     /// Preprocessing and generation of a key for a random index α (its share
@@ -739,8 +468,7 @@ impl Session {
             &mut self.s,
             n,
             nu.unwrap_or(default_nu(n)),
-            false,
-            fp_pre_cots::<F, F>(dabits, 1),
+            PreSpec { cots: fp_pre_cots::<F, F>(dabits, 1), ..Default::default() },
             |cot, rng, ch| fp_pre::<F, F, _>(ch, cot, dabits, 1, &[], rng),
             |pre, fpre, ch| gen_with(pre, fpre, ch, n_size, beta),
         )
@@ -753,11 +481,10 @@ pub fn gen<F: Field>(ch: &mut Channel, n_size: u64, nu: Option<usize>, beta: F, 
 }
 
 /// The session secrets: this party's share `Δ_b` of the global ⟨Δ⟩ (also its
-/// Ferret key), the public key K and the malicious variants' `K^mac_j`.
+/// Ferret key) and the public key K.
 pub(crate) struct Global {
     pub delta: Block,
     pub key: Mmo,
-    pub mac_keys: Vec<Mmo>,
 }
 
 /// One party's session state after setup.
@@ -770,9 +497,8 @@ pub(crate) struct Setup {
 }
 
 /// Π_setup: base OTs and Ferret, party b's COTs under its Ferret key `Γ_b :=
-/// Δ_b` (`lsb(Δ_b) = b`), then `K` and `mac_keys` more public keys `K^mac_j`
-/// by `𝓕_reveal(𝓕_rand)`.
-pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, mac_keys: usize) -> Setup {
+/// Δ_b` (`lsb(Δ_b) = b`), then `K` by `𝓕_reveal(𝓕_rand)`.
+pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Setup {
     let t_setup = Instant::now();
     let b = ch.party();
     let mut rng = ChaCha20Rng::from_seed(seed);
@@ -781,16 +507,15 @@ pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfi
     if let Some(cfg) = ferret {
         cot.enable_ferret(ch, cfg, &mut rng).expect("semi-honest Ferret");
     }
-    let mine: Vec<Block> = (0..1 + mac_keys).map(|_| Block::random(&mut rng)).collect();
-    ch.send_blocks(&mine);
-    let mut keys: Vec<Mmo> = mine.iter().zip(ch.recv_blocks(1 + mac_keys)).map(|(&a, b)| Mmo::new((a ^ b).to_bytes())).collect();
-    let key = keys.remove(0);
+    let mine = Block::random(&mut rng);
+    ch.send_blocks(&[mine]);
+    let key = Mmo::new((mine ^ ch.recv_blocks(1)[0]).to_bytes());
     ch.sync();
-    Setup { cot, rng, global: Global { delta, key, mac_keys: keys }, stats: ch.stats(), time: t_setup.elapsed() }
+    Setup { cot, rng, global: Global { delta, key }, stats: ch.stats(), time: t_setup.elapsed() }
 }
 
-/// Preprocessing on session `s` ([`precompute_pairs`] with `cots` more COTs
-/// per direction, then `extra`), then `body`, the generation proper, each
+/// Preprocessing on session `s` ([`precompute_pairs`] as `spec` asks, then
+/// `extra`), then `body`, the generation proper, each
 /// phase timed and counted on its own; the setup figures are the session's.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn drive<K, P>(
@@ -798,15 +523,14 @@ pub(crate) fn drive<K, P>(
     s: &mut Setup,
     n: usize,
     nu: usize,
-    binary: bool,
-    cots: usize,
+    spec: PreSpec,
     extra: impl FnOnce(&mut CotPair, &mut ChaCha20Rng, &mut Channel) -> P,
     body: impl FnOnce(PairPre, P, &mut Channel) -> (K, usize, Vec<[Block; 2]>),
 ) -> GenOutput<K> {
     let cots_before = s.cot.produced;
     let start = ch.stats();
     let t_pre = Instant::now();
-    let pre = precompute_pairs(ch, s, n, nu, binary, cots);
+    let pre = precompute_pairs(ch, s, n, nu, spec);
     let (alpha_share, rs) = (pre.alpha_share, pre.rs.clone());
     let more = extra(&mut s.cot, &mut s.rng, ch);
     let pre_stats = ch.stats().since(&start);

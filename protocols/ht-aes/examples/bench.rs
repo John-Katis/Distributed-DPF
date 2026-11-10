@@ -13,14 +13,13 @@
 //!   server, with one sign product.
 //! * `sh-bin`: as `sh` with an XOR-shared payload in F_2^ℓ (no B2A and no
 //!   product at the leaf, no tag count at the glue).
-//! * `mal`: malicious, the previous `sh-bin` Gen (Δ-correlated on-path states,
-//!   40 rounds for the AES–MMO calls) with one product per bottom level
-//!   (`--nu` as for `sh`), public payload in `{0,1}^ℓ ⊂ GF(2^128)` with a
-//!   payload MAC and Π_Verify.
-//! * `mal-arith`: malicious, the previous `sh` Gen with one product per bottom level
-//!   and the glue residual (`--nu` as for `sh`): public payload in Babybear
-//!   with MACs in `F_{q^4}` (the paper's) for `--out-bits` ≤ 31, payload and
-//!   MAC in Goldilocks for ≤ 64, in `2^127 − 1` above.
+//! * `mal`: malicious (Figures `Π_GenMal` and `Π_Verify`, Boolean payloads) on
+//!   the `sh-bin` Gen: leaf MAC in `F_{2^64}` for `--out-bits` ≤ 64 and in
+//!   `F_{2^128}` above.
+//! * `mal-arith`: malicious on the `sh` Gen, with the leaf MAC and the glue
+//!   residual over `2^127 − 1`: public payload in Babybear with MACs in
+//!   `F_{q^4}` (the paper's) for `--out-bits` ≤ 31, payload and MAC in
+//!   Goldilocks for ≤ 64, in `2^127 − 1` above.
 //!
 //! Setup is the base OTs and the Ferret bootstrap (`FerretConfig::B13`).
 //! Preprocessing is the OT tower's random Ferret COTs, the string triples and
@@ -34,7 +33,7 @@ use dpf_common::bench::{bench_eval, bench_full, mean, print_gen, whole_gen, GenR
 use dpf_common::net::run_two_party;
 use dpf_common::ot::FerretConfig;
 use dpf_common::stream::TreeMode;
-use ht_aes::field::{BabyBear, BabyBear4, Ext, Field, Gold, M127};
+use ht_aes::field::{BabyBear, BabyBear4, Ext, Field, Gf128, Gf64, Gold, M127};
 use ht_aes::semi_honest::{gen, gen_reference};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -114,7 +113,7 @@ fn eval_sh<F: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     }
 }
 
-fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
+fn gen_mal<K: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     use ht_aes::malicious::{low, run_mal};
     let (mut setup, mut pre, mut g0, mut g1, mut total) = (vec![], vec![], vec![], vec![], vec![]);
     let mut last = None;
@@ -127,7 +126,7 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
         let timed = |party: usize| {
             move |c: &mut dpf_common::net::Channel| {
                 let t = Instant::now();
-                let out = run_mal(c, n, nu, bits, beta, seeds[party], Some(FerretConfig::B13), None);
+                let out = run_mal::<K>(c, n, nu, bits, beta, seeds[party], Some(FerretConfig::B13), None);
                 (out, t.elapsed())
             }
         };
@@ -165,11 +164,11 @@ fn gen_mal(o: &Opts, rng: &mut ChaCha20Rng) {
     );
 }
 
-fn eval_mal(o: &Opts, rng: &mut ChaCha20Rng) {
+fn eval_mal<K: Field>(o: &Opts, rng: &mut ChaCha20Rng) {
     use ht_aes::malicious::{gen_reference, low};
     let xs: Vec<u64> = (0..o.points).map(|_| rng.gen_range(0..o.size)).collect();
     let beta = low(dpf_common::block::Block::random(rng), o.out_bits);
-    let (keys, _) = gen_reference(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
+    let (keys, _) = gen_reference::<K>(o.size, o.out_bits, rng.gen_range(0..o.size), beta, rng.gen());
     let k = &keys[0];
     if o.runs("eval") {
         bench_eval(o, 1, &xs, |x| {
@@ -182,8 +181,8 @@ fn eval_mal(o: &Opts, rng: &mut ChaCha20Rng) {
                 black_box(k.eval_full());
             }
             TreeMode::Stream { batch } => {
-                let mut acc = dpf_common::block::Block::ZERO;
-                k.eval_full_stream(batch, |_, outs| acc = outs.iter().fold(acc, |a, y| a ^ y.0 ^ y.1));
+                let mut acc = (dpf_common::block::Block::ZERO, K::ZERO);
+                k.eval_full_stream(batch, |_, outs| acc = outs.iter().fold(acc, |a, y| (a.0 ^ y.0, a.1.add(y.1))));
                 black_box(acc);
             }
         });
@@ -390,10 +389,10 @@ fn main() {
             }
             "mal" => {
                 if o.runs("gen") {
-                    gen_mal(o, &mut rng);
+                    if wide { gen_mal::<Gf128>(o, &mut rng) } else { gen_mal::<Gf64>(o, &mut rng) }
                 }
                 if o.runs("eval") || o.runs("full") {
-                    eval_mal(o, &mut rng);
+                    if wide { eval_mal::<Gf128>(o, &mut rng) } else { eval_mal::<Gf64>(o, &mut rng) }
                 }
             }
             v => unreachable!("unknown variant {v}"),

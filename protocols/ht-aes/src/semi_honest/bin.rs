@@ -12,7 +12,7 @@
 //! Preprocessing: as the arithmetic variant's, without the leaf's daBits and
 //! triple and without the glue's COT.
 
-use super::gen::{drive, walk_pairs, GenOutput, PairWalk, Session};
+use super::gen::{drive, walk_pairs, GenOutput, PairWalk, PreSpec, Session};
 use crate::malicious::low;
 use crate::{deal_pairs, default_nu, expand_level, Bottom};
 use dpf_common::aes_tower::Mmo;
@@ -119,12 +119,11 @@ impl Session {
             &mut self.s,
             n,
             nu.unwrap_or(default_nu(n)),
-            true,
-            0,
+            PreSpec { binary: true, ..Default::default() },
             |_, _, _| (),
             |mut pre, (), ch| {
                 let b = ch.party();
-                let PairWalk { cws, bottom, hs, xs, mut leaf_lane } = walk_pairs(&mut pre, ch);
+                let PairWalk { cws, bottom, hs, xs, mut leaf_lane, .. } = walk_pairs(&mut pre, ch, None, false);
                 let w_share = low(hs[0] ^ hs[1], bits) ^ low(beta_share, bits);
                 let theirs = ch.exchange_on(&mut leaf_lane, w_share.to_bytes().to_vec());
                 assert_eq!(theirs.len(), 16, "malformed payload share");

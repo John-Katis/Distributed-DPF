@@ -1,39 +1,35 @@
-//! The malicious key: root, level words, payload word `W_CW` (ℓ bits, XOR
-//! group) and payload-MAC word `W^MAC_CW ∈ GF(2^128)`; evaluation returns the
-//! output share and its MAC share, and [`verify`] is Π_Verify.
+//! The Boolean malicious key: the semi-honest key's words, the leaf MAC's words
+//! `C^j`, `N^j`, and `W^MAC_CW ∈ F_{2^k}`; evaluation returns XOR shares of the
+//! output and of its MAC, and [`verify`] is Π_Verify over `F_{2^k}`.
 
-use crate::malicious_arith::VerifyMask;
-use crate::semi_honest::key::level_word;
-use crate::{child, children_masked, leaf_seed};
+use crate::field::{bits_at, Field};
+use crate::verify::{self, pi_verify, VerifyMask};
+use crate::{expand_level, leaf_hash, leaf_hash_many, Bottom};
 use dpf_common::aes_tower::Mmo;
 use dpf_common::block::{depth_for, Block};
-use dpf_common::coin::{coin_block, commit_and_open_blocks, Abort};
-use dpf_common::gf128;
-use dpf_common::hash::CtrPrg;
+use dpf_common::coin::Abort;
 use dpf_common::net::Channel;
 use dpf_common::stream::walk;
 use rand::{CryptoRng, RngCore};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MalKey {
+pub struct MalKey<K: Field> {
     pub party: usize,
     pub n_size: u64,
-    /// ℓ ≤ 128: outputs live in `{0,1}^ℓ ⊂ GF(2^128)`.
+    /// ℓ ≤ k: outputs live in the first ℓ coordinates of `F_{2^k}`.
     pub bits: usize,
-    /// `F = H_K` and `F^pay = H_K(· ∥ 0)`, K public (the session's).
+    /// `F = H_K`, K public (the session's).
     pub prf: Mmo,
-    /// `F^mac = H_{K^mac}(· ∥ 0)`.
-    pub mac: Mmo,
     pub root: Block,
-    /// The glue level ν ≥ 1.
-    pub nu: usize,
     pub cws: Vec<Block>,
-    /// `M_ν, …, M_n`.
-    pub ms: Vec<Block>,
-    /// `W_CW = F^pay(s_0) ⊕ F^pay(s_1) ⊕ β` (low ℓ bits).
+    /// `M^0_ℓ`, `C_ℓ` and `b^τ_ℓ` for `ν ≤ ℓ ≤ n`.
+    pub bottom: Bottom,
+    /// `[C^j, N^j]` of the leaf hash, `2 ≤ j ≤ τ`.
+    pub leaf_words: Vec<[Block; 2]>,
+    /// `W_CW = W(h^(0)) ⊕ W(h^(1)) ⊕ β` (low ℓ bits).
     pub w_cw: Block,
-    /// `W^MAC_CW = F^mac(s_0) ⊕ F^mac(s_1) ⊕ δ·β`.
-    pub wm_cw: Block,
+    /// `W^MAC_CW = F^mac(h^(0)) ⊕ F^mac(h^(1)) ⊕ β·δ`.
+    pub wm_cw: K,
 }
 
 /// The low `bits` bits of a block.
@@ -46,46 +42,51 @@ pub fn low(x: Block, bits: usize) -> Block {
     }
 }
 
-impl MalKey {
+/// `F^mac(h)`: the k bits of the leaf hash after the ℓ payload bits.
+#[inline]
+pub(crate) fn mac_of<K: Field>(h: &[Block], bits: usize) -> K {
+    K::from_u128(bits_at(h, bits, K::P_BITS))
+}
+
+impl<K: Field> MalKey<K> {
     pub fn depth(&self) -> usize {
         depth_for(self.n_size)
     }
 
-    /// K, `K^mac`, root, n + (n − ν + 1) words, ⌈ℓ/8⌉ bytes of `W_CW`, 16
-    /// bytes of `W^MAC_CW`.
+    /// The glue level ν.
+    pub fn nu(&self) -> usize {
+        self.bottom.nu
+    }
+
+    /// K, root, n level words, the bottom layer's words, `C^j` and `N^j`,
+    /// ⌈ℓ/8⌉ bytes of `W_CW` and `W^MAC_CW`.
     pub fn size_bytes(&self) -> usize {
-        16 * 2 + 16 + 16 * (self.cws.len() + self.ms.len()) + self.bits.div_ceil(8) + 16
+        16 + 16 + 16 * self.cws.len() + self.bottom.size_bytes() + 32 * self.leaf_words.len() + self.bits.div_ceil(8) + K::BYTES
     }
 
-    pub fn public_part(&self) -> (&[Block], &[Block], Block, Block) {
-        (&self.cws, &self.ms, self.w_cw, self.wm_cw)
-    }
-
-    /// `M_ℓ`, zero above the glue level.
     #[inline]
-    pub fn m(&self, level: usize) -> Block {
-        level_word(self.nu, &self.ms, level)
+    fn output(&self, t: bool, h: &[Block]) -> (Block, K) {
+        let (y, m) = (low(h[0], self.bits), mac_of::<K>(h, self.bits));
+        if t {
+            (y ^ self.w_cw, m.add(self.wm_cw))
+        } else {
+            (y, m)
+        }
     }
 
     /// This party's shares `(y, m)` at x: XOR shares of `f(x)` and of `δ·f(x)`.
-    pub fn eval_point(&self, x: u64) -> (Block, Block) {
+    pub fn eval_point(&self, x: u64) -> (Block, K) {
         assert!(x < self.n_size);
-        let n = self.depth();
-        let mut st = self.root ^ self.m(0);
-        for (i, &cw) in self.cws.iter().enumerate() {
-            st = child(&self.prf, st, cw, (x >> (n - 1 - i)) & 1 == 1) ^ self.m(i + 1);
-        }
-        let s = leaf_seed(st);
-        let t = st.lsb();
-        (low(self.prf.h(s), self.bits) ^ self.w_cw.and_bit(t), self.mac.h(s) ^ self.wm_cw.and_bit(t))
+        let st = self.bottom.path(&self.prf, self.root, &self.cws, x);
+        self.output(st.lsb(), &leaf_hash(&self.prf, &self.bottom, &self.leaf_words, st))
     }
 
     /// Shares `(y, m)` at x = 0, …, N − 1: all 2^n leaves, one level at a time.
-    pub fn eval_full(&self) -> Vec<(Block, Block)> {
-        let mut nodes = vec![self.root ^ self.m(0)];
+    pub fn eval_full(&self) -> Vec<(Block, K)> {
+        let mut nodes = vec![self.root];
         for (i, &cw) in self.cws.iter().enumerate() {
             let mut next = Vec::new();
-            children_masked(&self.prf, &nodes, cw, self.m(i + 1), &mut next);
+            expand_level(&self.prf, &nodes, cw, &self.bottom, i + 1, &mut next);
             nodes = next;
         }
         nodes.truncate(self.n_size as usize);
@@ -97,13 +98,13 @@ impl MalKey {
     /// [`eval_full`](Self::eval_full) without holding the domain: a batched
     /// walk ([`dpf_common::stream`]) that calls `visit(x0, outs)` with this
     /// party's shares at `x0 .. x0 + outs.len()`, for all x < N.
-    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[(Block, Block)])) {
+    pub fn eval_full_stream(&self, batch: usize, mut visit: impl FnMut(u64, &[(Block, K)])) {
         let (mut buf, mut outs) = (Vec::new(), Vec::new());
         walk(
-            self.root ^ self.m(0),
+            self.root,
             self.cws.len(),
             batch,
-            |l, parents, out| children_masked(&self.prf, parents, self.cws[l - 1], self.m(l), out),
+            |l, parents, out| expand_level(&self.prf, parents, self.cws[l - 1], &self.bottom, l, out),
             |x0, leaves| {
                 if x0 < self.n_size {
                     self.outputs(&leaves[..leaves.len().min((self.n_size - x0) as usize)], &mut buf, &mut outs);
@@ -114,81 +115,38 @@ impl MalKey {
     }
 
     /// The outputs at `leaves` into `outs`; `buf` is scratch, reused across calls.
-    fn outputs(&self, leaves: &[Block], buf: &mut Vec<Block>, outs: &mut Vec<(Block, Block)>) {
-        let k = leaves.len();
-        buf.clear();
-        buf.extend(leaves.iter().map(|&s| leaf_seed(s)));
-        buf.resize(3 * k, Block::ZERO);
-        let (seeds, rest) = buf.split_at_mut(k);
-        let (w, wm) = rest.split_at_mut(k);
-        self.prf.h_many(seeds, w);
-        self.mac.h_many(seeds, wm);
-        let (wc, mc) = (self.w_cw, self.wm_cw);
+    fn outputs(&self, leaves: &[Block], buf: &mut Vec<Block>, outs: &mut Vec<(Block, K)>) {
+        leaf_hash_many(&self.prf, &self.bottom, &self.leaf_words, leaves, buf);
+        let (k, tau) = (leaves.len(), self.leaf_words.len() + 1);
+        let mut h = vec![Block::ZERO; tau];
         outs.clear();
-        outs.extend(leaves.iter().zip(w.iter().zip(&*wm)).map(|(&st, (&wv, &mv))| {
-            let t = st.lsb();
-            (low(wv, self.bits) ^ wc.and_bit(t), mv ^ mc.and_bit(t))
+        outs.extend(leaves.iter().enumerate().map(|(i, st)| {
+            for (j, x) in h.iter_mut().enumerate() {
+                *x = buf[j * k + i];
+            }
+            self.output(st.lsb(), &h)
         }));
     }
 }
 
-/// Π_Verify (Figure "Π_Verify") in GF(2^128) for a batch of evaluation
-/// outputs `(⟨y_i⟩, ⟨m_i⟩)`, which stay shared: with coin-tossed `χ_i` and
-/// this key's mask `(⟨r⟩, ⟨δr⟩)`, open `z = Σ χ_i y_i ⊕ r`, then commit to
-/// and open `σ_b = Σ χ_i m_{i,b} ⊕ (δr)_b ⊕ δ_b·z` and accept iff `σ_0 = σ_1`.
-/// Only z, uniform through r, and σ are opened.
-pub fn verify<R: RngCore + CryptoRng>(
-    ch: &mut Channel,
-    outs: &[(Block, Block)],
-    delta_share: Block,
-    mask: VerifyMask<Block>,
-    rng: &mut R,
-) -> Result<(), Abort> {
-    let chi = CtrPrg::new(coin_block(ch, rng)?).next_words(outs.len());
-    let (mut y, mut m) = (mask.r, mask.dr);
-    for (o, &c) in outs.iter().zip(&chi) {
-        y ^= gf128::mul(Block(c), o.0);
-        m ^= gf128::mul(Block(c), o.1);
-    }
-    ch.send_blocks(&[y]);
-    let z = y ^ ch.recv_blocks(1)[0];
-    let sigma = m ^ gf128::mul(delta_share, z);
-    // σ_0 ⊕ σ_1 = Σ χ_i (m_i ⊕ δ y_i) ⊕ (δr ⊕ δr): equal shares iff it is zero.
-    if commit_and_open_blocks(ch, &[sigma], rng)?[0] != sigma {
-        return Err(Abort("output MAC check failed"));
-    }
-    Ok(())
+/// An output and its MAC, both in `F_{2^k}`.
+fn lift<K: Field>(outs: &[(Block, K)]) -> Vec<(K, K)> {
+    outs.iter().map(|&(y, m)| (K::from_u128(y.0), m)).collect()
 }
 
-/// Opens checked outputs: exchanges the output shares, then checks the
-/// opened `y_i` against their MAC shares, `Σ χ'_i (m_{i,b} ⊕ δ_b·y_i)` for
-/// fresh coin-tossed `χ'_i`, committed and opened, so a party that opens a
-/// share other than the one Π_Verify checked is caught. Returns the outputs.
-pub fn open_checked<R: RngCore + CryptoRng>(ch: &mut Channel, outs: &[(Block, Block)], delta_share: Block, rng: &mut R) -> Result<Vec<Block>, Abort> {
-    let mine: Vec<Block> = outs.iter().map(|o| o.0).collect();
-    ch.send_blocks(&mine);
-    let theirs = ch.recv_blocks(outs.len());
-    if theirs.len() != outs.len() {
-        return Err(Abort("malformed output shares"));
-    }
-    let ys: Vec<Block> = mine.iter().zip(&theirs).map(|(a, b)| *a ^ *b).collect();
-    let chi = CtrPrg::new(coin_block(ch, rng)?).next_words(outs.len());
-    let sigma = outs.iter().zip(&ys).zip(&chi).fold(Block::ZERO, |acc, ((o, &y), &c)| acc ^ gf128::mul(Block(c), o.1 ^ gf128::mul(delta_share, y)));
-    if commit_and_open_blocks(ch, &[sigma], rng)?[0] != sigma {
-        return Err(Abort("opened output MAC check failed"));
-    }
-    Ok(ys)
+/// Π_Verify over `F_{2^k}` on the evaluation outputs `(⟨y_i⟩, ⟨m_i⟩)`, which
+/// stay shared.
+pub fn verify<K: Field, R: RngCore + CryptoRng>(ch: &mut Channel, outs: &[(Block, K)], delta_share: K, mask: VerifyMask<K>, rng: &mut R) -> Result<(), Abort> {
+    pi_verify(ch, &lift(outs), delta_share, mask, None, rng)
 }
 
-/// The full output pipeline: [`verify`] on the shared outputs, then
-/// [`open_checked`]. Returns the outputs, or aborts.
-pub fn verify_and_open<R: RngCore + CryptoRng>(
-    ch: &mut Channel,
-    outs: &[(Block, Block)],
-    delta_share: Block,
-    mask: VerifyMask<Block>,
-    rng: &mut R,
-) -> Result<Vec<Block>, Abort> {
+/// Opens outputs that [`verify`] accepted, checking them against their MACs.
+pub fn open_checked<K: Field, R: RngCore + CryptoRng>(ch: &mut Channel, outs: &[(Block, K)], delta_share: K, rng: &mut R) -> Result<Vec<Block>, Abort> {
+    Ok(verify::open_checked::<K, K, R>(ch, &lift(outs), delta_share, rng)?.into_iter().map(|y| Block(y.to_u128())).collect())
+}
+
+/// The full output pipeline: [`verify`], then [`open_checked`].
+pub fn verify_and_open<K: Field, R: RngCore + CryptoRng>(ch: &mut Channel, outs: &[(Block, K)], delta_share: K, mask: VerifyMask<K>, rng: &mut R) -> Result<Vec<Block>, Abort> {
     verify(ch, outs, delta_share, mask, rng)?;
     open_checked(ch, outs, delta_share, rng)
 }

@@ -85,27 +85,36 @@ impl<F: Field> Ext<F> for F {
     }
 }
 
-/// Blocks of a leaf mask in E: [`Field::KAPPA`] bits of F per coordinate.
-pub fn mask_blocks<F: Field, E: Ext<F>>() -> usize {
-    (E::DEG * F::KAPPA).div_ceil(128)
+/// Blocks of the malicious leaf hash: `τ = ⌈(d + 1)·κ/λ⌉`, κ = [`Field::KAPPA`]
+/// of F, d the degree of E. The first κ bits give the payload mask and the next
+/// d·κ the MAC mask.
+pub fn tau<F: Field, E: Ext<F>>() -> usize {
+    ((E::DEG + 1) * F::KAPPA).div_ceil(128)
 }
 
 /// Bits `start .. start + len` (`len ≤ 128`) of the concatenated blocks.
-fn bit_range(blocks: &[Block], start: usize, len: usize) -> u128 {
-    (0..len).fold(0u128, |acc, k| {
-        let i = start + k;
-        acc | ((blocks[i / 128].bit(i % 128) as u128) << k)
-    })
+#[inline]
+pub fn bits_at(blocks: &[Block], start: usize, len: usize) -> u128 {
+    let (i, s) = (start / 128, start % 128);
+    let mut v = blocks[i].0 >> s;
+    if s + len > 128 {
+        v |= blocks[i + 1].0 << (128 - s);
+    }
+    if len < 128 {
+        v & ((1u128 << len) - 1)
+    } else {
+        v
+    }
 }
 
-/// A leaf mask in E from [`mask_blocks`] hash outputs: coordinate c is the
-/// integer of bits `cκ .. (c + 1)κ`, mod p (κ = [`Field::KAPPA`]). For E = F
-/// this is [`Field::from_block`].
-pub fn mask_value<F: Field, E: Ext<F>>(blocks: &[Block]) -> E {
+/// The MAC mask `F^mac(h)` in E of the leaf hash `h`: coordinate c is the
+/// integer of bits `(c + 1)κ .. (c + 2)κ`, mod p (κ = [`Field::KAPPA`] of F).
+#[inline]
+pub fn mac_mask<F: Field, E: Ext<F>>(h: &[Block]) -> E {
     if E::DEG == 1 {
-        return E::embed(F::from_block(blocks[0]));
+        return E::embed(F::from_u128(bits_at(h, F::KAPPA, F::KAPPA)));
     }
-    let c: Vec<F> = (0..E::DEG).map(|i| F::from_u128(bit_range(blocks, i * F::KAPPA, F::KAPPA))).collect();
+    let c: Vec<F> = (0..E::DEG).map(|i| F::from_u128(bits_at(h, (i + 1) * F::KAPPA, F::KAPPA))).collect();
     E::from_coords(&c)
 }
 
@@ -172,7 +181,7 @@ const BB4_W: BabyBear = BabyBear(11);
 impl Field for BabyBear4 {
     const BYTES: usize = 16;
     const P_BITS: usize = 124;
-    /// Not used: masks in F_{q^4} come from [`mask_value`].
+    /// Not used: masks in F_{q^4} come from [`mac_mask`].
     const KAPPA: usize = 128;
     const ZERO: Self = BabyBear4([BabyBear::ZERO; 4]);
     const ONE: Self = BabyBear4([BabyBear::ONE, BabyBear::ZERO, BabyBear::ZERO, BabyBear::ZERO]);
@@ -372,10 +381,132 @@ impl Field for M127 {
     }
 }
 
+/// GF(2^64), the MAC field of a Boolean payload of ℓ ≤ 64 bits. Addition is
+/// XOR, and bit k of [`to_u128`](Field::to_u128) has weight `X^k`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Gf64(pub u64);
+
+impl Field for Gf64 {
+    const BYTES: usize = 8;
+    const P_BITS: usize = 64;
+    /// Not used: a Boolean leaf reads its masks without reduction.
+    const KAPPA: usize = 128;
+    const ZERO: Self = Gf64(0);
+    const ONE: Self = Gf64(1);
+    #[inline]
+    fn add(self, o: Self) -> Self {
+        Gf64(self.0 ^ o.0)
+    }
+    #[inline]
+    fn sub(self, o: Self) -> Self {
+        Gf64(self.0 ^ o.0)
+    }
+    #[inline]
+    fn neg(self) -> Self {
+        self
+    }
+    #[inline]
+    fn mul(self, o: Self) -> Self {
+        Gf64(dpf_common::gf64::mul(self.0, o.0))
+    }
+    /// The low 64 bits.
+    #[inline]
+    fn from_u128(x: u128) -> Self {
+        Gf64(x as u64)
+    }
+    fn to_u128(self) -> u128 {
+        self.0 as u128
+    }
+    fn random<R: RngCore + ?Sized>(rng: &mut R) -> Self {
+        Gf64(rng.next_u64())
+    }
+    fn put(self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.0.to_le_bytes());
+    }
+    fn get(b: &[u8]) -> Self {
+        Gf64(u64::from_le_bytes(b[..8].try_into().unwrap()))
+    }
+}
+
+/// GF(2^128), the MAC field of a Boolean payload of more than 64 bits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Gf128(pub u128);
+
+impl Field for Gf128 {
+    const BYTES: usize = 16;
+    const P_BITS: usize = 128;
+    /// Not used: a Boolean leaf reads its masks without reduction.
+    const KAPPA: usize = 128;
+    const ZERO: Self = Gf128(0);
+    const ONE: Self = Gf128(1);
+    #[inline]
+    fn add(self, o: Self) -> Self {
+        Gf128(self.0 ^ o.0)
+    }
+    #[inline]
+    fn sub(self, o: Self) -> Self {
+        Gf128(self.0 ^ o.0)
+    }
+    #[inline]
+    fn neg(self) -> Self {
+        self
+    }
+    #[inline]
+    fn mul(self, o: Self) -> Self {
+        Gf128(dpf_common::gf128::mul(Block(self.0), Block(o.0)).0)
+    }
+    #[inline]
+    fn from_u128(x: u128) -> Self {
+        Gf128(x)
+    }
+    fn to_u128(self) -> u128 {
+        self.0
+    }
+    fn random<R: RngCore + ?Sized>(rng: &mut R) -> Self {
+        Gf128(((rng.next_u64() as u128) << 64) | rng.next_u64() as u128)
+    }
+    fn put(self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.0.to_le_bytes());
+    }
+    fn get(b: &[u8]) -> Self {
+        Gf128(u128::from_le_bytes(b[..16].try_into().unwrap()))
+    }
+}
+
 /// A COT pad as a field element (domain-separated from the other COT hashes).
 #[inline]
 fn pad<F: Field>(k: Block, i: usize) -> F {
     F::from_seed(cot_hash().h(k, (5 << 60) | i as u64))
+}
+
+/// [`ole`] for a pair of correlations `(c^F[i], c^E[i])` per choice bit, over
+/// two fields and on one COT each: `z^F_0 + z^F_1 = g_1[i]·c^F_0[i] +
+/// g_0[i]·c^F_1[i]`, and likewise over E. Two rounds, one element of each field
+/// per COT.
+pub fn ole_pair<F: Field, E: Field, R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, g: &[bool], cf: &[F], ce: &[E], rng: &mut R) -> (Vec<F>, Vec<E>) {
+    let n = g.len();
+    assert!(cf.len() == n && ce.len() == n);
+    let (k, m) = cot.extend(ch, g, n, rng).expect("semi-honest COT");
+    let delta = cot.delta();
+    let (mut of, mut oe) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    let mut msg = Vec::with_capacity(n * (F::BYTES + E::BYTES));
+    for i in 0..n {
+        let (x0, x1): (F, F) = (pad(k[i], i), pad(k[i] ^ delta, i));
+        let (y0, y1): (E, E) = (pad(k[i], i + n), pad(k[i] ^ delta, i + n));
+        x1.sub(x0).sub(cf[i]).put(&mut msg);
+        y1.sub(y0).sub(ce[i]).put(&mut msg);
+        of.push(x0.neg());
+        oe.push(y0.neg());
+    }
+    ch.send(msg);
+    let theirs = ch.recv();
+    assert_eq!(theirs.len(), n * (F::BYTES + E::BYTES), "malformed OLE message");
+    for (i, c) in theirs.chunks(F::BYTES + E::BYTES).enumerate() {
+        let (u, v) = (F::get(c), E::get(&c[F::BYTES..]));
+        of[i] = of[i].add(pad::<F>(m[i], i).sub(if g[i] { u } else { F::ZERO }));
+        oe[i] = oe[i].add(pad::<E>(m[i], i + n).sub(if g[i] { v } else { E::ZERO }));
+    }
+    (of, oe)
 }
 
 /// Batched OLE from COTs, both directions at once: for each i this party
@@ -467,6 +598,39 @@ mod tests {
             e >>= 1;
         }
         r
+    }
+
+    fn binary<F: Field>(bits: u32) {
+        let mut rng = ChaCha20Rng::seed_from_u64(5);
+        for _ in 0..200 {
+            let (a, b, c) = (F::random(&mut rng), F::random(&mut rng), F::random(&mut rng));
+            assert_eq!(a.add(b).to_u128(), a.to_u128() ^ b.to_u128());
+            assert_eq!(a.sub(b), a.add(b));
+            assert_eq!(a.mul(b.add(c)), a.mul(b).add(a.mul(c)));
+            assert_eq!(a.mul(F::ONE), a);
+            assert_eq!(F::get(&{
+                let mut v = Vec::new();
+                a.put(&mut v);
+                v
+            }), a);
+            let x = (0..bits).filter(|&k| a.to_u128() >> k & 1 == 1).fold(F::ZERO, |s, k| s.add(F::pow2(k as usize)));
+            assert_eq!(x, a, "bit weights");
+        }
+    }
+
+    #[test]
+    fn gf64_and_gf128() {
+        binary::<Gf64>(64);
+        binary::<Gf128>(128);
+    }
+
+    #[test]
+    fn bits_at_reads_across_blocks() {
+        let h = [Block(0x0123_4567_89ab_cdef_0011_2233_4455_6677), Block(0xfedc_ba98_7654_3210_8899_aabb_ccdd_eeff)];
+        let slow = |start: usize, len: usize| (0..len).fold(0u128, |a, k| a | ((h[(start + k) / 128].bit((start + k) % 128) as u128) << k));
+        for (start, len) in [(0, 128), (0, 71), (71, 71), (100, 64), (120, 8), (64, 64), (128, 128), (142, 71), (127, 2)] {
+            assert_eq!(bits_at(&h, start, len), slow(start, len), "start={start} len={len}");
+        }
     }
 
     #[test]

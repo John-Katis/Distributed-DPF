@@ -22,22 +22,21 @@
 //!   leaf indexed by server, with one sign product ([`leaf::pair_leaf`]).
 //! * [`semi_honest::bin`]: the same Gen with a binary payload: no B2A, no
 //!   sign, no tag count at the glue.
-//! * [`malicious_arith`]: the paper's §malicious for an arithmetic payload
-//!   in F_p, still on the previous Gen with Δ-correlated on-path states
-//!   ([`semi_honest::gen::walk`], 40 rounds for the AES–MMO calls): (A) the
-//!   payload-MAC word under a persistent δ and public keys `K^mac_j`
-//!   ([`leaf::mal_leaf`]), (B) one product per bottom level, (C) the glue
-//!   residual ([`leaf::glue_residual`]), and Π_Verify on the outputs and
-//!   residuals.
-//! * [`malicious`]: the same for a payload in `{0,1}^ℓ ⊂ GF(2^128)`, without
-//!   (C): in characteristic 2 a swap of the servers' states does not change
-//!   an output.
+//! * [`malicious_arith`]: Figures `Π_GenMal` and `Π_Verify` for an arithmetic
+//!   payload in F_p, on the semi-honest Gen: (A) the leaf MAC under a persistent
+//!   δ, with the leaf hash extended by further pairs ([`leaf::mal_pair_leaf`]),
+//!   (B) the glue residual ([`leaf::glue_residual`]), and Π_Verify ([`verify`])
+//!   on the outputs and the residuals, whose openings are masked.
+//! * [`malicious`]: the same for a payload in `F_2^ℓ` with the MAC in
+//!   `F_{2^k}`, without (B): in characteristic 2 a swap of the servers' states
+//!   does not change an output.
 
 pub mod field;
 pub mod leaf;
 pub mod malicious;
 pub mod malicious_arith;
 pub mod semi_honest;
+pub mod verify;
 
 use dpf_common::aes_tower::{Mmo, ANDS_PER_CALL};
 use dpf_common::block::Block;
@@ -53,12 +52,6 @@ pub fn child(f: &Mmo, st: Block, cw: Block, bit: bool) -> Block {
 /// [`child`] for a whole batch: appends both corrected children of every
 /// parent to `out`, interleaved `[L(p0), R(p0), L(p1), …]`.
 pub fn children(f: &Mmo, parents: &[Block], cw: Block, out: &mut Vec<Block>) {
-    children_masked(f, parents, cw, Block::ZERO, out)
-}
-
-/// [`children`] with the level word `m` XORed onto every child (`M_ℓ` of the
-/// semi-honest Gen, zero above the glue level).
-pub fn children_masked(f: &Mmo, parents: &[Block], cw: Block, m: Block, out: &mut Vec<Block>) {
     let (start, k) = (out.len(), parents.len());
     out.resize(start + 2 * k, Block::ZERO);
     let kids = &mut out[start..];
@@ -67,8 +60,8 @@ pub fn children_masked(f: &Mmo, parents: &[Block], cw: Block, m: Block, out: &mu
     f.h_many(parents, &mut kids[k..]);
     for (i, &st) in parents.iter().enumerate() {
         let lv = kids[k + i] ^ cw.and_bit(st.lsb());
-        kids[2 * i] = lv ^ m;
-        kids[2 * i + 1] = st ^ lv ^ m;
+        kids[2 * i] = lv;
+        kids[2 * i + 1] = st ^ lv;
     }
 }
 
@@ -117,6 +110,12 @@ impl Bottom {
         child ^ m ^ d.and_bit(child.lsb())
     }
 
+    /// The depth n.
+    #[inline]
+    pub fn depth(&self) -> usize {
+        self.nu + self.m0.len() - 1
+    }
+
     /// The state of the path to x (`n` bits) at level n from the `root`.
     pub fn path(&self, f: &Mmo, root: Block, cws: &[Block], x: u64) -> Block {
         let n = cws.len();
@@ -151,6 +150,50 @@ pub fn expand_level(f: &Mmo, parents: &[Block], cw: Block, bot: &Bottom, level: 
         kids[2 * i] = c0 ^ m ^ d.and_bit(c0.lsb());
         kids[2 * i + 1] = c1 ^ m ^ d.and_bit(c1.lsb());
     }
+}
+
+/// The malicious leaf hash at the leaf state `st`: `h_1 = H_K(st ∥ b^t_n)` and,
+/// for the public `words[j] = [C^{j+2}, N^{j+2}]`, `h_{j+2} = H_K(st ⊕ N ⊕
+/// t·(C_n ⊕ C))`, t = lsb(st).
+pub fn leaf_hash(f: &Mmo, bot: &Bottom, words: &[[Block; 2]], st: Block) -> Vec<Block> {
+    let cn = *bot.c.last().unwrap();
+    std::iter::once(f.h(bot.hash_input(bot.depth(), st))).chain(words.iter().map(|w| f.h(st ^ w[1] ^ (cn ^ w[0]).and_bit(st.lsb())))).collect()
+}
+
+/// [`leaf_hash`] for a batch: block j of leaf i lands at `buf[j·k + i]`, k =
+/// `leaves.len()`.
+pub fn leaf_hash_many(f: &Mmo, bot: &Bottom, words: &[[Block; 2]], leaves: &[Block], buf: &mut Vec<Block>) {
+    let (k, n, cn) = (leaves.len(), bot.depth(), *bot.c.last().unwrap());
+    buf.clear();
+    buf.resize((words.len() + 1) * k, Block::ZERO);
+    let (first, rest) = buf.split_at_mut(k);
+    for (x, &st) in first.iter_mut().zip(leaves) {
+        *x = bot.hash_input(n, st);
+    }
+    f.h_many_inplace(first);
+    if k == 0 {
+        return;
+    }
+    for (chunk, w) in rest.chunks_mut(k).zip(words) {
+        let d = cn ^ w[0];
+        for (x, &st) in chunk.iter_mut().zip(leaves) {
+            *x = st ^ w[1] ^ d.and_bit(st.lsb());
+        }
+        f.h_many_inplace(chunk);
+    }
+}
+
+/// The public words `[C^j, N^j]`, `2 ≤ j ≤ τ`, of the leaf pairs `leaf_pairs =
+/// [[X^{j,0}, X^{j,1}]]` in the clear: `C^j = Δ ⊕ X^{j,0} ⊕ X^{j,1}` and `N^j =
+/// u^0_n ⊕ X^{j,0} ⊕ r_n·(C_n ⊕ C^j)`.
+pub(crate) fn deal_leaf_words(delta: Block, un0: Block, cn: Block, r_n: bool, leaf_pairs: &[[Block; 2]]) -> Vec<[Block; 2]> {
+    leaf_pairs
+        .iter()
+        .map(|p| {
+            let c = delta ^ p[0] ^ p[1];
+            [c, un0 ^ p[0] ^ (cn ^ c).and_bit(r_n)]
+        })
+        .collect()
 }
 
 /// The cleartext Gen of Figure `Π_GenSH`: the n level words, the [`Bottom`]
@@ -201,38 +244,6 @@ pub(crate) fn deal_pairs(f: &Mmo, roots: [Block; 2], n: usize, nu: usize, alpha:
     (cws, Bottom { nu, m0, c, b }, [f.h(last[0]), f.h(last[1])])
 }
 
-/// The cleartext walk of the Gen with glue level ν ≥ 1: the n level words and
-/// the words `M_ν, …, M_n` for the key `f` (K), roots `st` (`st_0 ⊕ st_1 =
-/// Δ`), α and the on-path states `us = [u_ν, …, u_n]` of party 0, and the two
-/// leaf states (`u_n`, `u_n ⊕ Δ`).
-pub(crate) fn deal_walk_nu(f: &Mmo, roots: [Block; 2], n: usize, nu: usize, alpha: u64, us: &[Block]) -> (Vec<Block>, Vec<Block>, [Block; 2]) {
-    assert!(!roots[0].lsb() && roots[1].lsb(), "lsb(root_b) = b");
-    assert!(n >= 64 || alpha >> n == 0, "α ∈ {{0,1}}^n");
-    assert!((1..=n).contains(&nu) && us.len() == n - nu + 1, "1 ≤ ν ≤ n, u_ν, …, u_n");
-    let delta = roots[0] ^ roots[1];
-    let mut st = roots;
-    let (mut cws, mut ms) = (Vec::with_capacity(n), Vec::with_capacity(us.len()));
-    for i in 0..n {
-        let a = (alpha >> (n - 1 - i)) & 1 == 1;
-        let cw = f.h(st[0]) ^ f.h(st[1]) ^ delta.and_bit(!a);
-        st = [child(f, st[0], cw, a), child(f, st[1], cw, a)];
-        cws.push(cw);
-        if i + 1 >= nu {
-            let m = st[0] ^ us[i + 1 - nu];
-            ms.push(m);
-            st = [st[0] ^ m, st[1] ^ m];
-        }
-    }
-    debug_assert_eq!(st[0] ^ st[1], delta);
-    (cws, ms, st)
-}
-
-/// The leaf input of the payload hashes: the seed with its control bit cleared.
-#[inline]
-pub fn leaf_seed(st: Block) -> Block {
-    st.with_lsb(false)
-}
-
 /// The default glue level: ν = 17, or n − 1 below n = 18 (at least 1). Measured (sh,
 /// Babybear, 2026-11-02; `other_tex/nu_scan_temp.tex`): each level moved
 /// into the top phase saves ~0.76 ms of 2PC compute and 3.55 kB, while the
@@ -247,9 +258,9 @@ pub fn default_nu(n: usize) -> usize {
 }
 
 /// The default glue level of `mal-arith`: ν = 15, lower than [`BEST_NU`]
-/// because the glue residual evaluates ψ_r on all 2^ν frontier nodes. Scan
-/// 2026-11-04, 64-bit payload: ν = 15 is fastest or within noise of it at
-/// every n ≥ 20 (n = 32: 15.7 ms vs 16.2 ms at ν = 17 and 19.4 ms at ν = 18).
+/// because the glue residual evaluates ψ on all 2^ν frontier nodes. Scan
+/// 2026-11-04 on the previous Gen, 64-bit payload: ν = 15 is fastest or within
+/// noise of it at every n ≥ 20.
 pub const BEST_NU_MAL_ARITH: usize = 15;
 
 /// [`BEST_NU_MAL_ARITH`], at most n − 1 and at least 1.
@@ -259,6 +270,16 @@ pub fn default_nu_mal_arith(n: usize) -> usize {
 
 fn clamp_nu(nu: usize, n: usize) -> usize {
     nu.min(n.saturating_sub(1)).max(1)
+}
+
+/// Calls of `𝓕_PRFPair` in one malicious Gen with a τ-block leaf hash.
+pub fn mal_calls(n: usize, nu: usize, tau: usize) -> usize {
+    sh_calls(n, nu) + 2 * (tau - 1)
+}
+
+/// ANDs of the OT tower in one malicious Gen.
+pub fn mal_ands(n: usize, nu: usize, tau: usize) -> usize {
+    mal_calls(n, nu, tau) * ANDS_PER_CALL
 }
 
 /// Calls of `𝓕_PRFPair` in one semi-honest Gen of depth n with glue level ν:

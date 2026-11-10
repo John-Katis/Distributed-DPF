@@ -1,8 +1,7 @@
-//! The arithmetic leaf of Figure "DPF.Gen" and the malicious additions over
-//! fields, shared by the semi-honest and the malicious arithmetic variants:
-//! payload words in the payload field F
-//! (Babybear in the paper) and MAC words in the MAC field `E ⊇ F` ([`Ext`],
-//! `F_{q^4}` in the paper; E = F in the semi-honest variant).
+//! The arithmetic leaf and the malicious additions over fields, shared by the
+//! semi-honest and the malicious arithmetic variants: payload words in the
+//! payload field F (Babybear in the paper) and MAC words in the MAC field `E ⊇
+//! F` ([`Ext`], `F_{q^4}` in the paper; E = F in the semi-honest variant).
 //!
 //! **Preprocessing** ([`fp_pre`], input-independent): daBits `(⟨r⟩, ⟦r⟧)`
 //! over F and Beaver triples `(⟦u⟧, ⟦v⟧, ⟦uv⟧)` over E, from COT-based OLEs
@@ -11,22 +10,21 @@
 //! cross term from one OLE per direction; a triple's cross terms `u_0v_1 +
 //! u_1v_0` are Gilboa products, one OLE per bit of `u_b`. A triple may take a
 //! given v (`fixed`), which gives `⟦u·v⟧` for a random u and a shared v: the
-//! mask `(⟦r⟧, ⟦δr⟧)` of Π_Verify.
+//! mask `(⟦ρ⟧, ⟦δρ⟧)` of Π_Verify. [`vec_triple`] is the triple of the malicious
+//! leaf's vector product.
 //!
 //! **Online**: the semi-honest leaf [`pair_leaf`] (the payload word indexed
 //! by server, with one sign product, three rounds); the leaf [`tag_leaf`] of
 //! the GGM instance (the payload word indexed by tag, linear in the B2A
-//! outputs, two rounds); the malicious leaf
-//! [`mal_leaf`] (the same payload word and the MAC word indexed by server,
-//! with one sign product, three rounds); and the malicious glue residual
-//! [`glue_residual`] (addition (C), three rounds). Every leaf mask
-//! coordinate is the integer of κ mask bits (`κ = `[`Field::KAPPA`] of F,
-//! within `2^−40` of uniform), converted bit by bit by daBits: open `c = h ⊕
-//! r`, then `⟦h⟧ = c + ⟦r⟧ − 2c⟦r⟧`.
+//! outputs, two rounds); the malicious leaf [`mal_pair_leaf`] (the payload and
+//! the MAC word, both indexed by server, from one vector product, three rounds);
+//! and the malicious glue residual [`glue_residual`] (addition (B), two rounds).
+//! Every leaf mask coordinate is the integer of κ mask bits (`κ =
+//! `[`Field::KAPPA`] of F, within `2^−40` of uniform), converted bit by bit by
+//! daBits: open `c = h ⊕ r`, then `⟦h⟧ = c + ⟦r⟧ − 2c⟦r⟧`.
 
-use crate::field::{ole, Ext, Field};
+use crate::field::{ole, ole_pair, Ext, Field, M127};
 use dpf_common::block::{pack_bits, unpack_bits, Block};
-use dpf_common::hash::CtrPrg;
 use dpf_common::net::{Channel, Lane};
 use dpf_common::ot::CotPair;
 use rand::{CryptoRng, Rng, RngCore};
@@ -176,163 +174,143 @@ fn coord<F: Field>(vals: &[F], off: usize) -> F {
     (0..F::KAPPA).fold(F::ZERO, |a, k| a.add(F::pow2(k).mul(vals[off + k])))
 }
 
-/// The leaf of the malicious arithmetic Gen (Figure "DPF.Gen" and addition
-/// (A)): the payload word indexed by tag, as [`tag_leaf`], and the MAC word
-/// indexed by server,
-///
-/// * `W_CW = W^(0) − W^(1) − (1 − 2σ)·β` for the XOR-shared payload mask
-///   blocks `pay = [h^(0), h^(1)]` of the leaf states with tags 0, 1;
-/// * `W^MAC_CW = 𝓕_mul(1 − 2σ, Ṽ)`, `Ṽ = W̃_0 − W̃_1 − β·δ`, for the MAC mask
-///   blocks `mac = [W̃_0, W̃_1]` (`E::DEG` coordinates of κ bits) of the
-///   leaf states `u_n`, `u_n ⊕ Δ`;
-///
-/// with `σ = t_{n,0}` from this party's share `t` and β public. On `lane`,
-/// three rounds: the masked bits of the [`leaf_dabits`]`(&[1, E::DEG])`
-/// daBits with the Beaver mask `d = ρ − u` of the sign (`ρ = 1 − 2r`, r the
-/// tag's daBit); `W_CW` and `e = Ṽ − v`; then `X = ρ·Ṽ` and `W^MAC_CW = (1 −
-/// 2c)·X`, since `1 − 2σ = (1 − 2c)(1 − 2r)`. Consumes one triple. `err` is
-/// added to this party's shares of `W_CW` and X (a deliberate deviation).
+/// One call of the vector `𝓕_Mul`: Beaver shares `(u, v_0, v_1, w_0, w_1)` with
+/// `w_i = u·v_i` across the parties, `u, v_0, w_0 ∈ F` and `v_1, w_1 ∈ E`.
+#[derive(Clone, Copy, Debug)]
+pub struct VecTriple<F, E> {
+    pub u: F,
+    pub v0: F,
+    pub v1: E,
+    pub w0: F,
+    pub w1: E,
+}
+
+/// COTs per direction that [`vec_triple`] consumes: one per bit of u.
+pub fn vec_triple_cots<F: Field>() -> usize {
+    F::P_BITS
+}
+
+/// One [`VecTriple`]: Gilboa products of the bits of `u_b` with `(v_0, v_1)`,
+/// both components on the same COTs ([`ole_pair`]). Two rounds.
+pub fn vec_triple<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(ch: &mut Channel, cot: &mut CotPair, rng: &mut R) -> VecTriple<F, E> {
+    let (u, v0, v1) = (F::random(rng), F::random(rng), E::random(rng));
+    let ui = u.to_u128();
+    let g: Vec<bool> = (0..F::P_BITS).map(|k| (ui >> k) & 1 == 1).collect();
+    let cf: Vec<F> = (0..F::P_BITS).map(|k| v0.mul(F::pow2(k))).collect();
+    let ce: Vec<E> = (0..F::P_BITS).map(|k| v1.mul(E::embed(F::pow2(k)))).collect();
+    let (zf, ze) = ole_pair(ch, cot, &g, &cf, &ce, rng);
+    let w0 = zf.iter().fold(u.mul(v0), |a, &x| a.add(x));
+    let w1 = ze.iter().fold(E::embed(u).mul(v1), |a, &x| a.add(x));
+    VecTriple { u, v0, v1, w0, w1 }
+}
+
+/// Addition (A) of Figure `Π_GenMal`, the leaf words: `(W_CW, W^MAC_CW) =
+/// 𝓕_Mul(1 − 2⟦σ⟧, (W_0 − W_1 − β, W̃_0 − W̃_1 − β·⟦δ⟧))`, one vector product,
+/// for the τ-block leaf hashes `h = [h^(0), h^(1)]` of the two servers (XOR
+/// shares), this party's share `t` of `σ = r_n`, the public β and this party's
+/// share of δ. As [`pair_leaf`], on `lane`, three rounds: the masked bits of the
+/// [`leaf_dabits`]`(&[1, E::DEG])` daBits with `d = ρ − u` (`ρ = 1 − 2r`, r the
+/// tag's daBit); `e_i = V_i − v_i`; then `X = ρ·V`, and `(W_CW, W^MAC_CW) = (1 −
+/// 2c)·X`. `err` is added to this party's shares of X (a deliberate deviation).
 #[allow(clippy::too_many_arguments)]
-pub fn mal_leaf<F: Field, E: Ext<F>>(
+pub fn mal_pair_leaf<F: Field, E: Ext<F>>(
     ch: &mut Channel,
     lane: &mut Lane,
-    pay: [Block; 2],
-    mac: &[Vec<Block>; 2],
+    h: [&[Block]; 2],
     t: bool,
     beta: F,
     delta_mac: E,
-    pre: &mut FpPre<F, E>,
+    dabits: &[(bool, F)],
+    triple: VecTriple<F, E>,
     err: (F, E),
 ) -> (F, E) {
     let b = ch.party();
-    let kappa = F::KAPPA;
-    let nbits = leaf_dabits::<F>(&[1, E::DEG]);
-    let dabits: Vec<(bool, F)> = pre.dabits.drain(..nbits).collect();
-    let (u, v, w) = pre.triples.remove(0);
+    let (kappa, deg) = (F::KAPPA, E::DEG);
+    let nbits = leaf_dabits::<F>(&[1, deg]);
+    assert_eq!(dabits.len(), nbits, "the leaf's daBits");
     let one = if b == 0 { F::ONE } else { F::ZERO };
     let r_t = dabits[nbits - 1].1;
-    let rho = E::embed(one.sub(r_t.add(r_t)));
+    let bit = |w: &[Block], i: usize| w[i / 128].bit(i % 128);
+    let VecTriple { u, v0, v1, w0, w1 } = triple;
 
-    // Round 1: the masked bits [h^(0), h^(1), W̃_0, W̃_1, t] and d = ρ − u.
-    let mut bits: Vec<bool> = pay.iter().flat_map(|h| (0..kappa).map(move |k| h.bit(k))).collect();
-    for m in mac {
-        bits.extend((0..E::DEG * kappa).map(|k| m[k / 128].bit(k % 128)));
-    }
+    // Round 1: the masked bits [W(h^(0)), W(h^(1)), F^mac(h^(0)), F^mac(h^(1)), t] and d.
+    let mut bits: Vec<bool> = h.iter().flat_map(|w| (0..kappa).map(move |k| bit(w, k))).collect();
+    bits.extend(h.iter().flat_map(|w| (kappa..(deg + 1) * kappa).map(move |k| bit(w, k))));
     bits.push(t);
-    let d_mine = rho.sub(u);
+    let d_mine = one.sub(r_t.add(r_t)).sub(u);
     let mut extra = Vec::new();
     d_mine.put(&mut extra);
-    let (c, theirs) = open_masked(ch, lane, &bits, &dabits, extra);
-    let d = d_mine.add(E::get(&theirs));
-    let vals: Vec<F> = c.iter().zip(&dabits).map(|(&ci, &(_, r))| b2a(ci, r, one)).collect();
-    let sigma = vals[nbits - 1];
-    let mac_val = |off: usize| E::from_coords(&(0..E::DEG).map(|i| coord(&vals, off + i * kappa)).collect::<Vec<F>>());
-    let w_share = coord(&vals, 0).sub(coord(&vals, kappa)).sub(one.sub(sigma.add(sigma)).mul(beta)).add(err.0);
-    let v_mac = mac_val(2 * kappa).sub(mac_val(2 * kappa + E::DEG * kappa)).sub(E::embed(beta).mul(delta_mac));
+    let (c, theirs) = open_masked(ch, lane, &bits, dabits, extra);
+    let d = d_mine.add(F::get(&theirs));
+    let vals: Vec<F> = c.iter().zip(dabits).map(|(&ci, &(_, r))| b2a(ci, r, one)).collect();
+    let mac_val = |off: usize| E::from_coords(&(0..deg).map(|i| coord(&vals, off + i * kappa)).collect::<Vec<F>>());
+    let v_share = coord(&vals, 0).sub(coord(&vals, kappa)).sub(one.mul(beta));
+    let v_mac = mac_val(2 * kappa).sub(mac_val(2 * kappa + deg * kappa)).sub(E::embed(beta).mul(delta_mac));
 
-    // Round 2: W_CW and e = Ṽ − v.
-    let e_mine = v_mac.sub(v);
+    // Round 2: e = V − v.
+    let (e0_mine, e1_mine) = (v_share.sub(v0), v_mac.sub(v1));
     let mut msg = Vec::with_capacity(F::BYTES + E::BYTES);
-    w_share.put(&mut msg);
-    e_mine.put(&mut msg);
+    e0_mine.put(&mut msg);
+    e1_mine.put(&mut msg);
     let theirs = swap(ch, lane, msg);
-    let w_cw = w_share.add(F::get(&theirs[..F::BYTES]));
-    let e = e_mine.add(E::get(&theirs[F::BYTES..]));
+    let e0 = e0_mine.add(F::get(&theirs));
+    let e1 = e1_mine.add(E::get(&theirs[F::BYTES..]));
 
-    // Round 3: X = ρ·Ṽ; W^MAC_CW = (1 − 2c)·X.
-    let mut x_mine = w.add(e.mul(u)).add(d.mul(v));
+    // Round 3: X = ρ·V; (W_CW, W^MAC_CW) = (1 − 2c)·X.
+    let (ue, de) = (E::embed(u), E::embed(d));
+    let (mut x0, mut x1) = (w0.add(e0.mul(u)).add(d.mul(v0)), w1.add(e1.mul(ue)).add(de.mul(v1)));
     if b == 0 {
-        x_mine = x_mine.add(d.mul(e));
+        x0 = x0.add(d.mul(e0));
+        x1 = x1.add(de.mul(e1));
     }
-    x_mine = x_mine.add(err.1);
-    let mut msg = Vec::with_capacity(E::BYTES);
-    x_mine.put(&mut msg);
-    let x = x_mine.add(E::get(&swap(ch, lane, msg)));
-    (w_cw, if c[nbits - 1] { x.neg() } else { x })
-}
-
-/// daBits of the glue residual: the λ = 128 bits of `a` and of `a ⊕ Δ`.
-pub const RESIDUAL_DABITS: usize = 256;
-
-/// `Σ_k r_k·x_k` for the bits of a block, from 16 byte tables of r.
-struct Psi<E> {
-    tables: Vec<[E; 256]>,
-}
-
-impl<E: Field> Psi<E> {
-    fn new(r: &[E]) -> Self {
-        let tables = (0..16)
-            .map(|j| {
-                let mut t = [E::ZERO; 256];
-                for x in 1..256usize {
-                    let low = x.trailing_zeros() as usize;
-                    t[x] = t[x & (x - 1)].add(r[8 * j + low]);
-                }
-                t
-            })
-            .collect();
-        Psi { tables }
-    }
-
-    /// The linear part `Σ_k r_k·x_k`.
-    fn lin(&self, x: Block) -> E {
-        self.tables.iter().enumerate().fold(E::ZERO, |a, (j, t)| a.add(t[((x.0 >> (8 * j)) & 0xff) as usize]))
-    }
-
-    /// `ψ_r(x) = (Σ_k r_k·x_k)^2`.
-    fn psi(&self, x: Block) -> E {
-        let l = self.lin(x);
-        l.mul(l)
-    }
-}
-
-/// Addition (C), the glue residual: from this party's share `a` of the glue
-/// output, its share of Δ and its level-ν frontier `st_b({0,1}^ν)`,
-///
-/// 1. B2A of the bits of `a` and `a' = a ⊕ Δ` (the first
-///    [`RESIDUAL_DABITS`] daBits of `pre`), with a commitment to this party's
-///    half of the coin r;
-/// 2. the coin's openings, so `r ∈ E^λ` is fixed only after the B2As;
-/// 3. `⟦v²⟧`, `⟦v'²⟧` by two Beaver products (two triples), for `v = Σ_k r_k
-///    ⟦a_k⟧`, `v' = Σ_k r_k ⟦a'_k⟧`;
-///
-/// and returns this party's share of `ω = (G_0 − G_1) − v² + v'²`, `G_b = Σ_x
-/// ψ_r(st_b(x))`, which is zero in an honest run and is checked by Π_Verify,
-/// not opened. Three rounds on `lane`. Aborts (panics) on a bad opening of
-/// the coin.
-pub fn glue_residual<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(
-    ch: &mut Channel,
-    lane: &mut Lane,
-    a: Block,
-    delta: Block,
-    frontier: &[Block],
-    pre: &mut FpPre<F, E>,
-    rng: &mut R,
-) -> E {
-    let b = ch.party();
-    let one = if b == 0 { F::ONE } else { F::ZERO };
-    let dabits: Vec<(bool, F)> = pre.dabits.drain(..RESIDUAL_DABITS).collect();
-    let t: Vec<Triple<E>> = pre.triples.drain(..2).collect();
-    let bits: Vec<bool> = [a, a ^ delta].iter().flat_map(|x| (0..128).map(move |k| x.bit(k))).collect();
-    // Round 1: the masked bits and a commitment to this party's half of r.
-    let half = Block::random(rng);
-    let (com, opening) = dpf_common::coin::commit(&half.to_bytes(), rng);
-    let (c, their_com) = open_masked(ch, lane, &bits, &dabits, com.to_vec());
-    // Round 2: open the coin.
-    let mut msg = opening.to_vec();
-    msg.extend_from_slice(&half.to_bytes());
+    x0 = x0.add(err.0);
+    x1 = x1.add(err.1);
+    let mut msg = Vec::with_capacity(F::BYTES + E::BYTES);
+    x0.put(&mut msg);
+    x1.put(&mut msg);
     let theirs = swap(ch, lane, msg);
-    let their_com: [u8; 32] = their_com.try_into().expect("malformed commitment");
-    assert!(dpf_common::coin::verify(&their_com, &theirs[16..], theirs[..16].try_into().unwrap()), "glue residual: bad coin opening");
-    let seed = half ^ Block::from_bytes(&theirs[16..]);
-    let r: Vec<E> = CtrPrg::new(seed).next_words(128).into_iter().map(|x| E::from_seed(Block(x))).collect();
-    let psi = Psi::new(&r);
-    let vals: Vec<E> = c.iter().zip(&dabits).map(|(&ci, &(_, rr))| E::embed(b2a(ci, rr, one))).collect();
-    let lin = |off: usize| (0..128).fold(E::ZERO, |acc, k| acc.add(r[k].mul(vals[off + k])));
-    let (v, v2) = (lin(0), lin(128));
-    // Round 3: v², v'².
-    let sq = beaver(ch, lane, &[(v, v), (v2, v2)], &t);
-    let g = frontier.iter().fold(E::ZERO, |acc, &x| acc.add(psi.psi(x)));
+    let (x0, x1) = (x0.add(F::get(&theirs)), x1.add(E::get(&theirs[F::BYTES..])));
+    if c[nbits - 1] {
+        (x0.neg(), x1.neg())
+    } else {
+        (x0, x1)
+    }
+}
+
+/// daBits of the glue residual: `2(λ − 2)`, the bits of I in `a` and in `a ⊕ Δ`.
+pub const RESIDUAL_DABITS: usize = 2 * RESIDUAL_BITS;
+
+/// `|I|`: the bit positions read by `int`.
+const RESIDUAL_BITS: usize = 126;
+
+/// `int(x) = Σ_{k∈I} 2^{j_k}·x_k` for `I = {1, …, 126}`: the state's bits as
+/// they are, without the tag (bit 0) and bit 127.
+#[inline]
+fn int_of(x: Block) -> M127 {
+    M127((x.0 >> 1) & ((1u128 << RESIDUAL_BITS) - 1))
+}
+
+/// Addition (B) of Figure `Π_GenMal`, the glue residual over `𝔽' = F_{2^127−1}`:
+/// from this party's share `a` of the glue output `st_{ν,0}`, its share of Δ and
+/// its level-ν frontier, on `lane`, two rounds: B2A of the bits of I in `a` and
+/// `a ⊕ Δ` with the [`RESIDUAL_DABITS`] daBits, then `𝓕_Mul(v, v)` and `𝓕_Mul(v',
+/// v')` with `t`. Returns this party's share of `ω = (G_0 − G_1) − v² + v'²`,
+/// `G_b = Σ_x ψ(st_b(x))`, `ψ = int²`, which is zero in an honest run and is
+/// checked by Π_Verify, not opened.
+pub fn glue_residual(ch: &mut Channel, lane: &mut Lane, a: Block, delta: Block, frontier: &[Block], dabits: &[(bool, M127)], t: &[Triple<M127>]) -> M127 {
+    let b = ch.party();
+    assert!(dabits.len() == RESIDUAL_DABITS && t.len() == 2, "the residual's correlations");
+    let one = if b == 0 { M127::ONE } else { M127::ZERO };
+    let bits: Vec<bool> = [a, a ^ delta].iter().flat_map(|x| (1..=RESIDUAL_BITS).map(move |k| x.bit(k))).collect();
+    let (c, _) = open_masked(ch, lane, &bits, dabits, Vec::new());
+    let vals: Vec<M127> = c.iter().zip(dabits).map(|(&ci, &(_, r))| b2a(ci, r, one)).collect();
+    let weigh = |off: usize| (0..RESIDUAL_BITS).fold(M127::ZERO, |acc, k| acc.add(M127::pow2(k).mul(vals[off + k])));
+    let (v, v2) = (weigh(0), weigh(RESIDUAL_BITS));
+    let sq = beaver(ch, lane, &[(v, v), (v2, v2)], t);
+    let g = frontier.iter().fold(M127::ZERO, |acc, &x| {
+        let i = int_of(x);
+        acc.add(i.mul(i))
+    });
     let g = if b == 0 { g } else { g.neg() };
     g.sub(sq[0]).add(sq[1])
 }

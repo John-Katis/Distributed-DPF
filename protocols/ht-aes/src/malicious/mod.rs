@@ -1,12 +1,11 @@
-//! Malicious variant with a binary payload (the paper's "Full protocols in
-//! the malicious setting", ported to characteristic 2): the semi-honest Gen
-//! in its session (one K, one ⟨Δ⟩), with the additions (A) the payload-MAC
-//! word under the persistent `⟨δ⟩` and `K^mac`, and (B) one product per bottom
-//! level, and Π_Verify on the outputs. No glue residual (C): a swap does not
-//! change a binary output. Payload in `{0,1}^ℓ ⊂ GF(2^128)`.
+//! Malicious variant with a Boolean payload (the paper's paragraph "Boolean
+//! payloads"): the semi-honest Boolean Gen in its session with the leaf MAC
+//! under the persistent `⟨δ⟩`, δ ∈ `F_{2^k}`, and Π_Verify on the outputs. No
+//! glue residual: a swap does not change a Boolean output.
 
 pub mod gen;
 pub mod key;
 
-pub use gen::{deal, deal_mask, gen_reference, mal_ands, mal_calls, run_mal, Fault, MalPre, MalRun, MalSession};
+pub use crate::semi_honest::gen::{Fault, Word};
+pub use gen::{bin_tau, deal, gen_reference, run_mal, MalRun, MalSession};
 pub use key::{low, open_checked, verify, verify_and_open, MalKey};

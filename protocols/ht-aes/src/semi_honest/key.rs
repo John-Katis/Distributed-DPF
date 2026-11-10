@@ -111,13 +111,3 @@ impl<T: Field> ShKey<T> {
         ys.extend(leaves.iter().zip(&*w).map(|(&s, &wv)| self.output(s, wv)));
     }
 }
-
-/// `M_ℓ` of words `ms = [M_ν, …, M_n]`, zero for ℓ < ν.
-#[inline]
-pub(crate) fn level_word(nu: usize, ms: &[Block], level: usize) -> Block {
-    if level >= nu {
-        ms[level - nu]
-    } else {
-        Block::ZERO
-    }
-}
