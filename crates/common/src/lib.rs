@@ -6,7 +6,7 @@
 //! * [`net`]: in-process two-party network with byte and round counting.
 //! * [`ot`]: Naor–Pinkas base OT, semi-honest IKNP, and correlated OT with an
 //!   optional KOS check.
-//! * [`gf128`]: GF(2^128) multiplication.
+//! * [`gf128`], [`gf64`]: GF(2^128) and GF(2^64) multiplication.
 //! * [`f4`]: the field F4, scalar and packed.
 //! * [`aes_tower`]: AES–MMO in the clear and in 2PC under a shared key
 //!   (Π_KeyExp on shares), S-box in the F4 tower, every AND from COTs (the
@@ -30,6 +30,7 @@ pub mod coin;
 pub mod f4;
 pub mod gc;
 pub mod gf128;
+pub mod gf64;
 pub mod hash;
 pub mod mac;
 pub mod net;

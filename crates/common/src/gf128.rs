@@ -69,6 +69,17 @@ fn has_clmul() -> bool {
     }
 }
 
+/// The carry-less product of `a` and `b` as (hi, lo).
+#[inline]
+pub(crate) fn clmul(a: u128, b: u128) -> (u128, u128) {
+    #[cfg(target_arch = "x86_64")]
+    if has_clmul() {
+        // SAFETY: the feature was detected at runtime.
+        return unsafe { clmul128_hw(a, b) };
+    }
+    clmul128_soft(a, b)
+}
+
 /// Reduces `hi·X^128 + lo` modulo X^128 + X^7 + X^2 + X + 1.
 #[inline]
 fn reduce(hi: u128, lo: u128) -> u128 {
@@ -82,13 +93,7 @@ fn reduce(hi: u128, lo: u128) -> u128 {
 /// Product in GF(2^128).
 #[inline]
 pub fn mul(a: Block, b: Block) -> Block {
-    #[cfg(target_arch = "x86_64")]
-    if has_clmul() {
-        // SAFETY: the feature was detected at runtime.
-        let (hi, lo) = unsafe { clmul128_hw(a.0, b.0) };
-        return Block(reduce(hi, lo));
-    }
-    let (hi, lo) = clmul128_soft(a.0, b.0);
+    let (hi, lo) = clmul(a.0, b.0);
     Block(reduce(hi, lo))
 }
 
