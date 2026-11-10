@@ -42,6 +42,14 @@
 //! S-boxes ([`KEYEXP_SBOXES`]), riding with the S-boxes of the first call
 //! that uses it, so it adds no rounds; AddRoundKey is then a local XOR of
 //! sharings. Once K is opened, [`Mmo`] evaluates `H_K` in the clear.
+//!
+//! [`mmo_pairs`] is `𝓕_PRFPair(K) → (⟨X⟩, ⟨H_K(X)⟩)` for a uniform X that
+//! neither party knows, K public: it starts in the middle of the cipher, from
+//! a shared state `⟨m⟩` after AES round 5, and runs `π''_K` (rounds 6–10)
+//! forwards and `π'^{-1}_K` (rounds 5–1) backwards in parallel. That is the
+//! same 160 S-boxes per call at half the depth, [`ROUNDS_PER_PAIR`] = 20
+//! rounds. An inverse S-box costs a forward one: with `S = A∘Inv` for the
+//! affine `A(x) = Mx ⊕ 0x63`, `S^{-1} = Inv∘A^{-1} = A^{-1}∘S∘A^{-1}`.
 
 // `aes` 0.8 re-exports generic-array 0.14, whose newest patch release marks it deprecated.
 #![allow(deprecated)]
@@ -67,6 +75,8 @@ pub const COTS_PER_CALL: usize = 160 * COTS_PER_SBOX;
 pub const ANDS_PER_CALL: usize = 160 * ANDS_PER_SBOX;
 /// Rounds per AES-128 call (10 AES rounds × multiplicative depth 4).
 pub const ROUNDS_PER_CALL: usize = 40;
+/// Rounds of [`mmo_pairs`]: five S-box layers × multiplicative depth 4.
+pub const ROUNDS_PER_PAIR: usize = 20;
 /// S-boxes of Π_KeyExp: one `SubWord` per round key.
 pub const KEYEXP_SBOXES: usize = 40;
 /// COTs of [`OtTower`] for one Π_KeyExp.
@@ -154,6 +164,8 @@ struct Tower {
     phi: Mat8,
     /// M·φ^{-1}, the output map before `⊕ 0x63`.
     out: Mat8,
+    /// `M^{-1}`, of the affine layer's inverse `A^{-1}(y) = M^{-1}(y ⊕ 0x63)`.
+    m_inv: Mat8,
 }
 
 fn tower() -> &'static Tower {
@@ -163,7 +175,7 @@ fn tower() -> &'static Tower {
         let basis = [1, THETA, Y, ty, ZETA, gf256_mul(THETA, ZETA), gf256_mul(Y, ZETA), gf256_mul(ty, ZETA)];
         let phi_inv = mat_from_columns(basis);
         let m = mat_from_columns(std::array::from_fn(|j| affine(1 << j) ^ 0x63));
-        Tower { phi: mat_inv(&phi_inv), out: mat_mul(&m, &phi_inv) }
+        Tower { phi: mat_inv(&phi_inv), out: mat_mul(&m, &phi_inv), m_inv: mat_inv(&m) }
     })
 }
 
@@ -364,6 +376,32 @@ fn xor8<B: ShareBit>(a: &[B; 8], b: &[B; 8]) -> [B; 8] {
     std::array::from_fn(|i| a[i] ^ b[i])
 }
 
+/// MixColumns on a shared state.
+fn mix_columns<B: ShareBit>(st: &mut [[B; 8]; 16]) {
+    for c in 0..4 {
+        let a: [[B; 8]; 4] = std::array::from_fn(|i| st[4 * c + i]);
+        let t: [[B; 8]; 4] = std::array::from_fn(|i| xtime(&a[i]));
+        for i in 0..4 {
+            // b_i = 2a_i ⊕ 3a_{i+1} ⊕ a_{i+2} ⊕ a_{i+3}.
+            let (a1, a2, a3) = (&a[(i + 1) % 4], &a[(i + 2) % 4], &a[(i + 3) % 4]);
+            st[4 * c + i] = xor8(&xor8(&t[i], &xor8(&t[(i + 1) % 4], a1)), &xor8(a2, a3));
+        }
+    }
+}
+
+/// InvMixColumns on a shared state: the MixColumns of a preconditioned state,
+/// `u = 4(a_0 ⊕ a_2)` onto `a_0, a_2` and `v = 4(a_1 ⊕ a_3)` onto `a_1, a_3`.
+fn inv_mix_columns<B: ShareBit>(st: &mut [[B; 8]; 16]) {
+    for c in 0..4 {
+        let u = xtime(&xtime(&xor8(&st[4 * c], &st[4 * c + 2])));
+        let v = xtime(&xtime(&xor8(&st[4 * c + 1], &st[4 * c + 3])));
+        for i in 0..4 {
+            st[4 * c + i] = xor8(&st[4 * c + i], if i % 2 == 0 { &u } else { &v });
+        }
+    }
+    mix_columns(st);
+}
+
 /// A public AES-128 key and its MMO hash `H(x) = π(σ(x)) ⊕ σ(x)`.
 #[derive(Clone)]
 pub struct Mmo {
@@ -528,21 +566,68 @@ pub fn mmo_shared<K: TowerBackend>(
             // ShiftRows: state byte r + 4c takes byte r + 4((c + r) mod 4).
             let mut st: [Byte<K::Bit>; 16] = std::array::from_fn(|j| sb[16 * job + (j % 4 + 4 * ((j / 4 + j % 4) % 4))]);
             if r < 10 {
-                for c in 0..4 {
-                    let a: [Byte<K::Bit>; 4] = std::array::from_fn(|i| st[4 * c + i]);
-                    let t: [Byte<K::Bit>; 4] = std::array::from_fn(|i| xtime(&a[i]));
-                    for i in 0..4 {
-                        // b_i = 2a_i ⊕ 3a_{i+1} ⊕ a_{i+2} ⊕ a_{i+3}.
-                        let (a1, a2, a3) = (&a[(i + 1) % 4], &a[(i + 2) % 4], &a[(i + 3) % 4]);
-                        st[4 * c + i] = xor8(&xor8(&t[i], &xor8(&t[(i + 1) % 4], a1)), &xor8(a2, a3));
-                    }
-                }
+                mix_columns(&mut st);
             }
             let k = &keys[jobs[job].0].rk[r];
             *s = std::array::from_fn(|i| st[i / 8][i % 8] ^ k[i]);
         }
     }
     v.iter().zip(&us).map(|(x, u)| xor(x, u)).collect()
+}
+
+/// `𝓕_PRFPair(K)`: for each shared middle state `⟨m⟩` (uniform, sampled by the
+/// caller), `(⟨X⟩, ⟨H_K(X)⟩)` with `V = π'^{-1}_K(m)`, `X = σ^{-1}(V)` and
+/// `H_K(X) = π''_K(m) ⊕ V`, for the public `m_key`. All pairs run in the same
+/// [`ROUNDS_PER_PAIR`] rounds, 160 S-boxes each, half of them inverted.
+pub fn mmo_pairs<K: TowerBackend>(be: &mut K, ch: &mut Channel, m_key: &Mmo, mids: &[Shared128<K::Bit>]) -> Vec<(Shared128<K::Bit>, Shared128<K::Bit>)> {
+    type Byte<B> = [B; 8];
+    let tw = tower();
+    let rk: Vec<Shared128<K::Bit>> = m_key.rk.iter().map(|k| share_const(be, Block::from_bytes(k))).collect();
+    let xor = |a: &Shared128<K::Bit>, b: &Shared128<K::Bit>| -> Shared128<K::Bit> { std::array::from_fn(|i| a[i] ^ b[i]) };
+    let to_bytes = |s: &Shared128<K::Bit>| -> [Byte<K::Bit>; 16] { std::array::from_fn(|j| std::array::from_fn(|i| s[8 * j + i])) };
+    let to_bits = |st: &[Byte<K::Bit>; 16]| -> Shared128<K::Bit> { std::array::from_fn(|i| st[i / 8][i % 8]) };
+    let c63: Byte<K::Bit> = std::array::from_fn(|i| be.constant(0x63 >> i & 1 == 1));
+    let a_inv = |x: &Byte<K::Bit>| lin8(&tw.m_inv, &xor8(x, &c63));
+    let (mut fwd, mut back): (Vec<Shared128<K::Bit>>, Vec<Shared128<K::Bit>>) = (mids.to_vec(), mids.to_vec());
+    for layer in 0..5 {
+        let (r_f, r_b) = (6 + layer, 5 - layer);
+        // Backwards: AddRoundKey, InvMixColumns, InvShiftRows; InvSubBytes below.
+        let back_in: Vec<[Byte<K::Bit>; 16]> = back
+            .iter()
+            .map(|s| {
+                let mut st = to_bytes(&xor(s, &rk[r_b]));
+                inv_mix_columns(&mut st);
+                // InvShiftRows: state byte r + 4c takes byte r + 4((c − r) mod 4).
+                std::array::from_fn(|j| st[j % 4 + 4 * ((j / 4 + 4 - j % 4) % 4)])
+            })
+            .collect();
+        // One batch: the forward bytes, then A^{-1} of the backward ones.
+        let mut bytes: Vec<Byte<K::Bit>> = fwd.iter().flat_map(to_bytes).collect();
+        bytes.extend(back_in.iter().flat_map(|st| st.iter().map(a_inv)));
+        let sb = be.sbox(ch, &bytes);
+        let (sf, sr) = sb.split_at(16 * mids.len());
+        for (job, s) in fwd.iter_mut().enumerate() {
+            // ShiftRows: state byte r + 4c takes byte r + 4((c + r) mod 4).
+            let mut st: [Byte<K::Bit>; 16] = std::array::from_fn(|j| sf[16 * job + (j % 4 + 4 * ((j / 4 + j % 4) % 4))]);
+            if r_f < 10 {
+                mix_columns(&mut st);
+            }
+            *s = xor(&to_bits(&st), &rk[r_f]);
+        }
+        for (job, s) in back.iter_mut().enumerate() {
+            let st: [Byte<K::Bit>; 16] = std::array::from_fn(|j| a_inv(&sr[16 * job + j]));
+            *s = to_bits(&st);
+        }
+    }
+    // σ^{-1}(y): `x_lo = y_hi`, `x_hi = y_lo ⊕ y_hi`.
+    let sigma_inv = |y: &Shared128<K::Bit>| -> Shared128<K::Bit> { std::array::from_fn(|i| if i < 64 { y[64 + i] } else { y[i - 64] ^ y[i] }) };
+    fwd.iter()
+        .zip(&back)
+        .map(|(z, b)| {
+            let v = xor(b, &rk[0]);
+            (sigma_inv(&v), xor(&v, z))
+        })
+        .collect()
 }
 
 /// A share bit of the OT tower together with the F2-linear form of party 1's
@@ -878,6 +963,50 @@ mod tests {
         let per_round = |bits_per_sbox: usize| (48 * bits_per_sbox).div_ceil(8);
         assert_eq!(st0.bytes_sent, 10 * [9, 3, 4, 18].iter().map(|&a| per_round(2 * a)).sum::<usize>());
         assert_eq!(st1.bytes_sent, 10 * [8, 4, 3, 4].iter().map(|&k| per_round(k)).sum::<usize>());
+    }
+
+    /// `𝓕_PRFPair`: `X` and `H_K(X)` on shares of a random middle state, in 20
+    /// rounds, the same S-boxes as one forward call.
+    #[test]
+    fn mmo_pairs_are_the_hash_of_a_shared_input() {
+        let mut rng = ChaCha20Rng::seed_from_u64(11);
+        let key = Mmo::new(*b"aes-tower/pair-1");
+        let mid: Vec<Block> = (0..3).map(|_| Block::random(&mut rng)).collect();
+        let s0: Vec<Block> = (0..3).map(|_| Block::random(&mut rng)).collect();
+        let party = |b: usize| {
+            let (key, mid, s0) = (key.clone(), mid.clone(), s0.clone());
+            move |ch: &mut Channel| {
+                let mut r = ChaCha20Rng::seed_from_u64(30 + b as u64);
+                let delta = Block::random(&mut r).with_lsb(b == 1);
+                let mut cot = CotPair::setup(ch, &mut r, delta, false).unwrap();
+                let pool = cot.random_cots(ch, 0, 3 * COTS_PER_CALL, &mut r).unwrap();
+                let mut be = OtTower::new(b, pool, cot.delta());
+                let mids: Vec<Shared128<bool>> = s0.iter().zip(&mid).map(|(&s, &m)| bits_of(if b == 0 { s } else { s ^ m })).collect();
+                let before = ch.stats();
+                let out = mmo_pairs(&mut be, ch, &key, &mids);
+                let st = ch.stats().since(&before);
+                (out.iter().map(|(x, f)| (block_of(x), block_of(f))).collect::<Vec<_>>(), st, be.ands, be.remaining())
+            }
+        };
+        let ((y0, st0, ands, left), (y1, _, _, _)) = run_two_party(party(0), party(1));
+        for i in 0..3 {
+            let x = y0[i].0 ^ y1[i].0;
+            assert_eq!(y0[i].1 ^ y1[i].1, key.h(x), "pair {i}");
+            // X really is the point in the middle state: rounds 1–5 of σ(X) give m.
+            let mut st = sigma(x).to_bytes();
+            let rk = key.round_keys();
+            (0..16).for_each(|j| st[j] ^= rk[0][j]);
+            for r in 1..=5 {
+                let sb: [u8; 16] = std::array::from_fn(|j| sbox(st[j]));
+                let sh: [u8; 16] = std::array::from_fn(|j| sb[j % 4 + 4 * ((j / 4 + j % 4) % 4)]);
+                let mut bits: [[bool; 8]; 16] = std::array::from_fn(|j| std::array::from_fn(|k| sh[j] >> k & 1 == 1));
+                mix_columns(&mut bits);
+                st = std::array::from_fn(|j| bits[j].iter().enumerate().fold(0u8, |a, (k, &v)| a | (v as u8) << k) ^ rk[r][j]);
+            }
+            assert_eq!(Block::from_bytes(&st), mid[i], "middle state of pair {i}");
+        }
+        assert_eq!((ands, left), (3 * ANDS_PER_CALL, 0));
+        assert_eq!(st0.rounds, ROUNDS_PER_PAIR);
     }
 
     #[test]
