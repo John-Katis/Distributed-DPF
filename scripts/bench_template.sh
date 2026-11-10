@@ -19,7 +19,7 @@
 # Half-Tree measured to 29 and estimated above by scripts/estimate_gen.py.
 # Ours runs once per ν in NU_LIST, at every n > ν (CSV NAME-nuν). full:
 # in-bits 8..=32; ours at ν = NU_FULL only, since ν changes evaluation by one
-# XOR of M_ℓ per level; Floram and Half-Tree measured to 29, ours (both
+# shift per level; Floram and Half-Tree measured to 29, ours (both
 # PRFs) to 28, estimated above by scripts/estimate_full.py. Every point runs
 # once with REPS repetitions (default 10). all: gen, then full. Every point
 # is its own process; a crash is logged as `# failed:` and the sweep moves on
