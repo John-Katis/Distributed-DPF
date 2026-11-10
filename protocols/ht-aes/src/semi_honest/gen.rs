@@ -14,9 +14,10 @@
 //! **Preprocessing** (input-independent, per Gen; [`precompute_pairs`]): `⟨α⟩`,
 //! the public `W` with `lsb(W) = 0` (roots `k_b = Δ_b ⊕ W`), the middle states
 //! of the pairs and the bits `⟨r_ℓ⟩`; the OT tower's random COTs
-//! ([`COTS_PER_CALL`] per pair); `⟨α_ℓ·Δ⟩` for every level, from COTs under
-//! `Γ_b = Δ_b` with `⟨α_ℓ⟩` as the choices; one AND triple per level ν..=n; a
-//! random COT for the glue; and the leaf's daBits and triple ([`crate::leaf`]).
+//! ([`COTS_PER_CALL`] per pair); `⟨α_ℓ·Δ⟩` for ℓ ≤ ν, from COTs under `Γ_b =
+//! Δ_b` with `⟨α_ℓ⟩` as the choices; random COTs under `Γ_b = Δ_b` for Step A
+//! of each level ν < ℓ ≤ n and for the glue; one AND triple per level ν..=n;
+//! and the leaf's daBits and triple ([`crate::leaf`]).
 //!
 //! **Generation** runs its two layers in parallel:
 //!
@@ -27,7 +28,9 @@
 //! 2. Rounds 1–20: the `2(n − ν + 1)` calls of `𝓕_PRFPair`, in one batch.
 //!    `⟨u^b_ℓ⟩` is `⟨X^b_ℓ⟩` with its low bit set to `⟨r_ℓ⟩ ⊕ b`.
 //! 3. Round 21: open `C_ℓ = Δ ⊕ u^0_ℓ ⊕ u^1_ℓ`; the AND `g_ℓ = r_ℓ·lsb(X^0_ℓ ⊕
-//!    X^1_ℓ)`; Step A's `⟨P_ℓ⟩ = ⟨α_ℓ·u^0_{ℓ−1}⟩`, whose COTs carry `⟨α_ℓ·Δ⟩`.
+//!    X^1_ℓ)`; Step A, `(⟨α_ℓ·Δ⟩, ⟨P_ℓ⟩) = 𝓕_COT(⟨α_ℓ⟩, ⟨Δ⟩ ∥ ⟨u^0_{ℓ−1}⟩)`: per
+//!    direction one correction bit of `⟨α_ℓ⟩` and one λ-bit message, which does
+//!    not depend on the peer's correction, so both travel in this round.
 //! 4. Round 22: open `CW_ℓ`, `b^τ_ℓ = lsb(X^τ_ℓ) ⊕ g_ℓ` and the glue's `M^0_ν`.
 //! 5. Round 23: open `M^0_ℓ` for ℓ > ν.
 //!
@@ -472,11 +475,11 @@ pub struct PairPre {
     pub delta: Block,
     /// The public W, `lsb(W) = 0`, that re-randomises the roots per Gen.
     pub w: Block,
-    /// `⟨α_ℓ·Δ⟩` for the n levels.
+    /// `⟨α_ℓ·Δ⟩` for the n levels: those of ℓ ≤ ν from preprocessing, the
+    /// others filled in by Step A of [`walk_pairs`].
     pub alpha_delta: Vec<Block>,
-    /// Step A's COTs of levels ν < ℓ ≤ n, choice `⟨α_ℓ⟩`: this party's sender
-    /// key and its receiver block.
-    pub step_a: Vec<(Block, Block)>,
+    /// Step A's random COTs under `Γ_b = Δ_b`, levels ν < ℓ ≤ n.
+    pub step_a: Vec<DeltaCot>,
     /// The glue's random COT (`None` for a binary payload).
     pub glue_cot: Option<DeltaCot>,
     /// `⟨m⟩` of the two pairs of each level ν..=n.
@@ -517,26 +520,35 @@ pub(crate) fn precompute_pairs(ch: &mut Channel, s: &mut Setup, n: usize, nu: us
     let be = OtTower::new(b, pool, cot.delta());
     let levels = n - nu + 1;
     let triples = rot_string_triples(ch, cot, levels, rng);
-    let k = n + !binary as usize;
-    cot.precompute(ch, k + cots, k + cots, rng).expect("semi-honest COT");
+    // Step A's and the glue's random COTs under Γ_b = Δ_b, silent on Ferret.
+    let m = n - nu + !binary as usize;
+    let (mut keys, mut macs, mut choices) = (vec![], vec![], vec![]);
+    for sender in 0..2 {
+        match cot.random_cots(ch, sender, m, rng).expect("semi-honest COT") {
+            RandomCots::Sender(k) => keys = k,
+            RandomCots::Receiver(c, mm) => (choices, macs) = (c, mm),
+        }
+    }
+    let mut randoms: Vec<DeltaCot> = (0..m).map(|i| (keys[i], choices[i], macs[i])).collect();
+    let glue_cot = if binary { None } else { randoms.pop() };
+    let step_a = randoms;
+    cot.precompute(ch, nu + cots, nu + cots, rng).expect("semi-honest COT");
     let alpha_share: u64 = rng.gen::<u64>() & dpf_common::arith::mask(n);
     let mids = (0..levels).map(|_| [Block::random(rng), Block::random(rng)]).collect();
     let rs = (0..levels).map(|_| rng.gen()).collect();
     // W ← 𝓕_reveal(𝓕_rand) with lsb(W) = 0, and the COTs under Γ_b = Δ_b with
-    // the bits of α as choices, then the glue's random one, in one round.
+    // the bits of α as choices, for the top levels, in one round.
     let mine = Block::random(rng);
     ch.send_blocks(&[mine]);
     let w = (mine ^ ch.recv_blocks(1)[0]).with_lsb(false);
-    let mut choices = alpha_bits(alpha_share, n);
-    if !binary {
-        choices.push(rng.gen());
-    }
-    let (keys, macs) = cot.extend(ch, &choices, k, rng).expect("semi-honest COT");
+    let top = alpha_bits(alpha_share, n);
+    let (keys, macs) = cot.extend(ch, &top[..nu], nu, rng).expect("semi-honest COT");
     let delta = global.delta;
     // ⟨α_ℓ·Δ⟩_b = α_{ℓ,b}·Δ_b ⊕ K ⊕ M, as in [`delta_products`] with no correction.
-    let alpha_delta = (0..n).map(|i| delta.and_bit(choices[i]) ^ keys[i] ^ macs[i]).collect();
-    let step_a = (nu..n).map(|i| (keys[i], macs[i])).collect();
-    let glue_cot = (!binary).then(|| (keys[n], choices[n], macs[n]));
+    let mut alpha_delta = vec![Block::ZERO; n];
+    for i in 0..nu {
+        alpha_delta[i] = delta.and_bit(top[i]) ^ keys[i] ^ macs[i];
+    }
     PairPre { nu, alpha_share, delta, w, alpha_delta, step_a, glue_cot, mids, rs, triples, key: global.key.clone(), be }
 }
 
@@ -629,23 +641,35 @@ pub(crate) fn walk_pairs(pre: &mut PairPre, ch: &mut Channel) -> PairWalk {
     let t: Vec<(bool, Block, Block)> = pre.triples.drain(..).collect();
     let ef_mine: Vec<bool> = (0..levels).flat_map(|j| [pre.rs[j] ^ t[j].0, xs[j][0].lsb() ^ xs[j][1].lsb() ^ t[j].1.lsb()]).collect();
     let h = |x: Block, j: usize| cot_hash().h(x, (9 << 60) | j as u64);
+    // Step A: ε = α_b ⊕ c and D = H(K) ⊕ H(K ⊕ Δ_b) ⊕ u_b.
+    let eps_mine: Vec<bool> = (0..k).map(|j| a[nu + j] ^ pre.step_a[j].1).collect();
     let d_mine: Vec<Block> = (0..k).map(|j| h(pre.step_a[j].0, j) ^ h(pre.step_a[j].0 ^ delta, j) ^ us[j][0]).collect();
-    let mut msg = pack_bits(&ef_mine);
+    let bits_mine: Vec<bool> = ef_mine.iter().chain(&eps_mine).copied().collect();
+    let mut msg = pack_bits(&bits_mine);
     let nb = msg.len();
     put_blocks(&mut msg, &c_mine);
     put_blocks(&mut msg, &d_mine);
     let theirs = exchange(ch, msg);
-    let ef: Vec<bool> = unpack_bits(&theirs[..nb], 2 * levels).iter().zip(&ef_mine).map(|(&x, &y)| x ^ y).collect();
+    let bits_peer = unpack_bits(&theirs[..nb], bits_mine.len());
+    let ef: Vec<bool> = bits_peer.iter().zip(&ef_mine).map(|(&x, &y)| x ^ y).collect();
+    let eps_peer = &bits_peer[2 * levels..];
     let c: Vec<Block> = get_blocks(&theirs[nb..nb + 16 * levels]).iter().zip(&c_mine).map(|(&x, &y)| x ^ y).collect();
     let d_peer = get_blocks(&theirs[nb + 16 * levels..]);
-    // ⟨g_ℓ⟩ by Beaver, ⟨P_ℓ⟩ = α_b·u_b ⊕ H(K) ⊕ H(M) ⊕ α_b·D_{1−b}.
+    // ⟨g_ℓ⟩ by Beaver; with K' = K ⊕ ε_{1−b}·Δ_b, ⟨α_ℓ·Δ⟩_b = α_b·Δ_b ⊕ K' ⊕ M
+    // and ⟨P_ℓ⟩_b = α_b·u_b ⊕ H(K') ⊕ H(M) ⊕ α_b·D_{1−b}.
     let gs: Vec<bool> = (0..levels)
         .map(|j| {
             let (e, f) = (ef[2 * j], ef[2 * j + 1]);
             t[j].2.lsb() ^ (e && t[j].1.lsb()) ^ (f && t[j].0) ^ (e && f && p0)
         })
         .collect();
-    let ps: Vec<Block> = (0..k).map(|j| us[j][0].and_bit(a[nu + j]) ^ h(pre.step_a[j].0, j) ^ h(pre.step_a[j].1, j) ^ d_peer[j].and_bit(a[nu + j])).collect();
+    let mut ps = Vec::with_capacity(k);
+    for j in 0..k {
+        let (key, _, mac) = pre.step_a[j];
+        let (al, shifted) = (a[nu + j], key ^ delta.and_bit(eps_peer[j]));
+        pre.alpha_delta[nu + j] = delta.and_bit(al) ^ shifted ^ mac;
+        ps.push(us[j][0].and_bit(al) ^ h(shifted, j) ^ h(mac, j) ^ d_peer[j].and_bit(al));
+    }
 
     // Round 22, once the glue's product is in: CW_ℓ, b^τ_ℓ, M^0_ν.
     ch.join(top_lane);
