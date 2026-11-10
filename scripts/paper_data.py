@@ -8,8 +8,9 @@ Rewrites every \\pgfplotstableread{...}\\T<name> block in place and leaves the
 rest of the file (macros, colours, styles) as it is. Several rows for the same
 (in_bits, out_bits) (the 1-rep processes from --reps-from on) are averaged.
 
-Gen tables hold the **amortized** cost of one key pair: n, comp, total LAN,
-total WAN (s), comm (KB), see `amortize`. Measured rows go into \\T<p>A/B, the
+Gen tables hold the cost of preprocessing and generation of one key pair,
+without the session setup and the COTs drawn from its pool: n, comp, total
+LAN, total WAN (s), comm (KB), see `gen_cost`. Measured rows go into \\T<p>A/B, the
 last measured row plus the `+est` rows into \\T<p>XA/XB. Full-domain Eval
 tables: n, comp, LAN, WAN (s); measured rows into \\T<p>EA/EB, the last
 measured row plus `+est` rows into \\T<p>XEA/XEB. \\TOenv* is the maximum over
@@ -18,7 +19,7 @@ our four variants, \\TFenv* over FssNN's two and \\TLpnenv* over the Boolean and
 with the LPN-PRG (\\TPLpn<ν>), ν spelled out (one, five, seventeen).
 
 Also prints, for the prose: the smallest n from which every one of our four
-variants has a lower amortized Gen total than each baseline (LAN, WAN, at
+variants has a lower Gen total than each baseline (LAN, WAN, at
 ℓ = 64, over all measured and extrapolated n up to 42), the same for each
 instance and ν of the template section against Floram and Half-Tree, and how
 many key pairs the COT pool of one Ferret setup covers (n ≥ 8).
@@ -41,15 +42,16 @@ PRF = {'PFl': 'floram', 'PHT': 'ht',  # results-template/{gen,full}/ CSV names
        **{f'PLpn{w}': f'ggm-lpn-bin-nu{v}' for v, w in NU.items()}}
 PRF_FULL_NU = 5
 
-# Amortization. The one-time session setup (base OTs, the IKNP base OTs of
-# the OT extension, Ferret's bootstrap with its first main iteration) is
-# removed. A protocol on Ferret instead pays every COT its key pair draws from
-# the setup's pool at Ferret's marginal rate: 0.443 bits (CCS:YWLZW20) and
-# 22.2 ns (our Ferret, Tab. prf-2pc), the cost of the next main iteration once
-# the pool runs dry. OT extension by IKNP already runs inside preprocessing
-# and stays as measured.
+# The one-time session setup (base OTs, the IKNP base OTs of the OT extension,
+# Ferret's bootstrap with its first main iteration) is removed. With
+# charge_cots, used only for the extrapolated applications, a protocol on Ferret
+# also pays every COT its key pair draws from the setup's pool at Ferret's
+# marginal rate: 0.443 bits (CCS:YWLZW20) and 22.2 ns (our Ferret, Tab.
+# prf-2pc). OT extension by IKNP already runs inside preprocessing and stays as
+# measured. The LAN latency is the paper's, and the CSVs' lan_* columns, written
+# by the benches at their default of 10 ms, are not read for Gen.
 COT_BITS, COT_NS = 0.443, 22.2
-LAN, WAN = (10.0, 1000.0), (100.0, 100.0)  # ms per round, Mbit/s
+LAN, WAN = (0.5, 1000.0), (100.0, 100.0)  # ms per round, Mbit/s
 # Ferret B13 (crates/common/src/ot/ferret.rs): COTs per direction in the pool
 # after the bootstrap, main.n - (main.k + main.t * main.log_bin + 128).
 POOL = 10_485_760 - (452_000 + 1_280 * 13 + 128)
@@ -73,7 +75,7 @@ def net(rounds, nbytes, link):
     return rounds * lat + 8 * nbytes / (mbps * 1e3)  # ms
 
 
-def amortize(name, row):
+def gen_cost(name, row, charge_cots=False):
     """[comp, LAN, WAN, comm] in ms, ms, ms, bytes for one Gen row."""
     comp, nbytes, rounds = float(row[12]), float(row[10]), float(row[11])
     setup_ms, setup_bytes = float(row[17]), float(row[21])
@@ -86,15 +88,16 @@ def amortize(name, row):
         comp = float(row[18]) + max(float(row[19]), float(row[20]))
     else:
         comp -= setup_ms
-    comp += f * COT_NS / 1e6
-    nbytes = nbytes - setup_bytes + f * COT_BITS / 8
+    nbytes -= setup_bytes
+    if charge_cots:
+        comp += f * COT_NS / 1e6
+        nbytes += f * COT_BITS / 8
     rounds = pre_rounds + gen_rounds  # rounds = setup + pre + gen
     return [comp, comp + net(rounds, nbytes, LAN), comp + net(rounds, nbytes, WAN), nbytes]
 
 
-def load(path, mode, name):
-    """{(est, out_bits): {n: [c, l, w(, b)]}} in s (and KB), rows averaged;
-    Gen rows amortized."""
+def load(path, mode, name, charge_cots=False):
+    """{(est, out_bits): {n: [c, l, w(, b)]}} in s (and KB), rows averaged."""
     acc = defaultdict(lambda: defaultdict(list))
     with open(path) as f:
         for row in csv.reader(l for l in f if not l.startswith('#')):
@@ -103,7 +106,7 @@ def load(path, mode, name):
             n, m = int(float(row[3])), int(row[4])
             est = row[1].endswith('+est')
             if mode == 'gen':
-                v = amortize(name, row)
+                v = gen_cost(name, row, charge_cots)
             else:
                 v = [float(row[12]), float(row[14]), float(row[16])]
             acc[(est, m)][n].append([x / 1e3 for x in v])
@@ -146,7 +149,7 @@ def report(gen, ours):
         for n, v in series(o).items():
             env.setdefault(n, []).append(v)
     env = {n: [max(x[i] for x in vs) for i in range(4)] for n, vs in env.items() if len(vs) == len(ours)}
-    print('Ours faster from (amortized, ℓ = 64; smallest n0 with ours lower at every n ≥ n0):')
+    print('Ours faster from (Gen without setup, ℓ = 64; smallest n0 with ours lower at every n ≥ n0):')
     for p, d in gen.items():
         s = series(d)
         out = []
@@ -159,7 +162,7 @@ def report(gen, ours):
 
 def report_prf(prf):
     """Our template's section: each instance and ν against Floram and Half-Tree."""
-    print('Template section (amortized Gen, ℓ = 64): smallest n0 from which the instance is faster at every n ≥ n0')
+    print('Template section (Gen without setup, ℓ = 64): smallest n0 from which the instance is faster at every n ≥ n0')
     for p in prf:
         if not p.startswith(('PAes', 'PLpn')):
             continue
