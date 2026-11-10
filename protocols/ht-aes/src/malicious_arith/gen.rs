@@ -12,8 +12,8 @@
 //! * (B) The glue residual `⟦ω⟧` over `𝔽' = F_{2^127−1}` ([`glue_residual`]),
 //!   kept with the key and checked by Π_Verify.
 //!
-//! κ is [`Field::KAPPA`], which is `min(ℓ_q + 40, λ)`: the same value as in the
-//! figure, except for `2^127 − 1`, whose masks take 128 bits instead of 167.
+//! κ is [`Field::MAL_KAPPA`], `ℓ_q + 40` as in the figure, so a mask over
+//! `2^127 − 1` takes 167 bits and spans two blocks, and τ = 3.
 //!
 //! Nothing in Gen is checked; every deviation shows up only in the outputs or in
 //! ω, which Π_Verify ([`crate::verify`]) checks after evaluation. (A) and (B)
@@ -22,8 +22,8 @@
 //! 3, 23)`.
 
 use super::key::ArithMalKey;
-use crate::field::{mac_mask, tau, Ext, Field, M127};
-use crate::leaf::{fp_pre, fp_pre_cots, glue_residual, leaf_dabits, mal_pair_leaf, vec_triple, vec_triple_cots, FpPre, Triple, VecTriple, RESIDUAL_DABITS};
+use crate::field::{mac_mask, mask_at, tau, Ext, Field, M127};
+use crate::leaf::{fp_pre, fp_pre_cots, glue_residual, mal_leaf_dabits, mal_pair_leaf, vec_triple, vec_triple_cots, FpPre, Triple, VecTriple, RESIDUAL_DABITS};
 use crate::semi_honest::gen::{drive, reference_params, setup, walk_pairs, Fault, GenOutput, PairPre, PairWalk, PreSpec, Setup, Word};
 use crate::verify::VerifyMask;
 use crate::{deal_leaf_words, deal_pairs, default_nu_mal_arith, mal_ands};
@@ -115,7 +115,7 @@ impl<F: Field, E: Ext<F>> ArithMalSession<F, E> {
     pub fn gen(&mut self, ch: &mut Channel, n_size: u64, nu: Option<usize>, beta: F, fault: Option<Fault>) -> ArithMalRun<F, E> {
         let n = depth_for(n_size);
         let delta_mac = self.delta_mac;
-        let dabits = leaf_dabits::<F>(&[1, E::DEG]);
+        let dabits = mal_leaf_dabits::<F>(E::DEG);
         let spec = PreSpec {
             binary: false,
             cots: fp_pre_cots::<F, E>(dabits, 2) + vec_triple_cots::<F>() + fp_pre_cots::<M127, M127>(RESIDUAL_DABITS, 3),
@@ -215,7 +215,7 @@ pub fn deal<F: Field, E: Ext<F>>(
     let leaf_words = deal_leaf_words(roots[0] ^ roots[1], un0, *bottom.c.last().unwrap(), r_n, leaf_pairs);
     let side = |s: usize| -> Vec<Block> { std::iter::once(h[s]).chain(leaf_pairs.iter().map(|p| prf.h(p[s]))).collect() };
     let (h0, h1) = (side(0), side(1));
-    let v = F::from_block(h0[0]).sub(F::from_block(h1[0])).sub(beta);
+    let v = mask_at::<F>(&h0, 0).sub(mask_at::<F>(&h1, 0)).sub(beta);
     let vm = mac_mask::<F, E>(&h0).sub(mac_mask::<F, E>(&h1)).sub(delta_mac.mul(E::embed(beta)));
     let (w_cw, wm_cw) = if r_n { (v.neg(), vm.neg()) } else { (v, vm) };
     let mk = |party: usize| ArithMalKey { party, n_size, prf: prf.clone(), root: roots[party], cws: cws.clone(), bottom: bottom.clone(), leaf_words: leaf_words.clone(), w_cw, wm_cw };

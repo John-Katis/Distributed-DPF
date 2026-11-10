@@ -26,6 +26,9 @@ pub trait Field: Copy + Default + Eq + Debug + Send + Sync + 'static {
     /// Bits of a 128-bit hash output read as an integer and reduced mod p:
     /// `min(P_BITS + 40, 128)`, within `2^−40` of uniform.
     const KAPPA: usize;
+    /// Bits of one mask coordinate of the malicious leaf hash: `P_BITS + 40`
+    /// (Figure `Π_GenMal`), which may span two blocks.
+    const MAL_KAPPA: usize = Self::P_BITS + 40;
     const ZERO: Self;
     const ONE: Self;
     fn add(self, o: Self) -> Self;
@@ -51,6 +54,15 @@ pub trait Field: Copy + Default + Eq + Debug + Send + Sync + 'static {
     /// (`2^k mod p` in a prime field).
     fn pow2(k: usize) -> Self {
         Self::from_u128(1u128 << k)
+    }
+
+    /// `2^k` in the field for any k, also beyond the 128 bits of a block.
+    fn pow2_wide(k: usize) -> Self {
+        if k < 128 {
+            Self::pow2(k)
+        } else {
+            Self::pow2(127).mul(Self::pow2_wide(k - 127))
+        }
     }
 
     /// A pseudorandom element from a 128-bit seed, within `2^−40` of uniform
@@ -85,11 +97,11 @@ impl<F: Field> Ext<F> for F {
     }
 }
 
-/// Blocks of the malicious leaf hash: `τ = ⌈(d + 1)·κ/λ⌉`, κ = [`Field::KAPPA`]
-/// of F, d the degree of E. The first κ bits give the payload mask and the next
-/// d·κ the MAC mask.
+/// Blocks of the malicious leaf hash: `τ = ⌈(d + 1)·κ/λ⌉`, `κ = ℓ_q + 40`
+/// ([`Field::MAL_KAPPA`] of F), d the degree of E. The first κ bits give the
+/// payload mask and the next d·κ the MAC mask.
 pub fn tau<F: Field, E: Ext<F>>() -> usize {
-    ((E::DEG + 1) * F::KAPPA).div_ceil(128)
+    ((E::DEG + 1) * F::MAL_KAPPA).div_ceil(128)
 }
 
 /// Bits `start .. start + len` (`len ≤ 128`) of the concatenated blocks.
@@ -107,14 +119,27 @@ pub fn bits_at(blocks: &[Block], start: usize, len: usize) -> u128 {
     }
 }
 
+/// The integer of the κ = [`Field::MAL_KAPPA`] bits `start .. start + κ` of the
+/// leaf hash `h`, mod p: one mask coordinate of the malicious leaf.
+#[inline]
+pub fn mask_at<F: Field>(h: &[Block], start: usize) -> F {
+    let k = F::MAL_KAPPA;
+    let low = F::from_u128(bits_at(h, start, k.min(128)));
+    if k <= 128 {
+        low
+    } else {
+        low.add(F::from_u128(bits_at(h, start + 128, k - 128)).mul(F::pow2_wide(128)))
+    }
+}
+
 /// The MAC mask `F^mac(h)` in E of the leaf hash `h`: coordinate c is the
-/// integer of bits `(c + 1)κ .. (c + 2)κ`, mod p (κ = [`Field::KAPPA`] of F).
+/// integer of bits `(c + 1)κ .. (c + 2)κ`, mod p (κ = [`Field::MAL_KAPPA`] of F).
 #[inline]
 pub fn mac_mask<F: Field, E: Ext<F>>(h: &[Block]) -> E {
     if E::DEG == 1 {
-        return E::embed(F::from_u128(bits_at(h, F::KAPPA, F::KAPPA)));
+        return E::embed(mask_at::<F>(h, F::MAL_KAPPA));
     }
-    let c: Vec<F> = (0..E::DEG).map(|i| F::from_u128(bits_at(h, (i + 1) * F::KAPPA, F::KAPPA))).collect();
+    let c: Vec<F> = (0..E::DEG).map(|i| mask_at::<F>(h, (i + 1) * F::MAL_KAPPA)).collect();
     E::from_coords(&c)
 }
 

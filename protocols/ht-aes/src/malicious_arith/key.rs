@@ -3,7 +3,7 @@
 //! the output (in F) and of its MAC (in E), and [`verify`] is Π_Verify over E
 //! with the keys' glue residuals over `𝔽'`.
 
-use crate::field::{mac_mask, Ext, Field, M127};
+use crate::field::{mac_mask, mask_at, Ext, Field, M127};
 use crate::leaf::Triple;
 use crate::verify::{open_checked, pi_verify, VerifyMask};
 use crate::{expand_level, leaf_hash, leaf_hash_many, Bottom};
@@ -51,7 +51,7 @@ impl<F: Field, E: Ext<F>> ArithMalKey<F, E> {
     /// `(−1)^b·(W(h) + t·W_CW, F^mac(h) + t·W^MAC_CW)` at a leaf with tag `t`.
     #[inline]
     fn output(&self, t: bool, h: &[Block]) -> (F, E) {
-        let (mut y, mut m) = (F::from_block(h[0]), mac_mask::<F, E>(h));
+        let (mut y, mut m) = (mask_at::<F>(h, 0), mac_mask::<F, E>(h));
         if t {
             y = y.add(self.w_cw);
             m = m.add(self.wm_cw);

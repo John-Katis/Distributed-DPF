@@ -7,7 +7,7 @@
 use dpf_common::block::Block;
 use dpf_common::coin::Abort;
 use dpf_common::net::run_two_party;
-use ht_aes::field::{tau, BabyBear, BabyBear4, Ext, Field, Gold, M127};
+use ht_aes::field::{mask_at, tau, BabyBear, BabyBear4, Ext, Field, Gold, M127};
 use ht_aes::leaf::Triple;
 use ht_aes::malicious::{Fault, Word};
 use ht_aes::malicious_arith::{
@@ -15,6 +15,24 @@ use ht_aes::malicious_arith::{
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+
+#[test]
+fn tau_and_masks_take_l_plus_40_bits() {
+    assert_eq!((BabyBear::MAL_KAPPA, Gold::MAL_KAPPA, M127::MAL_KAPPA), (71, 104, 167));
+    assert_eq!(tau::<BabyBear, BabyBear4>(), 3);
+    assert_eq!(tau::<Gold, Gold>(), 2);
+    assert_eq!(tau::<M127, M127>(), 3);
+    // Bits 0..167 over 2^127 − 1, across two blocks, against bit-by-bit Horner.
+    let mut rng = ChaCha20Rng::seed_from_u64(7);
+    let h = [Block::random(&mut rng), Block::random(&mut rng), Block::random(&mut rng)];
+    for start in [0, M127::MAL_KAPPA] {
+        let horner = (start..start + M127::MAL_KAPPA).rev().fold(M127::ZERO, |a, i| {
+            let bit = if h[i / 128].bit(i % 128) { M127::ONE } else { M127::ZERO };
+            a.add(a).add(bit)
+        });
+        assert_eq!(mask_at::<M127>(&h, start), horner, "start = {start}");
+    }
+}
 
 /// One Gen of a key for the public β (α is sampled in preprocessing: α_0 ⊕ α_1).
 fn run<F: Field, E: Ext<F>>(n: u64, nu: Option<usize>, beta: F, seed: u64, faults: [Option<Fault>; 2]) -> [ArithMalRun<F, E>; 2] {

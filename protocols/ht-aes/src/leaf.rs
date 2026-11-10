@@ -19,8 +19,9 @@
 //! outputs, two rounds); the malicious leaf [`mal_pair_leaf`] (the payload and
 //! the MAC word, both indexed by server, from one vector product, three rounds);
 //! and the malicious glue residual [`glue_residual`] (addition (B), two rounds).
-//! Every leaf mask coordinate is the integer of κ mask bits (`κ =
-//! `[`Field::KAPPA`] of F, within `2^−40` of uniform), converted bit by bit by
+//! Every leaf mask coordinate is the integer of κ mask bits, within `2^−40` of
+//! uniform (`κ = `[`Field::KAPPA`] of F in the semi-honest leaves and
+//! `κ = `[`Field::MAL_KAPPA`] in the malicious one), converted bit by bit by
 //! daBits: open `c = h ⊕ r`, then `⟦h⟧ = c + ⟦r⟧ − 2c⟦r⟧`.
 
 use crate::field::{ole, ole_pair, Ext, Field, M127};
@@ -47,6 +48,12 @@ pub fn fp_pre_cots<F: Field, E: Ext<F>>(dabits: usize, triples: usize) -> usize 
 /// bits per coordinate, two masks per word, one for the tag.
 pub fn leaf_dabits<F: Field>(degs: &[usize]) -> usize {
     2 * degs.iter().sum::<usize>() * F::KAPPA + 1
+}
+
+/// daBits of the malicious leaf for a MAC of `deg` coordinates:
+/// `2(1 + deg)·κ + 1`, κ = [`Field::MAL_KAPPA`].
+pub fn mal_leaf_dabits<F: Field>(deg: usize) -> usize {
+    2 * (1 + deg) * F::MAL_KAPPA + 1
 }
 
 /// Gilboa inputs of triples: `(g, c)` with g the bits of `u` and `c = v·2^k`.
@@ -168,10 +175,10 @@ fn beaver<E: Field>(ch: &mut Channel, lane: &mut Lane, xy: &[(E, E)], t: &[Tripl
         .collect()
 }
 
-/// The integer of κ bits read from the opened B2A values starting at `off`,
-/// in F (one coordinate of a leaf mask).
-fn coord<F: Field>(vals: &[F], off: usize) -> F {
-    (0..F::KAPPA).fold(F::ZERO, |a, k| a.add(F::pow2(k).mul(vals[off + k])))
+/// The integer of `kappa` bits read from the opened B2A values starting at
+/// `off`, in F (one coordinate of a leaf mask).
+fn coord<F: Field>(vals: &[F], off: usize, kappa: usize) -> F {
+    (0..kappa).fold(F::ZERO, |a, k| a.add(F::pow2_wide(k).mul(vals[off + k])))
 }
 
 /// One call of the vector `𝓕_Mul`: Beaver shares `(u, v_0, v_1, w_0, w_1)` with
@@ -209,7 +216,7 @@ pub fn vec_triple<F: Field, E: Ext<F>, R: RngCore + CryptoRng>(ch: &mut Channel,
 /// for the τ-block leaf hashes `h = [h^(0), h^(1)]` of the two servers (XOR
 /// shares), this party's share `t` of `σ = r_n`, the public β and this party's
 /// share of δ. As [`pair_leaf`], on `lane`, three rounds: the masked bits of the
-/// [`leaf_dabits`]`(&[1, E::DEG])` daBits with `d = ρ − u` (`ρ = 1 − 2r`, r the
+/// [`mal_leaf_dabits`]`(E::DEG)` daBits with `d = ρ − u` (`ρ = 1 − 2r`, r the
 /// tag's daBit); `e_i = V_i − v_i`; then `X = ρ·V`, and `(W_CW, W^MAC_CW) = (1 −
 /// 2c)·X`. `err` is added to this party's shares of X (a deliberate deviation).
 #[allow(clippy::too_many_arguments)]
@@ -225,8 +232,8 @@ pub fn mal_pair_leaf<F: Field, E: Ext<F>>(
     err: (F, E),
 ) -> (F, E) {
     let b = ch.party();
-    let (kappa, deg) = (F::KAPPA, E::DEG);
-    let nbits = leaf_dabits::<F>(&[1, deg]);
+    let (kappa, deg) = (F::MAL_KAPPA, E::DEG);
+    let nbits = mal_leaf_dabits::<F>(deg);
     assert_eq!(dabits.len(), nbits, "the leaf's daBits");
     let one = if b == 0 { F::ONE } else { F::ZERO };
     let r_t = dabits[nbits - 1].1;
@@ -243,8 +250,8 @@ pub fn mal_pair_leaf<F: Field, E: Ext<F>>(
     let (c, theirs) = open_masked(ch, lane, &bits, dabits, extra);
     let d = d_mine.add(F::get(&theirs));
     let vals: Vec<F> = c.iter().zip(dabits).map(|(&ci, &(_, r))| b2a(ci, r, one)).collect();
-    let mac_val = |off: usize| E::from_coords(&(0..deg).map(|i| coord(&vals, off + i * kappa)).collect::<Vec<F>>());
-    let v_share = coord(&vals, 0).sub(coord(&vals, kappa)).sub(one.mul(beta));
+    let mac_val = |off: usize| E::from_coords(&(0..deg).map(|i| coord(&vals, off + i * kappa, kappa)).collect::<Vec<F>>());
+    let v_share = coord(&vals, 0, kappa).sub(coord(&vals, kappa, kappa)).sub(one.mul(beta));
     let v_mac = mac_val(2 * kappa).sub(mac_val(2 * kappa + deg * kappa)).sub(E::embed(beta).mul(delta_mac));
 
     // Round 2: e = V − v.
@@ -341,7 +348,7 @@ pub fn pair_leaf<F: Field>(ch: &mut Channel, lane: &mut Lane, h: [Block; 2], t: 
     let (c, theirs) = open_masked(ch, lane, &bits, &dabits, extra);
     let d = d_mine.add(F::get(&theirs));
     let vals: Vec<F> = c.iter().zip(&dabits).map(|(&ci, &(_, r))| b2a(ci, r, one)).collect();
-    let v_share = coord(&vals, 0).sub(coord(&vals, kappa)).sub(one.mul(beta));
+    let v_share = coord(&vals, 0, kappa).sub(coord(&vals, kappa, kappa)).sub(one.mul(beta));
 
     // Round 2: e = V − v.
     let e_mine = v_share.sub(v);
