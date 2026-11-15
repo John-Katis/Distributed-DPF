@@ -225,7 +225,7 @@ def apps_table():
             print(f'    {app}: {repay(app):.3g} evaluations')
 
 
-if __name__ == '__main__':
+def main():
     what = sys.argv[1] if len(sys.argv) > 1 else 'all'
     if what in ('comm', 'all'):
         comm_table()
@@ -233,3 +233,10 @@ if __name__ == '__main__':
         if what == 'all':
             print()
         apps_table()
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except FileNotFoundError as e:
+        sys.exit(f'paper_tables.py: {e.filename} missing; run the sweeps of README §2, step 1, first')
