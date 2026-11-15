@@ -1,6 +1,9 @@
 # exp-prf-bench (experiment, not part of ours)
 
-PRF microbenchmarks for §6b of the paper (Tab. prf-2pc and Tab. prf-local).
+PRF and Ferret microbenchmarks. The paper uses only the `ferret` mode: the
+22.2 ns per Ferret COT that Tab. eval-apps charges (`scripts/paper_tables.py`).
+`local` and `2pc` were the PRF microbenchmarks of an earlier version of the
+paper (Tab. prf-local, Tab. prf-2pc; their results below are from then).
 `crates/` and `protocols/` are unchanged; the PRF code is taken from them.
 
 ## Running

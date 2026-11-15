@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "protocols/*", "experimental_code/*"]
-# Own workspaces (Rust 1.95, rand 0.10 through mpz; C++ libraries in ot-libs).
+# Local experiments with workspaces of their own (not part of the published repository).
 exclude = ["experimental_code/mpz-ferret", "experimental_code/ot-libs"]
 
 [workspace.package]
