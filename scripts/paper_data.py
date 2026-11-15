@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Regenerates the pgfplots tables of paper-eval/6-dpf-data.tex from the
-CSVs in results-gen/, results-eval/ and results-template/.
+"""Regenerates the pgfplots tables of Fig. eval-gen (paper-eval/6-dpf-data.tex)
+from the CSVs in results-gen/, results-eval/ and results-template/.
 
-    python3 -I scripts/paper_data.py [paper-eval/6-dpf-data.tex]
+    python3 -I scripts/paper_data.py [file.tex]
 
-Rewrites every \\pgfplotstableread{...}\\T<name> block in place and leaves the
-rest of the file (macros, colours, styles) as it is. Several rows for the same
+Rewrites every \\pgfplotstableread{...}\\T<name> block of the file in place and
+leaves the rest of it (macros, colours, styles) as it is. Without the file
+(default paper-eval/6-dpf-data.tex), it writes a new one with every table. A
+CSV that is missing only drops its tables (a warning names it), and a block of
+the file without data is kept as it is. Several rows for the same
 (in_bits, out_bits) (the 1-rep processes from --reps-from on) are averaged.
 
 Gen tables hold the cost of preprocessing and generation of one key pair,
@@ -14,11 +17,17 @@ LAN, total WAN (s), comm (KB), see `gen_cost`. Measured rows go into \\T<p>A/B, 
 last measured row plus the `+est` rows into \\T<p>XA/XB. Full-domain Eval
 tables: n, comp, LAN, WAN (s); measured rows into \\T<p>EA/EB, the last
 measured row plus `+est` rows into \\T<p>XEA/XEB. \\TOenv* is the maximum over
-our four variants, \\TFenv* over FssNN's two and \\TLpnenv* over the Boolean and arithmetic LPN instance (\\T?envXE*: above the last width all were measured). \\TP* are the tables of our template's section
+our four variants, \\TFenv* over FssNN's two and \\TLpnenv* over the Boolean and arithmetic LPN instance (\\T?envXE*: above the last width all were measured). \\TV<v>{A,EA,XEA} are the per-variant tables Fig. eval-gen plots: ours
+(Osb sh-bin, Osa sh, Omb mal, Oma mal-arith), FssNN (Fb, Fa) and our GGM
+instance (Lb, La: Gen at ν = 2, full Eval at ν = 5; n ≥ 12). \\TP* are the
+tables of our former template section
 (results-template/): Floram, Half-Tree, and ours with AES--MMO (\\TPAes<ν>) and
 with the LPN-PRG (\\TPLpn<ν>), ν spelled out (one, five, seventeen).
 
-Also prints, for the prose: the smallest n from which every one of our four
+Also prints, for the prose: the four crossovers the dotted lines of Fig.
+eval-gen mark (where both our half-tree variants, sh-bin and mal or sh and
+mal-arith, become faster than every baseline of the panel, linearly
+interpolated in n), the smallest n from which every one of our four
 variants has a lower Gen total than each baseline (LAN, WAN, at
 ℓ = 64, over all measured and extrapolated n up to 42), the same for each
 instance and ν of the template section against Floram and Half-Tree, and how
@@ -41,6 +50,22 @@ PRF = {'PFl': 'floram', 'PHT': 'ht',  # results-template/{gen,full}/ CSV names
        **{f'PAes{w}': f'ht-aes-sh-bin-nu{v}' for v, w in NU.items()},
        **{f'PLpn{w}': f'ggm-lpn-bin-nu{v}' for v, w in NU.items()}}
 PRF_FULL_NU = 5
+GGM_NU = 2  # Π_GenGGM in §6a
+# Fig. eval-gen: per-variant tables \TV<key>, (CSV of Gen, CSV of full Eval, name)
+VARIANTS = {
+    'Osb': ('results-gen/ht-aes-sh-bin.csv', 'results-eval/ht-aes-sh-bin.csv', 'ht-aes-sh-bin'),
+    'Osa': ('results-gen/ht-aes-sh.csv', 'results-eval/ht-aes-sh.csv', 'ht-aes-sh'),
+    'Omb': ('results-gen/ht-aes-mal.csv', 'results-eval/ht-aes-mal.csv', 'ht-aes-mal'),
+    'Oma': ('results-gen/ht-aes-mal-arith.csv', 'results-eval/ht-aes-mal-arith.csv', 'ht-aes-mal-arith'),
+    'Fb': ('results-gen/fssnn-bin.csv', 'results-eval/fssnn-bin.csv', 'fssnn-bin'),
+    'Fa': ('results-gen/fssnn-arith.csv', 'results-eval/fssnn-arith.csv', 'fssnn-arith'),
+    **{f'L{v[0]}': (f'results-template/gen/ggm-lpn-{v}-nu{GGM_NU}.csv',
+                    f'results-template/full/ggm-lpn-{v}-nu{PRF_FULL_NU}.csv', f'ggm-lpn-{v}-nu{GGM_NU}')
+       for v in ('bin', 'arith')},
+}
+# The panels of Fig. eval-gen: (our two half-tree variants, the baselines)
+PANELS = {'Boolean': (['ht-aes-sh-bin', 'ht-aes-mal'], ['floram', 'ht', 'ht-mal-ferret', 'fssnn-bin']),
+          'arithmetic': (['ht-aes-sh', 'ht-aes-mal-arith'], ['floram-arith', 'duoram-2p', 'fssnn-arith'])}
 
 # The one-time session setup (base OTs, the IKNP base OTs of the OT extension,
 # Ferret's bootstrap with its first main iteration) is removed. With
@@ -96,10 +121,19 @@ def gen_cost(name, row, charge_cots=False):
     return [comp, comp + net(rounds, nbytes, LAN), comp + net(rounds, nbytes, WAN), nbytes]
 
 
+MISSING = []
+
+
 def load(path, mode, name, charge_cots=False):
-    """{(est, out_bits): {n: [c, l, w(, b)]}} in s (and KB), rows averaged."""
+    """{(est, out_bits): {n: [c, l, w(, b)]}} in s (and KB), rows averaged;
+    {} (and a warning at the end) if the CSV is missing."""
     acc = defaultdict(lambda: defaultdict(list))
-    with open(path) as f:
+    try:
+        f = open(path)
+    except FileNotFoundError:
+        MISSING.append(path)
+        return {}
+    with f:
         for row in csv.reader(l for l in f if not l.startswith('#')):
             if not row or row[0] != mode:
                 continue
@@ -177,11 +211,37 @@ def report_prf(prf):
         print(f'  {PRF[p]:22s} {", ".join(out)}  (n = {min(o)}..{max(o)})')
 
 
+def crossovers():
+    """The dotted lines of Fig. eval-gen: the n (linearly interpolated) from
+    which both our half-tree variants of a panel are faster than every
+    baseline of it, at ℓ = 64."""
+    print('Fig. eval-gen, dotted lines (both our half-tree variants faster than every baseline from n =):')
+    for panel, (ours, base) in PANELS.items():
+        o = [series(load(f'results-gen/{p}.csv', 'gen', p)) for p in ours]
+        b = [series(load(f'results-gen/{p}.csv', 'gen', p)) for p in base]
+        if not all(o + b):
+            continue
+        ns = sorted(set.intersection(*(set(s) for s in o + b)))
+        out = []
+        for i, link in [(1, 'LAN'), (2, 'WAN')]:
+            d = {n: max(s[n][i] for s in o) - min(s[n][i] for s in b) for n in ns}
+            x = None
+            for lo, hi in zip(ns, ns[1:]):
+                if d[lo] >= 0 > d[hi]:
+                    x = lo + d[lo] / (d[lo] - d[hi])
+            out.append(f'{link} {x:.2f}' if x is not None else f'{link} never')
+        print(f'  {panel:10s} {", ".join(out)}')
+
+
 def keys_per_pool(csvs):
     print(f'Key pairs per Ferret pool ({POOL:,} COTs per direction, both directions):')
     for name, path in csvs:
         ks = []
-        with open(path) as f:
+        try:
+            f = open(path)
+        except FileNotFoundError:
+            continue
+        with f:
             for row in csv.reader(l for l in f if not l.startswith('#')):
                 if row and row[0] == 'gen' and not row[1].endswith('+est') and float(row[3]) >= 8:
                     c = ferret_cots(name, float(row[28]))
@@ -211,6 +271,8 @@ def main():
         nu = 1 if mode == 'gen' else PRF_FULL_NU
         lpn = [load(f'results-template/{mode}/ggm-lpn-{v}-nu{nu}.csv', mode, f'ggm-lpn-{v}-nu{nu}') for v in ('bin', 'arith')]
         for prefix, group in [('TOenv', ours), ('TFenv', fssnn), ('TLpnenv', lpn)]:
+            if not all(group):
+                continue
             for m, w in WIDTH.items():
                 if not all((False, m) in o for o in group):
                     continue  # the arithmetic LPN instance has ℓ = 64 only
@@ -223,6 +285,16 @@ def main():
                 if ns and xs:
                     last = max(ns)
                     tables[f'{prefix}X{tag}{w}'] = table({last: env[last], **{n: [max(s[n][i] for s in alls) for i in range(len(cols))] for n in xs}}, cols)
+    for v, (gpath, fpath, name) in VARIANTS.items():
+        g = {k: {n: x for n, x in d.items() if n >= 12} for k, d in load(gpath, 'gen', name).items()}
+        if (False, 64) in g:
+            tables[f'TV{v}A'] = table(series(g), 'clwb')
+        add_e = load(fpath, 'full', name)
+        if (False, 64) in add_e:
+            meas = add_e[(False, 64)]
+            tables[f'TV{v}EA'] = table(meas, 'clw')
+            if (True, 64) in add_e:
+                tables[f'TV{v}XEA'] = table({max(meas): meas[max(meas)], **add_e[(True, 64)]}, 'clw')
     prf = {}
     for p, name in PRF.items():
         # n ≥ 8 as for the baselines (ours runs from n = ν + 1)
@@ -232,20 +304,28 @@ def main():
         if name in ('floram', 'ht') or name.endswith(f'-nu{PRF_FULL_NU}'):
             add(tables, p, 'E', 'clw', load(f'results-template/full/{name}.csv', 'full', name))
 
-    report(gen, ours_gen)
-    report_prf(prf)
+    crossovers()
+    if all(gen.values()) and all(ours_gen):
+        report(gen, ours_gen)
+    if all(prf.values()):
+        report_prf(prf)
     keys_per_pool([(n, f'results-gen/{n}.csv') for n in ['ht-mal-ferret', 'fssnn-bin', 'fssnn-arith', *OURS]]
                   + [(f'{n}-nu{v}', f'results-template/gen/{n}-nu{v}.csv') for n in ['ht-aes-sh-bin', 'ggm-lpn-bin'] for v in NU])
 
-    src = open(tex).read()
+    try:
+        src = open(tex).read()
+    except FileNotFoundError:
+        src = '% plot data of Fig. eval-gen, written by scripts/paper_data.py\n'
+        print(f'{tex} not found: writing a new file with every table')
     block = re.compile(r'\\pgfplotstableread\{n [^\n]*\n.*?\n\}\\(T\w+)\n', re.S)
-    seen = set()
+    seen, kept = set(), []
 
     def repl(mt):
         name = mt.group(1)
         seen.add(name)
         if name not in tables:
-            sys.exit(f'{tex}: no data for \\{name}')
+            kept.append(name)
+            return mt.group(0)
         return tables[name] + '\\' + name + '\n'
 
     out = block.sub(repl, src)
@@ -253,7 +333,11 @@ def main():
     if missing:  # new tables (e.g. a new +est series) go after the last one
         out = out.rstrip('\n') + '\n' + ''.join(tables[t] + '\\' + t + '\n' for t in missing)
     open(tex, 'w').write(out)
-    print(f'{tex}: {len(seen)} tables rewritten, added: {", ".join(missing) or "none"}')
+    print(f'{tex}: {len(seen) - len(kept)} tables rewritten, added: {", ".join(missing) or "none"}')
+    if kept:
+        print(f'  kept without data: {", ".join(kept)}')
+    if MISSING:
+        print(f'  missing CSVs (their tables skipped): {", ".join(sorted(set(MISSING)))}')
 
 
 if __name__ == '__main__':
