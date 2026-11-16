@@ -69,7 +69,7 @@ pub struct MalRun<K: Field> {
 impl<K: Field> MalSession<K> {
     /// Π_setup (base OTs, Ferret, ⟨Δ⟩, K) and δ_b.
     pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Self {
-        let mut s = setup(ch, seed, ferret);
+        let mut s = setup(ch, seed, ferret, true);
         let delta_mac = K::random(&mut s.rng);
         MalSession { s, delta_mac }
     }

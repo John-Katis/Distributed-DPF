@@ -209,10 +209,10 @@ All OTs and COTs come from libraries, so their correctness does not rest on our 
 
 | Library (pinned revision) | What we use | Used by |
 |---|---|---|
-| [emp-ot](https://github.com/emp-toolkit/emp-ot) 0.3.0 | Ferret COT (silent OT) | ours, FssNN, Zhang et al. |
+| [emp-ot](https://github.com/emp-toolkit/emp-ot) 0.3.0 | Ferret COT (silent OT), with its SPCOT consistency check in the malicious variants | ours, FssNN, Zhang et al. |
 | | IKNP OT extension (with its KOS-style check in malicious mode), Naor–Pinkas base OT | Floram, Half-Tree, Duoram-2P, Xing et al.; the bootstrap of Ferret |
 | [emp-tool](https://github.com/emp-toolkit/emp-tool) 0.3.0 | half-gates garbling of AND gates | Floram's garbled circuit per level |
-| [libOTe](https://github.com/osu-crypto/libOTe) 5d419c34 | Masny–Rindal base OT | Zhang et al. (malicious base OTs of its IKNP/KOS extension) |
+| [libOTe](https://github.com/osu-crypto/libOTe) 5d419c34 | Masny–Rindal base OT | the malicious variants (Zhang et al., ours): base OTs of the KOS-checked IKNP that bootstraps Ferret |
 | [SCI / EzPC](https://github.com/mpc-msri/EzPC) f24bf3e | KK13 1-of-N OT, CrypTFlow2 bit triples, SiRNN multiplexer | Xing et al. |
 
 The two patches (`crates/ot-sys/patches/`) make a failed check abort. In emp-tool, `error()` throws instead of calling `exit(1)`, so the Rust side can report an `Abort`. In emp-ot, the malicious Ferret calls `error()` when the SPCOT consistency check fails, where upstream only prints a message and carries on. libOTe and SCI are unpatched. SCI's socket I/O is replaced by the headers in `crates/ot-sys/cpp/sci_override/`, which run it over our in-process channel.

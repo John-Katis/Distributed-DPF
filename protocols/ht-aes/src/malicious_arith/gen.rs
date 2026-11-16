@@ -104,7 +104,7 @@ pub struct ArithMalRun<F: Field, E: Ext<F>> {
 impl<F: Field, E: Ext<F>> ArithMalSession<F, E> {
     /// Π_setup (base OTs, Ferret, ⟨Δ⟩, K) and δ_b.
     pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Self {
-        let mut s = setup(ch, seed, ferret);
+        let mut s = setup(ch, seed, ferret, true);
         let delta_mac = E::random(&mut s.rng);
         ArithMalSession { s, delta_mac, _f: std::marker::PhantomData }
     }

@@ -454,7 +454,7 @@ impl Session {
     /// Base OTs, Ferret (`ferret`: `Some(FerretConfig::B13)` for benchmarks,
     /// `None` keeps IKNP, for tests), `⟨Δ⟩` and K.
     pub fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Self {
-        Session { s: setup(ch, seed, ferret) }
+        Session { s: setup(ch, seed, ferret, false) }
     }
 
     /// Preprocessing and generation of a key for a random index α (its share
@@ -497,15 +497,18 @@ pub(crate) struct Setup {
 }
 
 /// Π_setup: base OTs and Ferret, party b's COTs under its Ferret key `Γ_b :=
-/// Δ_b` (`lsb(Δ_b) = b`), then `K` by `𝓕_reveal(𝓕_rand)`.
-pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>) -> Setup {
+/// Δ_b` (`lsb(Δ_b) = b`), then `K` by `𝓕_reveal(𝓕_rand)`. With `malicious`,
+/// 𝓕_COT is instantiated maliciously, as for Zhang et al.: Masny–Rindal base
+/// OTs, IKNP with its KOS-style check, and Ferret with its SPCOT consistency
+/// check (a failed check aborts).
+pub(crate) fn setup(ch: &mut Channel, seed: [u8; 32], ferret: Option<FerretConfig>, malicious: bool) -> Setup {
     let t_setup = Instant::now();
     let b = ch.party();
     let mut rng = ChaCha20Rng::from_seed(seed);
     let delta = Block::random(&mut rng).with_lsb(b == 1);
-    let mut cot = CotPair::setup(ch, &mut rng, delta, false).expect("semi-honest base OT");
+    let mut cot = CotPair::setup(ch, &mut rng, delta, malicious).expect("base OT");
     if let Some(cfg) = ferret {
-        cot.enable_ferret(ch, cfg, &mut rng).expect("semi-honest Ferret");
+        cot.enable_ferret(ch, cfg, &mut rng).expect("Ferret");
     }
     let mine = Block::random(&mut rng);
     ch.send_blocks(&[mine]);
