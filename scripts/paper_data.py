@@ -50,7 +50,7 @@ PRF = {'PFl': 'floram', 'PHT': 'ht',  # results-template/{gen,full}/ CSV names
        **{f'PAes{w}': f'ht-aes-sh-bin-nu{v}' for v, w in NU.items()},
        **{f'PLpn{w}': f'ggm-lpn-bin-nu{v}' for v, w in NU.items()}}
 PRF_FULL_NU = 5
-GGM_NU = 2  # Π_GenGGM in §6a
+GGM_NU = 2  # Π_GenGGM in §6.1
 # Fig. eval-gen: per-variant tables \TV<key>, (CSV of Gen, CSV of full Eval, name)
 VARIANTS = {
     'Osb': ('results-gen/ht-aes-sh-bin.csv', 'results-eval/ht-aes-sh-bin.csv', 'ht-aes-sh-bin'),

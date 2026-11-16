@@ -57,8 +57,8 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --i
 |---|---|---|
 | Fig. eval-gen (Gen, LAN and WAN) and its dotted crossover lines | `results-gen/`, `results-template/gen/ggm-lpn-*-nu2.csv` | `python3 -I scripts/paper_data.py` |
 | Tab. eval-comm-rounds (Gen communication and rounds, Eval per point) | as above, and `results-eval/`, `results-template/full/` | `python3 -I scripts/paper_tables.py comm` |
-| Tab. eval-apps and the numbers in the text of §6b (when the half-tree instance repays its slower Gen) | as above, and `results-single-point/` | `python3 -I scripts/paper_tables.py apps` |
-| §6a, "Methodology": 14.3 ns and 660 ns per node | `results-single-point/` | `python3 -I scripts/paper_tables.py apps` (first line) |
+| Tab. eval-apps and the numbers in the text of §6.2 (when the half-tree instance repays its slower Gen) | as above, and `results-single-point/` | `python3 -I scripts/paper_tables.py apps` |
+| §6.1, "Methodology": 14.3 ns and 660 ns per node | `results-single-point/` | `python3 -I scripts/paper_tables.py apps` (first line) |
 | §6, "Setup": the Ferret session setup (0.8–0.9 s, 3 MB) and the key pairs per COT pool | `setup_ms`, `setup_bytes` in `results-gen/` | `python3 -I scripts/paper_data.py` (last lines) |
 | 22.2 ns per Ferret COT (charged in Tab. eval-apps) | `results-prf/ferret.csv` | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` |
 
@@ -90,7 +90,7 @@ python3 -I scripts/paper_tables.py    # prints Tab. eval-comm-rounds and Tab. ev
 
 `paper_data.py` writes the pgfplots tables to `paper-eval/6-dpf-data.tex`, or to the file given as its argument. If the file exists, the script replaces only its `\pgfplotstableread` blocks. A missing CSV only drops its tables, with a warning. The figure plots `\T<Fl,HT,HTm,FA,Dtwo>{A,XA}` for the baselines (`X`: extrapolated) and `\TV<variant>A` for FssNN and ours.
 
-`paper_tables.py` prints both tables as text. The applications are not run but extrapolated from the CSVs, following the "Method" paragraph of §6b. The script's docstring lists every rule: COT charges, interpolation in n, batched WAN rounds, the DCF charge and the Eval rates.
+`paper_tables.py` prints both tables as text. The applications are not run but extrapolated from the CSVs, following the "Method" paragraph of §6.2. The script's docstring lists every rule: COT charges, interpolation in n, batched WAN rounds, the DCF charge and the Eval rates.
 
 ### Measured and extrapolated rows
 

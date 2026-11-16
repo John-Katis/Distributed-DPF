@@ -9,7 +9,7 @@
   paper_data.gen_cost), and the time per point of full-domain Eval at n = 32
   (extrapolated rows `+est` where n = 32 was not measured).
 
-* apps: Tab. eval-apps, extrapolated from the same CSVs (§6b, "Method"); no
+* apps: Tab. eval-apps, extrapolated from the same CSVs (§6.2, "Method"); no
   application is run. Per key, the measured cost of its domain: Gen without
   the session setup, plus every COT it draws from Ferret at 0.443 bits and
   22.2 ns (`experimental_code/prf-bench ... ferret`), since millions of keys
@@ -214,7 +214,7 @@ def apps_table():
         {FS: [(1, at(K[bin_[FS]], n))], **{p: [(1, dcf(K[bin_[p]], n, nu[p], joint[p](n)))] for p in (OS, GG)}},
         {FS: n * rate[FS] / 1e9, **{p: 2 * n * rate[p] / 1e9 for p in (OS, GG)}})
 
-    # The prose of §6b: where the half-tree instance repays its slower Gen against the GGM instance
+    # The prose of §6.2: where the half-tree instance repays its slower Gen against the GGM instance
     def repay(app):
         (_, to, eo), (_, tg, eg) = res[app][OS], res[app][GG]
         return (to - tg) / (eg - eo)
