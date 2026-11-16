@@ -3,9 +3,7 @@
 # FssNN bin/arith, Duoram 2P (3P stays in the code), ours: ht-aes {bin,arith} x {sh,mal}
 # and the GGM instance ggm-lpn {bin,arith} at ν = 2) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen), results-single-point/ (mode eval:
-# evaluation at single points) or results-eval/ (full, all). Mode gen also
-# measures the cost of one Ferret COT (exp-prf-bench, results-prf/ferret.csv),
-# which Tab. eval-apps charges; ONLY skips it unless it names `ferret`.
+# evaluation at single points) or results-eval/ (full, all).
 #
 #   [OUT_LIST=a,b,..] [SKIP_OURS=1] [ONLY="name .."] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--append] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
 #
@@ -146,13 +144,6 @@ if [[ ${SKIP_OURS:-0} != 1 ]]; then
   run ht-aes-mal-arith 42  42   27 "$BIN/bench-ht-aes" "$MODE" "${S[@]}" --variant mal-arith
   run ggm-lpn-bin      42  42   28 "$BIN/bench-ggm-lpn" "$MODE" "${S[@]}" --variant bin --nu 2
   run ggm-lpn-arith    42  42   28 "$BIN/bench-ggm-lpn" "$MODE" "${S[@]}" --variant arith --nu 2
-fi
-
-# The cost of one Ferret COT (writes results-prf/ferret.csv).
-if [[ $MODE == gen && ( -z ${ONLY:-} || " $ONLY " == *" ferret "* ) ]]; then
-  echo ferret
-  cargo run --release -p exp-prf-bench --example bench-prf -- ferret \
-    || FAILED+=("ferret (exit $?)")
 fi
 
 if ((${#FAILED[@]})); then

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Regenerates the pgfplots tables of Fig. eval-gen (paper-eval/6-dpf-data.tex)
-from the CSVs in results-gen/ and results-eval/.
+from the CSVs in results-gen/.
 
     python3 -I scripts/paper_data.py [file.tex]
 
@@ -11,15 +11,14 @@ CSV that is missing only drops its tables (a warning names it), and a block of
 the file without data is kept as it is. Several rows for the same
 (in_bits, out_bits) (the 1-rep processes from --reps-from on) are averaged.
 
-Gen tables hold the cost of preprocessing and generation of one key pair,
-without the session setup and the COTs drawn from its pool: n, comp, total
-LAN, total WAN (s), comm (KB), see `gen_cost`. Measured rows go into \\T<p>A/B, the
-last measured row plus the `+est` rows into \\T<p>XA/XB. Full-domain Eval
-tables: n, comp, LAN, WAN (s); measured rows into \\T<p>EA/EB, the last
-measured row plus `+est` rows into \\T<p>XEA/XEB. \\TOenv* is the maximum over
-our four variants and \\TFenv* over FssNN's two (\\T?envXE*: above the last width all were measured). \\TV<v>{A,EA,XEA} are the per-variant tables Fig. eval-gen plots: ours
-(Osb sh-bin, Osa sh, Omb mal, Oma mal-arith), FssNN (Fb, Fa) and our GGM
-instance (Lb, La: ggm-lpn-{bin,arith} at ν = 2; n ≥ 12).
+Only the tables Fig. eval-gen plots, all at ℓ = 64. Each holds the cost of
+preprocessing and generation of one key pair, without the session setup and
+the COTs drawn from its pool: n, comp, total LAN, total WAN (s), comm (KB),
+see `gen_cost`. The tree-based baselines (Fl, HT, HTm, FA, Dtwo): measured
+rows in \\T<p>A, the last measured row plus the `+est` rows in \\T<p>XA.
+\\TV<v>A, measured and `+est` rows from n = 12 on: ours (Osb sh-bin, Osa sh,
+Omb mal, Oma mal-arith), FssNN (Fb, Fa) and our GGM instance (Lb, La:
+ggm-lpn-{bin,arith} at ν = 2).
 
 Also prints, for the prose: the four crossovers the dotted lines of Fig.
 eval-gen mark (where both our half-tree variants, sh-bin and mal or sh and
@@ -39,19 +38,9 @@ PROTOS = {  # table prefix -> CSV name
     'Fb': 'fssnn-bin', 'Fa': 'fssnn-arith', 'Dtwo': 'duoram-2p',
 }
 OURS = ['ht-aes-sh-bin', 'ht-aes-sh', 'ht-aes-mal', 'ht-aes-mal-arith']
-FSSNN = ['fssnn-bin', 'fssnn-arith']
-WIDTH = {64: 'A', 128: 'B'}
-# Fig. eval-gen: per-variant tables \TV<key>, (CSV of Gen, CSV of full Eval, name)
-VARIANTS = {
-    'Osb': ('results-gen/ht-aes-sh-bin.csv', 'results-eval/ht-aes-sh-bin.csv', 'ht-aes-sh-bin'),
-    'Osa': ('results-gen/ht-aes-sh.csv', 'results-eval/ht-aes-sh.csv', 'ht-aes-sh'),
-    'Omb': ('results-gen/ht-aes-mal.csv', 'results-eval/ht-aes-mal.csv', 'ht-aes-mal'),
-    'Oma': ('results-gen/ht-aes-mal-arith.csv', 'results-eval/ht-aes-mal-arith.csv', 'ht-aes-mal-arith'),
-    'Fb': ('results-gen/fssnn-bin.csv', 'results-eval/fssnn-bin.csv', 'fssnn-bin'),
-    'Fa': ('results-gen/fssnn-arith.csv', 'results-eval/fssnn-arith.csv', 'fssnn-arith'),
-    **{f'L{v[0]}': (f'results-gen/ggm-lpn-{v}.csv', f'results-eval/ggm-lpn-{v}.csv', f'ggm-lpn-{v}')  # Π_GenGGM, ν = 2
-       for v in ('bin', 'arith')},
-}
+# Fig. eval-gen: per-variant tables \TV<key>A, CSV names
+VARIANTS = {'Osb': 'ht-aes-sh-bin', 'Osa': 'ht-aes-sh', 'Omb': 'ht-aes-mal', 'Oma': 'ht-aes-mal-arith',
+            'Fb': 'fssnn-bin', 'Fa': 'fssnn-arith', 'Lb': 'ggm-lpn-bin', 'La': 'ggm-lpn-arith'}  # Lb, La: Π_GenGGM, ν = 2
 # The panels of Fig. eval-gen: (our two half-tree variants, the baselines)
 PANELS = {'Boolean': (['ht-aes-sh-bin', 'ht-aes-mal'], ['floram', 'ht', 'ht-mal-ferret', 'fssnn-bin']),
           'arithmetic': (['ht-aes-sh', 'ht-aes-mal-arith'], ['floram-arith', 'duoram-2p', 'fssnn-arith'])}
@@ -148,16 +137,16 @@ def table(rows, cols):
     return '\n'.join(lines) + '\n}'
 
 
-def add(tables, p, tag, cols, data):
-    for m, w in WIDTH.items():
-        meas = data.get((False, m), {})
-        if not meas:
-            continue
-        tables[f'T{p}{tag}{w}'] = table(meas, cols)
-        est = data.get((True, m), {})
-        if est:
-            last = max(meas)
-            tables[f'T{p}X{tag}{w}'] = table({last: meas[last], **est}, cols)
+def add(tables, p, data):
+    """\\T<p>A (measured) and \\T<p>XA (last measured row and `+est` rows), ℓ = 64."""
+    meas = data.get((False, 64), {})
+    if not meas:
+        return
+    tables[f'T{p}A'] = table(meas, 'clwb')
+    est = data.get((True, 64), {})
+    if est:
+        last = max(meas)
+        tables[f'T{p}XA'] = table({last: meas[last], **est}, 'clwb')
 
 
 def series(data, m=64):
@@ -227,43 +216,15 @@ def keys_per_pool(csvs):
 def main():
     tex = sys.argv[1] if len(sys.argv) > 1 else 'paper-eval/6-dpf-data.tex'
     tables = {}
-    gen = {}
-    for mode, d, cols, tag in [('gen', 'results-gen', 'clwb', ''),
-                               ('full', 'results-eval', 'clw', 'E')]:
-        for p, name in PROTOS.items():
-            data = load(f'{d}/{name}.csv', mode, name)
-            if mode == 'gen':
-                gen[p] = data
-            add(tables, p, tag, cols, data)
-        ours = [load(f'{d}/{name}.csv', mode, name) for name in OURS]
-        if mode == 'gen':
-            ours_gen = ours
-        fssnn = [load(f'{d}/{name}.csv', mode, name) for name in FSSNN]
-        for prefix, group in [('TOenv', ours), ('TFenv', fssnn)]:
-            if not all(group):
-                continue
-            for m, w in WIDTH.items():
-                if not all((False, m) in o for o in group):
-                    continue
-                ns = set.intersection(*(set(o[(False, m)]) for o in group))
-                env = {n: [max(o[(False, m)][n][i] for o in group) for i in range(len(cols))] for n in ns}
-                tables[f'{prefix}{tag}{w}'] = table(env, cols)
-                # above the last width all variants measured: the maximum over measured and estimated rows
-                alls = [series(o, m) for o in group]
-                xs = sorted(set.intersection(*(set(s) for s in alls)) - ns)
-                if ns and xs:
-                    last = max(ns)
-                    tables[f'{prefix}X{tag}{w}'] = table({last: env[last], **{n: [max(s[n][i] for s in alls) for i in range(len(cols))] for n in xs}}, cols)
-    for v, (gpath, fpath, name) in VARIANTS.items():
-        g = {k: {n: x for n, x in d.items() if n >= 12} for k, d in load(gpath, 'gen', name).items()}
+    gen = {p: load(f'results-gen/{name}.csv', 'gen', name) for p, name in PROTOS.items()}
+    for p, data in gen.items():
+        if p not in VARIANTS:  # FssNN is plotted from \TVFbA, \TVFaA
+            add(tables, p, data)
+    ours_gen = [load(f'results-gen/{name}.csv', 'gen', name) for name in OURS]
+    for v, name in VARIANTS.items():
+        g = {k: {n: x for n, x in d.items() if n >= 12} for k, d in load(f'results-gen/{name}.csv', 'gen', name).items()}
         if (False, 64) in g:
             tables[f'TV{v}A'] = table(series(g), 'clwb')
-        add_e = load(fpath, 'full', name)
-        if (False, 64) in add_e:
-            meas = add_e[(False, 64)]
-            tables[f'TV{v}EA'] = table(meas, 'clw')
-            if (True, 64) in add_e:
-                tables[f'TV{v}XEA'] = table({max(meas): meas[max(meas)], **add_e[(True, 64)]}, 'clw')
 
     crossovers()
     if all(gen.values()) and all(ours_gen):

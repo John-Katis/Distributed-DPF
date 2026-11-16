@@ -60,20 +60,21 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --i
 | Tab. eval-apps and the numbers in the text of §6.2 (when the half-tree instance repays its slower Gen) | as above, and `results-single-point/` | `python3 -I scripts/paper_tables.py apps` |
 | §6.1, "Methodology": 14.3 ns and 660 ns per node | `results-single-point/` | `python3 -I scripts/paper_tables.py apps` (first line) |
 | §6, "Setup": the Ferret session setup (0.8–0.9 s, 3 MB) and the key pairs per COT pool | `setup_ms`, `setup_bytes` in `results-gen/` | `python3 -I scripts/paper_data.py` (last lines) |
-| 22.2 ns per Ferret COT (charged in Tab. eval-apps) | `results-prf/ferret.csv` | written by `scripts/bench_all.sh` (gen) |
+| 22.2 ns per Ferret COT (charged in Tab. eval-apps) | `results-prf/ferret.csv` | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` |
 
 All result directories are git-ignored and created by the scripts. Run every command from the repository root, one at a time, on an otherwise idle machine.
 
 ### Step 1: run the benchmarks
 
 ```sh
-scripts/bench_all.sh            # Gen, n = 12..42           -> results-gen/<protocol>.csv, results-prf/ferret.csv
+scripts/bench_all.sh            # Gen, n = 12..42           -> results-gen/<protocol>.csv
 scripts/bench_all.sh full       # full-domain Eval, n = 8..32 -> results-eval/<protocol>.csv
 scripts/bench_all.sh eval       # Eval at single points     -> results-single-point/<protocol>.csv
+cargo run --release -p exp-prf-bench --example bench-prf -- ferret   # cost of one Ferret COT -> results-prf/ferret.csv
 ```
 
 - `bench_all.sh` runs every protocol: Floram, Half-Tree, Zhang et al., Xing et al., FssNN (`bin`, `arith`), Duoram-2P, our four half-tree variants and our GGM instance (`ggm-lpn-bin`, `ggm-lpn-arith`, at ν = 2 as in the paper). It writes one CSV per protocol.
-- The gen run also measures the cost of one Ferret COT (`exp-prf-bench`), which Tab. eval-apps charges. With `ONLY`, it runs only if `ONLY` names `ferret`.
+- The fourth command measures the cost of one Ferret COT, which Tab. eval-apps charges.
 - Every point of a sweep runs 10 repetitions and reports their mean. Each point is its own process, so a crash (e.g. out of memory) is logged as `# failed:` in the CSV and the sweep moves on to the next protocol.
 - `ONLY="name …"` reruns only the named CSVs. This resumes an interrupted sweep.
 - The paper reports ℓ = 64 only. The scripts also sweep ℓ = 128. `OUT_LIST=64` in front of each command halves the run time and still gives every number of §6.
