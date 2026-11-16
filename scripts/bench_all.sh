@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Runs the DPF benchmarks (Floram, HT, HT-mal with Ferret, Floram-arith,
-# FssNN bin/arith, Duoram 2P (3P stays in the code), ours: ht-aes {bin,arith} x {sh,mal}) over the same sweep and writes one CSV per
+# FssNN bin/arith, Duoram 2P (3P stays in the code), ours: ht-aes {bin,arith} x {sh,mal}
+# and the GGM instance ggm-lpn {bin,arith} at ν = 2) over the same sweep and writes one CSV per
 # protocol into results-gen/ (mode gen), results-single-point/ (mode eval:
-# evaluation at single points) or results-eval/ (full, all).
+# evaluation at single points) or results-eval/ (full, all). Mode gen also
+# measures the cost of one Ferret COT (exp-prf-bench, results-prf/ferret.csv),
+# which Tab. eval-apps charges; ONLY skips it unless it names `ferret`.
 #
 #   [OUT_LIST=a,b,..] [SKIP_OURS=1] [ONLY="name .."] scripts/bench_all.sh [--min-in-bits n] [--max-in-bits n] [--append] [--reps R] [--reps-from n R] [--points P] [--batch-log b] [mode]
 #
 # SKIP_OURS=1 runs only the other papers' protocols and leaves the ht-aes
-# CSVs as they are. ONLY="fssnn-bin ht-aes-sh .." runs only the protocols
+# and ggm-lpn CSVs as they are. ONLY="fssnn-bin ht-aes-sh .." runs only the protocols
 # with these CSV names (the first argument of each `run` below) and leaves
 # the other CSVs as they are, e.g. to resume an interrupted sweep.
 #
@@ -22,12 +25,12 @@
 #
 #   * gen: by scripts/estimate_gen.py (computation x2 per bit, setup constant,
 #     communication, rounds and network time linear in n). FssNN's and ours'
-#     Gen follows only the path to alpha (flat ~1 GB), so they are measured up
+#     (both instances) Gen follows only the path to alpha (flat ~1 GB), so they are measured up
 #     to 42.
 #   * eval: by scripts/estimate_eval.py (time linear in n: one PRG call per
 #     level). The keys come from the trusted dealer, which builds the whole
 #     tree for the tree-based protocols and only the path to alpha for FssNN
-#     and ours, so those two are measured up to 42.
+#     and ours, so those are measured up to 42.
 #   * full: by scripts/estimate_full.py (time x2 per bit, ns per point
 #     constant). Every full-domain eval holds the whole domain.
 #
@@ -79,7 +82,7 @@ else
   OUT=results-eval
 fi
 mkdir -p "$OUT"
-cargo build --release -p floram-cprg -p half-tree -p floram-arith -p fssnn -p duoram -p ht-aes --examples || exit 1
+cargo build --release -p floram-cprg -p half-tree -p floram-arith -p fssnn -p duoram -p ht-aes -p ggm-lpn --examples || exit 1
 
 BIN=target/release/examples
 S=("${ARGS[@]}")
@@ -141,6 +144,15 @@ if [[ ${SKIP_OURS:-0} != 1 ]]; then
   run ht-aes-sh        42  42   28 "$BIN/bench-ht-aes" "$MODE" "${S[@]}" --variant sh
   run ht-aes-mal       42  42   27 "$BIN/bench-ht-aes" "$MODE" "${S[@]}" --variant mal
   run ht-aes-mal-arith 42  42   27 "$BIN/bench-ht-aes" "$MODE" "${S[@]}" --variant mal-arith
+  run ggm-lpn-bin      42  42   28 "$BIN/bench-ggm-lpn" "$MODE" "${S[@]}" --variant bin --nu 2
+  run ggm-lpn-arith    42  42   28 "$BIN/bench-ggm-lpn" "$MODE" "${S[@]}" --variant arith --nu 2
+fi
+
+# The cost of one Ferret COT (writes results-prf/ferret.csv).
+if [[ $MODE == gen && ( -z ${ONLY:-} || " $ONLY " == *" ferret "* ) ]]; then
+  echo ferret
+  cargo run --release -p exp-prf-bench --example bench-prf -- ferret \
+    || FAILED+=("ferret (exit $?)")
 fi
 
 if ((${#FAILED[@]})); then

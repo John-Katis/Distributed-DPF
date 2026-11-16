@@ -55,28 +55,25 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --i
 
 | Paper | Data | Command that writes it |
 |---|---|---|
-| Fig. eval-gen (Gen, LAN and WAN) and its dotted crossover lines | `results-gen/`, `results-template/gen/ggm-lpn-*-nu2.csv` | `python3 -I scripts/paper_data.py` |
-| Tab. eval-comm-rounds (Gen communication and rounds, Eval per point) | as above, and `results-eval/`, `results-template/full/` | `python3 -I scripts/paper_tables.py comm` |
+| Fig. eval-gen (Gen, LAN and WAN) and its dotted crossover lines | `results-gen/` | `python3 -I scripts/paper_data.py` |
+| Tab. eval-comm-rounds (Gen communication and rounds, Eval per point) | as above, and `results-eval/` | `python3 -I scripts/paper_tables.py comm` |
 | Tab. eval-apps and the numbers in the text of §6.2 (when the half-tree instance repays its slower Gen) | as above, and `results-single-point/` | `python3 -I scripts/paper_tables.py apps` |
 | §6.1, "Methodology": 14.3 ns and 660 ns per node | `results-single-point/` | `python3 -I scripts/paper_tables.py apps` (first line) |
 | §6, "Setup": the Ferret session setup (0.8–0.9 s, 3 MB) and the key pairs per COT pool | `setup_ms`, `setup_bytes` in `results-gen/` | `python3 -I scripts/paper_data.py` (last lines) |
-| 22.2 ns per Ferret COT (charged in Tab. eval-apps) | `results-prf/ferret.csv` | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` |
+| 22.2 ns per Ferret COT (charged in Tab. eval-apps) | `results-prf/ferret.csv` | written by `scripts/bench_all.sh` (gen) |
 
 All result directories are git-ignored and created by the scripts. Run every command from the repository root, one at a time, on an otherwise idle machine.
 
 ### Step 1: run the benchmarks
 
 ```sh
-scripts/bench_all.sh            # Gen, n = 12..42           -> results-gen/<protocol>.csv
+scripts/bench_all.sh            # Gen, n = 12..42           -> results-gen/<protocol>.csv, results-prf/ferret.csv
 scripts/bench_all.sh full       # full-domain Eval, n = 8..32 -> results-eval/<protocol>.csv
 scripts/bench_all.sh eval       # Eval at single points     -> results-single-point/<protocol>.csv
-NU_LIST=2 ONLY="ggm-lpn-bin-nu2 ggm-lpn-arith-nu2" scripts/bench_template.sh gen     # our GGM instance, Gen at ν = 2
-ONLY="ggm-lpn-bin-nu5 ggm-lpn-arith-nu5" scripts/bench_template.sh full              # our GGM instance, full-domain Eval
-cargo run --release -p exp-prf-bench --example bench-prf -- ferret                    # cost of one Ferret COT
 ```
 
-- `bench_all.sh` runs every protocol except our GGM instance: Floram, Half-Tree, Zhang et al., Xing et al., FssNN (`bin`, `arith`), Duoram-2P and our four half-tree variants. It writes one CSV per protocol.
-- `bench_template.sh` runs our GGM instance (`protocols/ggm-lpn`). The paper uses ν = 2 for its Gen. Its full-domain Eval runs at the script's default ν = 5, since ν changes Eval by only one shift per level.
+- `bench_all.sh` runs every protocol: Floram, Half-Tree, Zhang et al., Xing et al., FssNN (`bin`, `arith`), Duoram-2P, our four half-tree variants and our GGM instance (`ggm-lpn-bin`, `ggm-lpn-arith`, at ν = 2 as in the paper). It writes one CSV per protocol.
+- The gen run also measures the cost of one Ferret COT (`exp-prf-bench`), which Tab. eval-apps charges. With `ONLY`, it runs only if `ONLY` names `ferret`.
 - Every point of a sweep runs 10 repetitions and reports their mean. Each point is its own process, so a crash (e.g. out of memory) is logged as `# failed:` in the CSV and the sweep moves on to the next protocol.
 - `ONLY="name …"` reruns only the named CSVs. This resumes an interrupted sweep.
 - The paper reports ℓ = 64 only. The scripts also sweep ℓ = 128. `OUT_LIST=64` in front of each command halves the run time and still gives every number of §6.
@@ -110,7 +107,7 @@ The estimates come from three scripts, which the sweep scripts call:
 - `scripts/estimate_eval.py` grows a single-point evaluation linearly in n.
 - `scripts/estimate_full.py` keeps the time per point constant.
 
-On a machine with less memory, lower the caps in the `run` lines of `scripts/bench_all.sh` and `scripts/bench_template.sh`. Everything above the caps is then estimated.
+On a machine with less memory, lower the caps in the `run` lines of `scripts/bench_all.sh`. Everything above the caps is then estimated.
 
 ### Network model and CSV columns
 
@@ -187,7 +184,7 @@ protocols/               one crate per protocol, each with tests/ and examples/b
 experimental_code/
   prf-bench/             the Ferret COT rate (and PRF microbenchmarks of an earlier version of the paper)
   bp-sbox/               Boyar–Peralta S-box on the OT tower, a dependency of prf-bench
-scripts/                 sweeps (bench_*.sh), estimates above the caps (estimate_*.py), paper data (paper_*.py)
+scripts/                 the sweep (bench_all.sh), estimates above the caps (estimate_*.py), paper data (paper_*.py)
 third_party/             the four libraries as pinned git submodules
 ```
 

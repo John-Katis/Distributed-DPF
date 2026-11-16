@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Regenerates the pgfplots tables of Fig. eval-gen (paper-eval/6-dpf-data.tex)
-from the CSVs in results-gen/, results-eval/ and results-template/.
+from the CSVs in results-gen/ and results-eval/.
 
     python3 -I scripts/paper_data.py [file.tex]
 
@@ -17,20 +17,16 @@ LAN, total WAN (s), comm (KB), see `gen_cost`. Measured rows go into \\T<p>A/B, 
 last measured row plus the `+est` rows into \\T<p>XA/XB. Full-domain Eval
 tables: n, comp, LAN, WAN (s); measured rows into \\T<p>EA/EB, the last
 measured row plus `+est` rows into \\T<p>XEA/XEB. \\TOenv* is the maximum over
-our four variants, \\TFenv* over FssNN's two and \\TLpnenv* over the Boolean and arithmetic LPN instance (\\T?envXE*: above the last width all were measured). \\TV<v>{A,EA,XEA} are the per-variant tables Fig. eval-gen plots: ours
+our four variants and \\TFenv* over FssNN's two (\\T?envXE*: above the last width all were measured). \\TV<v>{A,EA,XEA} are the per-variant tables Fig. eval-gen plots: ours
 (Osb sh-bin, Osa sh, Omb mal, Oma mal-arith), FssNN (Fb, Fa) and our GGM
-instance (Lb, La: Gen at ν = 2, full Eval at ν = 5; n ≥ 12). \\TP* are the
-tables of our former template section
-(results-template/): Floram, Half-Tree, and ours with AES--MMO (\\TPAes<ν>) and
-with the LPN-PRG (\\TPLpn<ν>), ν spelled out (one, five, seventeen).
+instance (Lb, La: ggm-lpn-{bin,arith} at ν = 2; n ≥ 12).
 
 Also prints, for the prose: the four crossovers the dotted lines of Fig.
 eval-gen mark (where both our half-tree variants, sh-bin and mal or sh and
 mal-arith, become faster than every baseline of the panel, linearly
 interpolated in n), the smallest n from which every one of our four
 variants has a lower Gen total than each baseline (LAN, WAN, at
-ℓ = 64, over all measured and extrapolated n up to 42), the same for each
-instance and ν of the template section against Floram and Half-Tree, and how
+ℓ = 64, over all measured and extrapolated n up to 42), and how
 many key pairs the COT pool of one Ferret setup covers (n ≥ 8).
 """
 import csv
@@ -45,12 +41,6 @@ PROTOS = {  # table prefix -> CSV name
 OURS = ['ht-aes-sh-bin', 'ht-aes-sh', 'ht-aes-mal', 'ht-aes-mal-arith']
 FSSNN = ['fssnn-bin', 'fssnn-arith']
 WIDTH = {64: 'A', 128: 'B'}
-NU = {1: 'one', 5: 'five', 17: 'seventeen'}
-PRF = {'PFl': 'floram', 'PHT': 'ht',  # results-template/{gen,full}/ CSV names
-       **{f'PAes{w}': f'ht-aes-sh-bin-nu{v}' for v, w in NU.items()},
-       **{f'PLpn{w}': f'ggm-lpn-bin-nu{v}' for v, w in NU.items()}}
-PRF_FULL_NU = 5
-GGM_NU = 2  # Π_GenGGM in §6.1
 # Fig. eval-gen: per-variant tables \TV<key>, (CSV of Gen, CSV of full Eval, name)
 VARIANTS = {
     'Osb': ('results-gen/ht-aes-sh-bin.csv', 'results-eval/ht-aes-sh-bin.csv', 'ht-aes-sh-bin'),
@@ -59,8 +49,7 @@ VARIANTS = {
     'Oma': ('results-gen/ht-aes-mal-arith.csv', 'results-eval/ht-aes-mal-arith.csv', 'ht-aes-mal-arith'),
     'Fb': ('results-gen/fssnn-bin.csv', 'results-eval/fssnn-bin.csv', 'fssnn-bin'),
     'Fa': ('results-gen/fssnn-arith.csv', 'results-eval/fssnn-arith.csv', 'fssnn-arith'),
-    **{f'L{v[0]}': (f'results-template/gen/ggm-lpn-{v}-nu{GGM_NU}.csv',
-                    f'results-template/full/ggm-lpn-{v}-nu{PRF_FULL_NU}.csv', f'ggm-lpn-{v}-nu{GGM_NU}')
+    **{f'L{v[0]}': (f'results-gen/ggm-lpn-{v}.csv', f'results-eval/ggm-lpn-{v}.csv', f'ggm-lpn-{v}')  # Π_GenGGM, ν = 2
        for v in ('bin', 'arith')},
 }
 # The panels of Fig. eval-gen: (our two half-tree variants, the baselines)
@@ -194,23 +183,6 @@ def report(gen, ours):
         print(f'  {PROTOS[p]:16s} {", ".join(out)}  (n = {min(s)}..{max(s)})')
 
 
-def report_prf(prf):
-    """Our template's section: each instance and ν against Floram and Half-Tree."""
-    print('Template section (Gen without setup, ℓ = 64): smallest n0 from which the instance is faster at every n ≥ n0')
-    for p in prf:
-        if not p.startswith(('PAes', 'PLpn')):
-            continue
-        o = series(prf[p])
-        out = []
-        for b in ['PFl', 'PHT']:
-            s = series(prf[b])
-            for i, link in [(1, 'LAN'), (2, 'WAN')]:
-                ns = sorted(n for n in o if n in s)
-                win = [n for n in ns if all(o[k][i] < s[k][i] for k in ns if k >= n)]
-                out.append(f'{PRF[b]} {link} {("all" if win[0] == ns[0] else win[0]) if win else "never"}')
-        print(f'  {PRF[p]:22s} {", ".join(out)}  (n = {min(o)}..{max(o)})')
-
-
 def crossovers():
     """The dotted lines of Fig. eval-gen: the n (linearly interpolated) from
     which both our half-tree variants of a panel are faster than every
@@ -267,15 +239,12 @@ def main():
         if mode == 'gen':
             ours_gen = ours
         fssnn = [load(f'{d}/{name}.csv', mode, name) for name in FSSNN]
-        # The LPN instance: Boolean and arithmetic, Gen at ν = 1, Eval at PRF_FULL_NU.
-        nu = 1 if mode == 'gen' else PRF_FULL_NU
-        lpn = [load(f'results-template/{mode}/ggm-lpn-{v}-nu{nu}.csv', mode, f'ggm-lpn-{v}-nu{nu}') for v in ('bin', 'arith')]
-        for prefix, group in [('TOenv', ours), ('TFenv', fssnn), ('TLpnenv', lpn)]:
+        for prefix, group in [('TOenv', ours), ('TFenv', fssnn)]:
             if not all(group):
                 continue
             for m, w in WIDTH.items():
                 if not all((False, m) in o for o in group):
-                    continue  # the arithmetic LPN instance has ℓ = 64 only
+                    continue
                 ns = set.intersection(*(set(o[(False, m)]) for o in group))
                 env = {n: [max(o[(False, m)][n][i] for o in group) for i in range(len(cols))] for n in ns}
                 tables[f'{prefix}{tag}{w}'] = table(env, cols)
@@ -295,22 +264,11 @@ def main():
             tables[f'TV{v}EA'] = table(meas, 'clw')
             if (True, 64) in add_e:
                 tables[f'TV{v}XEA'] = table({max(meas): meas[max(meas)], **add_e[(True, 64)]}, 'clw')
-    prf = {}
-    for p, name in PRF.items():
-        # n ≥ 8 as for the baselines (ours runs from n = ν + 1)
-        prf[p] = {k: {n: v for n, v in d.items() if n >= 8}
-                  for k, d in load(f'results-template/gen/{name}.csv', 'gen', name).items()}
-        add(tables, p, '', 'clwb', prf[p])
-        if name in ('floram', 'ht') or name.endswith(f'-nu{PRF_FULL_NU}'):
-            add(tables, p, 'E', 'clw', load(f'results-template/full/{name}.csv', 'full', name))
 
     crossovers()
     if all(gen.values()) and all(ours_gen):
         report(gen, ours_gen)
-    if all(prf.values()):
-        report_prf(prf)
-    keys_per_pool([(n, f'results-gen/{n}.csv') for n in ['ht-mal-ferret', 'fssnn-bin', 'fssnn-arith', *OURS]]
-                  + [(f'{n}-nu{v}', f'results-template/gen/{n}-nu{v}.csv') for n in ['ht-aes-sh-bin', 'ggm-lpn-bin'] for v in NU])
+    keys_per_pool([(n, f'results-gen/{n}.csv') for n in ['ht-mal-ferret', 'fssnn-bin', 'fssnn-arith', *OURS, 'ggm-lpn-bin', 'ggm-lpn-arith']])
 
     try:
         src = open(tex).read()

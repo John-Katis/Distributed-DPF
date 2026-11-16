@@ -31,8 +31,8 @@
   Boolean only. "--": Half-Tree for a single key above its measured n = 29
   (Grotto, SIGMA-cDPF, threshold decryption), or where its Gen exceeds a year.
 
-Reads results-gen/, results-eval/, results-single-point/ and
-results-template/{gen,full}/ (GGM instance: Gen at ν = 2, full Eval at ν = 5).
+Reads results-gen/, results-eval/ and results-single-point/ (our GGM instance
+ggm-lpn-{bin,arith} at ν = 2).
 """
 import csv
 import sys
@@ -40,28 +40,24 @@ import sys
 sys.path.insert(0, __import__('os').path.dirname(__file__))
 from paper_data import gen_cost, net, WAN, COT_BITS, COT_NS  # noqa: E402
 
-GGM_GEN, GGM_FULL = 'results-template/gen/ggm-lpn-{}-nu2.csv', 'results-template/full/ggm-lpn-{}-nu5.csv'
 COMM_ROWS = [  # (block, label, CSV name, Gen CSV, full Eval CSV)
     ('Boolean payload, semi-honest', 'Floram', 'floram'),
     (None, 'Half-Tree', 'ht'),
     (None, 'FssNN', 'fssnn-bin'),
     (None, 'Ours, PiGenSH', 'ht-aes-sh-bin'),
-    (None, 'Ours, PiGenGGM', 'ggm-lpn-bin-nu2'),
+    (None, 'Ours, PiGenGGM', 'ggm-lpn-bin'),
     ('Boolean payload, malicious', 'Zhang et al.', 'ht-mal-ferret'),
     (None, 'Ours, PiGenMal', 'ht-aes-mal'),
     ('Arithmetic payload, semi-honest', 'Xing et al.', 'floram-arith'),
     (None, 'Duoram-2P', 'duoram-2p'),
     (None, 'FssNN', 'fssnn-arith'),
     (None, 'Ours, PiGenSH', 'ht-aes-sh'),
-    (None, 'Ours, PiGenGGM', 'ggm-lpn-arith-nu2'),
+    (None, 'Ours, PiGenGGM', 'ggm-lpn-arith'),
     ('Arithmetic payload, malicious', 'Ours, PiGenMal', 'ht-aes-mal-arith'),
 ]
 
 
 def paths(name):
-    if name.startswith('ggm-lpn'):
-        v = name.split('-')[2]
-        return GGM_GEN.format(v), GGM_FULL.format(v)
     return f'results-gen/{name}.csv', f'results-eval/{name}.csv'
 
 
@@ -165,8 +161,8 @@ def ft(sec):
 
 def apps_table():
     HT, FS, OS, GG = 'Half-Tree', 'FssNN', 'PiGenSH', 'PiGenGGM'
-    bin_ = {HT: 'ht', FS: 'fssnn-bin', OS: 'ht-aes-sh-bin', GG: 'ggm-lpn-bin-nu2'}
-    ari = {HT: 'ht', FS: 'fssnn-arith', OS: 'ht-aes-sh', GG: 'ggm-lpn-arith-nu2'}
+    bin_ = {HT: 'ht', FS: 'fssnn-bin', OS: 'ht-aes-sh-bin', GG: 'ggm-lpn-bin'}
+    ari = {HT: 'ht', FS: 'fssnn-arith', OS: 'ht-aes-sh', GG: 'ggm-lpn-arith'}
     K = {p: per_key(p) for p in {*bin_.values(), *ari.values()}}
     nu = {OS: 17, GG: 2}
     joint = {OS: lambda n: n - nu[OS] + 1, GG: lambda n: n - nu[GG]}
