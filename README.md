@@ -134,7 +134,7 @@ All benchmarks print the same CSV schema (`dpf_common::bench::HEADER`):
 
 ## 3. Full and amortized cost
 
-The CSVs hold the **full cost** of one key pair: `comp_ms`, `comm_total` and `rounds` include the one-time session setup. Ferret's setup alone takes 0.8–0.9 s, 3 MB and 16 rounds.
+The CSVs hold the **full cost** of one key pair: `comp_ms`, `comm_total` and `rounds` include the one-time session setup. Ferret's setup alone takes 0.8–1.0 s, 3 MB and 16 rounds (23 for the malicious variants).
 
 The paper's figure and tables report the **cost of a further key pair** in a session, which is preprocessing plus generation. `paper_data.gen_cost` applies the same rules to every protocol:
 
