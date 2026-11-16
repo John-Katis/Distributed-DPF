@@ -59,7 +59,7 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --i
 | Tab. eval-comm-rounds (Gen communication and rounds, Eval per point) | as above, and `results-eval/` | `python3 -I scripts/paper_tables.py comm` |
 | Tab. eval-apps and the numbers in the text of §6.2 (when the half-tree instance repays its slower Gen) | as above, and `results-single-point/` | `python3 -I scripts/paper_tables.py apps` |
 | §6.1, "Methodology": 14.3 ns and 660 ns per node | `results-single-point/` | `python3 -I scripts/paper_tables.py apps` (first line) |
-| §6, "Setup": the Ferret session setup (0.8–0.9 s, 3 MB) and the key pairs per COT pool | `setup_ms`, `setup_bytes` in `results-gen/` | `python3 -I scripts/paper_data.py` (last lines) |
+| §6, "Setup": the Ferret session setup (0.8–1.0 s, 3 MB) and the key pairs per COT pool | `setup_ms`, `setup_bytes` in `results-gen/` | `python3 -I scripts/paper_data.py` (last lines) |
 | 22.2 ns per Ferret COT (charged in Tab. eval-apps) | `results-prf/ferret.csv` | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` |
 
 All result directories are git-ignored and created by the scripts. Run every command from the repository root, one at a time, on an otherwise idle machine.
