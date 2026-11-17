@@ -53,16 +53,7 @@ cargo run --release -p ht-aes --example bench-ht-aes -- all --variant sh-bin --i
 
 ## 2. Reproducing the paper's results
 
-| Paper | Data | Command that writes it |
-|---|---|---|
-| Fig. eval-gen (Gen, LAN and WAN) and its dotted crossover lines | `results-gen/` | `python3 -I scripts/paper_data.py` |
-| Tab. eval-comm-rounds (Gen communication and rounds, Eval per point) | as above, and `results-eval/` | `python3 -I scripts/paper_tables.py comm` |
-| Tab. eval-apps and the numbers in the text of §6.2 (when the half-tree instance repays its slower Gen) | as above, and `results-single-point/` | `python3 -I scripts/paper_tables.py apps` |
-| §6.1, "Methodology": 14.3 ns and 660 ns per node | `results-single-point/` | `python3 -I scripts/paper_tables.py apps` (first line) |
-| §6, "Setup": the Ferret session setup (0.8–1.0 s, 3 MB) and the key pairs per COT pool | `setup_ms`, `setup_bytes` in `results-gen/` | `python3 -I scripts/paper_data.py` (last lines) |
-| 22.2 ns per Ferret COT (charged in Tab. eval-apps) | `results-prf/ferret.csv` | `cargo run --release -p exp-prf-bench --example bench-prf -- ferret` |
-
-All result directories are git-ignored and created by the scripts. Run every command from the repository root, one at a time, on an otherwise idle machine.
+All result directories are git-ignored and created by the scripts. Run every command from the repository root, one at a time. A few GB of RAM are required.
 
 ### Step 1: run the benchmarks
 
@@ -145,27 +136,6 @@ The paper's figure and tables report the **cost of a further key pair** in a ses
 Tab. eval-apps covers applications with up to millions of keys, which exhaust a pool. It therefore also charges every Ferret COT at Ferret's marginal rate: 0.443 bits (Yang et al., CCS'20) and 22.2 ns (our Ferret, `exp-prf-bench ferret`). It charges every IKNP COT at κ = 128 bits.
 
 This is the fair comparison because the setup is paid once per session, for any number of keys. Charging it to one key pair would rank the protocols by their one-time setup (3 MB of Ferret against 22–44 KB of base OTs for Floram and Half-Tree) instead of by the cost of their keys.
-
-<details>
-<summary>What each protocol makes in preprocessing</summary>
-
-Where a protocol's paper or reference code makes the correlations ahead of Gen, the bench makes them in preprocessing, before α and β are used. Gen sometimes needs a COT or OT on a secret choice bit (a bit of α, a MUX selector). Preprocessing then makes it with a random choice, and Gen derandomises it with one bit in one round.
-
-| Protocol | Preprocessing |
-|---|---|
-| floram-cprg | none: as in Obliv-C, Gen runs chosen-input IKNP for the evaluator's labels at each level |
-| half-tree (`ht`) | n random COTs per direction (GYW+23, Fig. 11) |
-| half-tree (`mal-ferret`) | n + 128·(bm + 1) random F_aBit COTs per direction for α, β and ⟨r⟩ (Ferret) |
-| floram-arith | none: as in the reference code, each AND makes its triples (KK13) and each MUX its COTs (IKNP) when called |
-| fssnn | PRG correlations for 2n (+2) calls, 2n bit triples, 3n (+2ℓ+1 for `arith`) Ferret COTs per direction |
-| duoram (`2p`) | n AND triples from COTs, n + 2·w random COTs for the Gilboa products |
-| ht-aes (`sh`, `sh-bin`) | ⟨α⟩, the public W, the middle AES states of the on-path pairs, ⟨r_ν⟩, …, ⟨r_n⟩, and Ferret COTs under `Γ_b = Δ_b`; the OT tower's random COTs (2(n − ν + 1)·3,040), n − ν + 1 AND triples; for `sh` also 2κ + 1 daBits and one Beaver triple over F_p for the leaf |
-| ht-aes (`mal`, `mal-arith`) | as `sh-bin` / `sh`, with the OT tower's COTs for 2(τ − 1) more pairs, the triples of Π_Verify's masks, and for `mal-arith` the daBits and triples of the glue residual over 2^127 − 1 |
-| ggm-lpn | one bit-times-3-block triple per level (one random COT per direction), the LPN-PRG correlations of the bottom levels (Ferret) |
-
-Duoram's generation proper is its own preprocessing (the DPF at a random target) plus the one-round online phase.
-
-</details>
 
 ## 4. Repository structure
 
