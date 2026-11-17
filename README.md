@@ -27,11 +27,9 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"
 ```
 
-Clone the repository and build everything:
+From the root of a clone of this repository (a plain clone, not `--recursive`: `build.sh` fetches only the submodule parts it needs), build everything:
 
 ```sh
-git clone https://github.com/John-Katis/Distributed-DPF.git   # not --recursive: build.sh fetches only what is needed
-cd Distributed-DPF
 ./build.sh            # ./build.sh --test also runs the test suite
 ```
 
